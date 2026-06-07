@@ -20,7 +20,8 @@ function findRepoRoot(start: string): string {
   return process.cwd();
 }
 
-const { values } = await parseArgs({
+const { values, positionals } = await parseArgs({
+  allowPositionals: true,
   options: {
     tasks:  { type: 'string', default: tasksDir },
     loop:   { type: 'boolean', default: false },
@@ -42,17 +43,56 @@ Task Orchestrator — autonomous task execution
   orchestrator --status         show dashboard
   orchestrator --check          check prerequisites
   orchestrator --stop           signal all instances to stop
-  orchestrator --tasks <dir>    custom task directory
-  orchestrator --model <model>  default AI model
+  orchestrator --task <n>       force-pick specific task
+  orchestrator add <name> <goal> <metric> [scope...]
 
 Environment variables (CLI flags override):
-  ORCH_TASKS=<dir>         task directory (--tasks)
+  ORCH_TASKS=<dir>         task directory
   ORCH_REPO=<dir>          git repo root for worktrees
-  ORCH_MODEL=<model>       default AI model (--model)
+  ORCH_MODEL=<model>       default AI model
   ORCH_CONVERGE=<n>        zero-runs to converge (default: 3)
   ORCH_MAX_FAILURES=<n>    failures before BLOCKED (default: 5)
   ORCH_HEARTBEAT_MS=<ms>   stale claim timeout (default: 300000)
 `);
+  process.exit(0);
+}
+
+// ── add command ──────────────────────────────────────────────────────────
+if (positionals[0] === 'add') {
+  const { mkdirSync, writeFileSync, readdirSync } = await import('node:fs');
+  const name = positionals[1];
+  const goal = positionals[2];
+  const metric = positionals[3];
+  const scope = positionals.slice(4);
+  if (!name || !goal || !metric) {
+    console.error('Usage: orchestrator add <name> "<goal>" <metric> [scope...]');
+    process.exit(1);
+  }
+  // Find next task number across all shards
+  let next = 0;
+  for (const shard of ['pending','in_progress','converged','failed','blocked']) {
+    try { for (const e of readdirSync(resolve(dir, shard))) {
+      const m = e.match(/^T(\d+)-/); if (m) next = Math.max(next, parseInt(m[1], 10));
+    }} catch {}
+  }
+  next++;
+  const d = resolve(dir, 'pending', `T${String(next).padStart(2, '0')}-${name}`);
+  mkdirSync(d, { recursive: true });
+  writeFileSync(resolve(d, '.status'), 'PENDING\n');
+  writeFileSync(resolve(d, '.dependencies'), '');
+  writeFileSync(resolve(d, 'autoresearch.md'), [
+    `# T${next} — ${goal}`,
+    '## Goal', goal,
+    '## Metric', `\`${metric}\` (lower is better) — Target: 0`,
+    '## Scope', ...scope.map(f => `- ${f}`),
+    '## Acceptance', `- ${metric}=0 for 3 consecutive runs`,
+  ].join('\n'));
+  writeFileSync(resolve(d, 'benchmark.js'), [
+    '#!/usr/bin/env node',
+    'let g = 1; // TODO: add real checks',
+    `console.log('METRIC ${metric}=' + g);`,
+  ].join('\n'));
+  console.log(`✅ T${next} added: ${goal}\n   ${d}`);
   process.exit(0);
 }
 
