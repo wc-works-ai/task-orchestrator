@@ -41,18 +41,24 @@ export class Worktree {
   }
 
   async merge(): Promise<void> {
-    // Checkout base branch and merge
     const prevBranch = this.#git('rev-parse', '--abbrev-ref', 'HEAD').trim();
-
     try {
       this.#git('checkout', this.#base);
       this.#git('merge', '--no-ff', this.#branch, '-m', `Merge ${this.#branch}`);
-    } catch (e: any) {
-      // Abort merge on conflict
+    } catch (e: unknown) {
       try { this.#git('merge', '--abort'); } catch {}
       try { this.#git('checkout', prevBranch); } catch {}
-      throw new Error(`Merge conflict in ${this.#name}: ${e?.message ?? 'unknown'}`);
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new Error(`Merge conflict in ${this.#name}: ${msg}`);
     }
+  }
+
+  /** Discard all worktree changes — agent starts fresh on retry */
+  async resetForRetry(): Promise<void> {
+    try {
+      this.#gitInWT('checkout', this.#base);          // detach from branch
+      this.#gitInWT('checkout', '-B', this.#branch);   // recreate branch at base
+    } catch { /* best-effort */ }
   }
 
   async remove(): Promise<void> {

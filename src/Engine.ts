@@ -48,6 +48,12 @@ export class Engine {
     const task = await TaskState.pick(this.#dir, this.#id);
     if (!task) return { task: null, metric: 0, converged: false };
 
+    // Reset worktree on retry so agent starts fresh (discard conflicting changes)
+    if (task.isFailed) {
+      const wt = this.#worktrees.get(task.taskNumber);
+      if (wt) await wt.resetForRetry();
+    }
+
     let metric = await this.#run(task);
 
     if (metric === 0) return this.#handleZero(task, metric);
@@ -68,8 +74,12 @@ export class Engine {
         clearInterval(hb);
         metric = await this.#run(task, wt?.path);
         if (metric === 0) return this.#handleZero(task, metric, wt);
-      } catch (e: any) {
-        if (e?.message?.includes?.('conflict')) task.status = Status.FAILED;
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg.includes('conflict')) {
+          task.status = Status.FAILED;
+          console.error(`  ⚠️  T${task.taskNumber}: merge conflict — task FAILED, worktree kept for inspection`);
+        }
       }
     }
 
