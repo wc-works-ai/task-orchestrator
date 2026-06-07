@@ -1,43 +1,34 @@
-# Add Orchestrator Task
+# Add Task
 
-Use when: creating a new task for the orchestrator to execute.
+Use when: creating a new task for the orchestrator.
 
-## Create the task
+## Create the scaffold
 
 ```bash
 orchestrator add <kebab-case-name>
 ```
 
-This scaffolds a task in `tasks/pending/` with the next available number. Output tells you the directory.
+Outputs the new directory in `tasks/pending/`. Task starts at `g = 1` (needs work).
 
 ## Fill in the details
 
-After scaffolding, edit these files in the new task directory:
+Edit these files in the new task directory:
 
-**`autoresearch.md`** — replace TODOs with real content:
+**`autoresearch.md`**
 ```markdown
-- **Model:** <model-name>                    # optional — default is ORCH_MODEL
+- **Model:** <model-name>              # optional
 ## Goal
-One-line description of what this task accomplishes.
+One-line description of what this task does.
 ## Design
-Key decisions, required sections, how the fix should look.
+Key decisions, required changes, what the fix should look like.
 ## Acceptance
 Specific, verifiable criteria.
 ```
 
-**`benchmark.js`** — replace `g = 1` with real checks:
+**`benchmark.js`**
 ```js
-let g = 0; // no gaps found yet
-// Add checks — each failure increments g
-// Example:
-if (!readFile('path/to/file').includes('EXPECTED')) g++;
-console.log('METRIC my_gaps=' + g);
-```
-
-## After editing
-
-```bash
-orchestrator --status   # verify task shows as PENDING
-orchestrator            # run one tick
-orchestrator --loop     # run until done
+let g = 0;  // count gaps — reduce to 0
+// Add checks. Example:
+if (!readFile('path/file.md').includes('EXPECTED')) g++;
+console.log('METRIC metric_name=' + g);
 ```

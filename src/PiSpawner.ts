@@ -1,4 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { TaskState } from './TaskState.js';
 import type { SpawnResult } from './Engine.js';
 
@@ -63,8 +65,14 @@ export class PiSpawner {
         output += d.toString();
       });
 
+      child.stderr?.on('data', (d: Buffer) => {
+        output += d.toString();
+      });
+
       child.on('close', (code: number | null) => {
         const iterations = (output.match(/log_experiment/g) || []).length;
+        // Persist agent log to task directory
+        try { writeFileSync(join(task.directory, 'agent.log'), output); } catch {}
         done({ success: code === 0, iterations });
       });
 

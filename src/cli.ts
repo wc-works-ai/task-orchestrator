@@ -38,6 +38,7 @@ const { values, positionals } = await parseArgs({
   },
 });
 
+const repo = resolve(repoDir);
 const dir = resolve(values.tasks!);
 
 if (values.help) {
@@ -64,6 +65,28 @@ Environment variables (CLI flags override):
   process.exit(0);
 }
 
+// ── edit command ─────────────────────────────────────────────────────────
+if (positionals[0] === 'edit') {
+  const tn = parseInt(positionals[1] ?? '', 10);
+  if (isNaN(tn)) { console.error('Usage: orchestrator edit <n> [--goal ...] [--metric ...] [--scope ...]'); process.exit(1); }
+  const engine = new Engine(dir, { repoDir: repo });
+  const task = await engine.pickByNumber(tn);
+  if (!task) { console.error(`T${tn} not found`); process.exit(1); }
+  const { readFileSync, writeFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const ar = readFileSync(join(task.directory, 'autoresearch.md'), 'utf-8');
+  let updated = ar;
+  if (values.goal) updated = updated.replace(/^## Goal.*$/m, `## Goal: ${values.goal}`);
+  if (values.metric) updated = updated.replace(/\`[^`]+\` \(lower is better\)/, `\`${values.metric}\` (lower is better)`);
+  if (values.scope) {
+    const lines = values.scope.split(/\s+/).map(f => `- ${f}`).join('\n');
+    updated = updated.replace(/^## Scope\n[\s\S]*?(?=^## |\Z)/m, `## Scope\n${lines}\n`);
+  }
+  writeFileSync(join(task.directory, 'autoresearch.md'), updated);
+  console.log(`✅ T${tn} updated`);
+  process.exit(0);
+}
+
 // ── add command ──────────────────────────────────────────────────────────
 if (positionals[0] === 'add') {
   const name = positionals[1];
@@ -85,7 +108,6 @@ if (values.check) {
   process.exit(results.every(r => r.ok) ? 0 : 1);
 }
 
-const repo = resolve(repoDir);
 
 if (values.status) {
   const all = await TaskState.scan(dir);
