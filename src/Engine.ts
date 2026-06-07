@@ -1,24 +1,33 @@
 import { statSync, readFileSync, readdirSync } from 'node:fs';
 import { resolve, join } from 'node:path';
-import { TaskState, Status } from './TaskState.js';
-import type { BenchmarkFn, TickResult, TickNull } from './TaskState.js';
+import { TaskState, Status, type BenchmarkFn, type TickResult, type TickNull } from './TaskState.js';
 
-const HEARTBEAT_MAX_MS = 300_000; // 5 minutes
+const HEARTBEAT_MAX_MS = 300_000;
+
+export interface SpawnResult {
+  readonly success: boolean;
+  readonly iterations: number;
+}
+
+export type SpawnFn = (task: TaskState) => Promise<SpawnResult>;
 
 export interface EngineOptions {
   readonly benchmark?: BenchmarkFn;
+  readonly spawn?: SpawnFn;
   readonly instanceId?: string;
   readonly onTick?: (result: TickResult | TickNull, total: number) => void | Promise<void>;
 }
 
 export class Engine {
   readonly #dir: string;
-  readonly #run: BenchmarkFn;
+  readonly #bench: BenchmarkFn;
+  readonly #spawn: SpawnFn | null;
   readonly #id: string;
 
   constructor(tasksDir: string, opts: EngineOptions = {}) {
     this.#dir = tasksDir;
-    this.#run = opts.benchmark ?? (() => 1);
+    this.#bench = opts.benchmark ?? (() => 1);
+    this.#spawn = opts.spawn ?? null;
     this.#id = opts.instanceId ?? `${process.pid}_${Date.now()}`;
   }
 
@@ -26,30 +35,28 @@ export class Engine {
 
   // ── Single tick ─────────────────────────────────────────────────────
 
-  /** Process exactly one task. Returns null if nothing actionable. */
   async tick(): Promise<TickResult | TickNull> {
     this.#recover();
-
     await TaskState.scan(this.#dir);
+
     const task = await TaskState.pick(this.#dir, this.#id);
-    if (!task) {
-      return { task: null, metric: 0, converged: false } satisfies TickNull;
-    }
+    if (!task) return { task: null, metric: 0, converged: false };
 
-    let metric: number;
-    try { metric = await this.#run(task.info); }
-    catch { metric = 1; }
+    let metric = await this.#run(task);
 
-    if (metric === 0) {
-      task.incrementConvergence();
-      if (task.hasConverged) {
-        task.status = Status.CONVERGED;
-        return { task: task.info, metric, converged: true };
-      }
-      return { task: task.info, metric, converged: false };
-    }
+    if (metric === 0) return this.#handleZero(task, metric);
 
+    // Non-zero: try spawner if available
     task.resetConvergence();
+
+    if (this.#spawn) {
+      try {
+        await this.#spawn(task);
+      } catch { /* spawn errors are non-fatal */ }
+      metric = await this.#run(task);
+      if (metric === 0) return this.#handleZero(task, metric);
+    }
+
     task.release(Status.FAILED);
     return { task: task.info, metric, converged: false };
   }
@@ -67,7 +74,21 @@ export class Engine {
     return total;
   }
 
-  // ── Recovery ────────────────────────────────────────────────────────
+  // ── Private ──────────────────────────────────────────────────────────
+
+  #handleZero(task: TaskState, metric: number): TickResult {
+    task.incrementConvergence();
+    if (task.hasConverged) {
+      task.status = Status.CONVERGED;
+      return { task: task.info, metric, converged: true };
+    }
+    return { task: task.info, metric, converged: false };
+  }
+
+  async #run(task: TaskState): Promise<number> {
+    try { return await this.#bench(task.info); }
+    catch { return 1; }
+  }
 
   #recover(): void {
     const dir = resolve(this.#dir, 'in_progress');
@@ -76,25 +97,20 @@ export class Engine {
 
     for (const e of entries) {
       if (!e.startsWith('T')) continue;
-
       const task = new TaskState(resolve(dir, e));
       if (!task.isInProgress || !task.isClaimed) continue;
-
       const age = this.#heartbeatAge(task);
       if (age === null || age < HEARTBEAT_MAX_MS) continue;
-
       const pid = this.#ownerPid(task);
       if (pid !== null && this.#alive(pid)) continue;
-
       task.release(Status.FAILED);
       task.resetConvergence();
     }
   }
 
   #heartbeatAge(task: TaskState): number | null {
-    try {
-      return Date.now() - statSync(join(task.directory, '.claim', 'heartbeat')).mtimeMs;
-    } catch { return null; }
+    try { return Date.now() - statSync(join(task.directory, '.claim', 'heartbeat')).mtimeMs; }
+    catch { return null; }
   }
 
   #ownerPid(task: TaskState): number | null {

@@ -1,0 +1,114 @@
+import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
+import { rm } from 'node:fs/promises';
+import { mkdtempSync, mkdirSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { Engine } from '../src/Engine.js';
+import { TaskState, Status } from '../src/TaskState.js';
+
+function setup() {
+  const dir = mkdtempSync(resolve('/tmp', 'eng-ts-'));
+  for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
+    mkdirSync(resolve(dir, s), { recursive: true });
+  }
+  return dir;
+}
+
+function make(dir: string, n: number, name: string, opts?: {
+  status?: Status | string;
+  deps?: readonly number[];
+}): TaskState {
+  const d = resolve(dir, 'pending', `T${String(n).padStart(2, '0')}-${name}`);
+  mkdirSync(d, { recursive: true });
+  const t = new TaskState(d);
+  t.status = opts?.status ?? Status.PENDING;
+  if (opts?.deps) t.dependencies = opts.deps;
+  return t;
+}
+
+describe('Engine agent spawning', () => {
+  let dir = '';
+  beforeEach(() => { dir = setup(); });
+  afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
+
+  it('calls spawn when benchmark is non-zero', async () => {
+    make(dir, 1, 'a');
+    const spawn = vi.fn().mockResolvedValue({ success: true, iterations: 3 });
+    // First call: metric=1 (triggers spawn), second call: metric=0 (spawn fixed it)
+    const benchmark = vi.fn()
+      .mockResolvedValueOnce(1)
+      .mockResolvedValue(0);
+
+    const engine = new Engine(dir, { benchmark, spawn });
+    const r = await engine.tick();
+    expect(r.metric).toBe(0);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(benchmark).toHaveBeenCalledTimes(2); // pre + post
+  });
+
+  it('fails task when spawn returns failure', async () => {
+    make(dir, 1, 'a');
+    const spawn = vi.fn().mockResolvedValue({ success: false, iterations: 0 });
+    const benchmark = vi.fn().mockResolvedValue(1);
+
+    const engine = new Engine(dir, { benchmark, spawn });
+    const r = await engine.tick();
+    expect(r.converged).toBe(false);
+    // Task should be FAILED
+    const all = await TaskState.scan(dir);
+    expect(all.get('1')!.status).toBe(Status.FAILED);
+  });
+
+  it('marks FAILED when no spawner provided and metric is non-zero', async () => {
+    make(dir, 1, 'a');
+    const r = await new Engine(dir, { benchmark: () => 1 }).tick();
+    expect(r.converged).toBe(false);
+    const all = await TaskState.scan(dir);
+    expect(all.get('1')!.status).toBe(Status.FAILED);
+  });
+
+  it('task remains IN_PROGRESS after spawn fixes metric but cz < threshold', async () => {
+    make(dir, 1, 'a');
+    const spawn = vi.fn().mockResolvedValue({ success: true, iterations: 1 });
+    const benchmark = vi.fn()
+      .mockResolvedValueOnce(1)  // pre-agent: needs work
+      .mockResolvedValue(0);     // post-agent: fixed
+
+    const engine = new Engine(dir, { benchmark, spawn });
+    const r = await engine.tick();
+    expect(r.converged).toBe(false);
+    // Claim held, cz=1
+    const all = await TaskState.scan(dir);
+    expect(all.get('1')!.isInProgress).toBe(true);
+    expect(all.get('1')!.convergenceCount).toBe(1);
+  });
+
+  it('converges after spawn fixes metric and cz reaches threshold', async () => {
+    make(dir, 1, 'a');
+    const spawn = vi.fn().mockResolvedValue({ success: true, iterations: 1 });
+    // First tick: metric=1, spawn fixes → metric=0, cz=1 (not converged)
+    // Second tick: metric=0, cz=2
+    // Third tick: metric=0, cz=3 → converged
+    const benchmark = vi.fn()
+      .mockResolvedValueOnce(1).mockResolvedValue(0)  // tick 1
+      .mockResolvedValue(0)   // tick 2
+      .mockResolvedValue(0);  // tick 3
+
+    const engine = new Engine(dir, { benchmark, spawn });
+    let r = await engine.tick();
+    expect(r.converged).toBe(false); // cz=1
+    r = await engine.tick();
+    expect(r.converged).toBe(false); // cz=2
+    r = await engine.tick();
+    expect(r.converged).toBe(true);  // cz=3
+  });
+
+  it('spawn errors are caught and counted as failure', async () => {
+    make(dir, 1, 'a');
+    const spawn = vi.fn().mockRejectedValue(new Error('crash'));
+    const engine = new Engine(dir, { benchmark: () => 1, spawn });
+    const r = await engine.tick();
+    expect(r.converged).toBe(false);
+    const all = await TaskState.scan(dir);
+    expect(all.get('1')!.status).toBe(Status.FAILED);
+  });
+});
