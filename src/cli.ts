@@ -26,6 +26,7 @@ const { values } = await parseArgs({
     loop:   { type: 'boolean', default: false },
     status: { type: 'boolean', default: false },
     check:  { type: 'boolean', default: false },
+    model:  { type: 'string', default: '' },
     stop:   { type: 'boolean', default: false },
     help:   { type: 'boolean', short: 'h', default: false },
   },
@@ -39,11 +40,17 @@ Task Orchestrator — autonomous task execution
   orchestrator --loop           run until all done
   orchestrator --status         show dashboard
   orchestrator --check          check prerequisites
-  orchestrator --stop            signal all running --loop instances to stop
+  orchestrator --stop           signal all instances to stop
+  orchestrator --tasks <dir>    custom task directory
+  orchestrator --model <model>  default AI model
 
-  ORCH_TASKS=<dir>              env override for --tasks
-  ORCH_REPO=<dir>               git repo root (for worktree isolation)
-  ORCH_MODEL=<model>            default AI model
+Environment variables (CLI flags override):
+  ORCH_TASKS=<dir>         task directory (--tasks)
+  ORCH_REPO=<dir>          git repo root for worktrees
+  ORCH_MODEL=<model>       default AI model (--model)
+  ORCH_CONVERGE=<n>        zero-runs to converge (default: 3)
+  ORCH_MAX_FAILURES=<n>    failures before BLOCKED (default: 5)
+  ORCH_HEARTBEAT_MS=<ms>   stale claim timeout (default: 300000)
 `);
   process.exit(0);
 }
@@ -84,7 +91,7 @@ if (failed.length > 0) {
   // pi/API key missing — warn but continue (user might have custom benchmark)
 }
 
-const spawner = new PiSpawner();
+const spawner = new PiSpawner({ model: values.model || undefined });
 
 if (values.stop) {
   const { writeFileSync } = await import('node:fs');

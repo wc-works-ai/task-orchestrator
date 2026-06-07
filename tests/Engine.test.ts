@@ -42,9 +42,11 @@ describe('Engine', () => {
   it('single tick processes exactly one task', async () => {
     make(dir, 1, 'a');
     make(dir, 2, 'b');
-    const r = await new Engine(dir, { benchmark: zero }).tick();
+    const engine = new Engine(dir, { benchmark: zero });
+    const r = await engine.tick();
     expect(r.task).not.toBeNull();
     expect(r.task!.number).toBe(1);
+    expect(engine.instanceId).toBeTruthy();
   });
 
   it('converges after threshold zero-runs', async () => {

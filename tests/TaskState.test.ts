@@ -220,6 +220,12 @@ describe('TaskState', () => {
     expect(TaskState.statusCache).toBeInstanceOf(Map);
   });
 
+  it('name and isPending getters work', () => {
+    const t = make(dir, 1, 'a');
+    expect(t.name).toBe('T01-a');
+    expect(t.isPending).toBe(true);
+  });
+
   // ── Status utilities ───────────────────────────────────────────────
 
   it('statusToShard maps all Status values', () => {

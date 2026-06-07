@@ -121,4 +121,19 @@ describe('PiSpawner', () => {
     }, 5);
     expect((await p).success).toBe(false);
   });
+
+  it('uses relative path when task is under worktree', async () => {
+    // When cwd is a parent of the task directory, #prompt uses a relative path
+    // This triggers the startsWith(cwd) true branch (line 79)
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    // Use dir as cwd — task is at dir/pending/T01-a, so startsWith is true
+    const p = new PiSpawner().spawn(t, dir);
+    setTimeout(() => mock.emit('close', 0), 5);
+    const r = await p;
+    expect(r.success).toBe(true);
+  });
 });

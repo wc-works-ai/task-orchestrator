@@ -157,4 +157,41 @@ describe('Engine agent spawning', () => {
     const all = await TaskState.scan(dir);
     expect(all.get('1')!.status).toBe(Status.FAILED);
   });
+
+  it('resets worktree on failed task retry', async () => {
+    const { execSync } = await import('node:child_process');
+    const { mkdirSync: mk, writeFileSync } = await import('node:fs');
+
+    const repoDir = resolve(dir, 'repo');
+    const tasksDir = resolve(dir, 'tasks');
+    mk(repoDir, { recursive: true });
+    execSync('git init && git config user.email test@test && git config user.name test && git commit --allow-empty -m init', { cwd: repoDir });
+
+    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
+      mk(resolve(tasksDir, s), { recursive: true });
+    }
+
+    const d = resolve(tasksDir, 'pending', 'T01-x');
+    mk(d, { recursive: true });
+    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+
+    const spawn = vi.fn().mockResolvedValue({ success: false, iterations: 0 });
+    // Tick 1: benchmark returns 1, spawn fails → task FAILED
+    // Tick 2: task picked from failed shard, has worktree → resetForRetry called
+    const benchmark = vi.fn().mockResolvedValue(1);
+
+    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir });
+    const r1 = await engine.tick();
+    expect(r1.converged).toBe(false);
+
+    // Task should be FAILED
+    const all = await TaskState.scan(tasksDir);
+    expect(all.get('1')!.status).toBe(Status.FAILED);
+
+    // Second tick should pick the failed task and try again
+    benchmark.mockResolvedValue(0);
+    const r2 = await engine.tick();
+    // Should process the failed task (worktree reset + re-run)
+    expect(r2.task).not.toBeNull();
+  });
 });
