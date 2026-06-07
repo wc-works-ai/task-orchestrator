@@ -75,11 +75,15 @@ export class PiSpawner {
   }
 
   #prompt(task: TaskState, cwd: string): string {
+    // Use relative paths — agent works in cwd, worktree mirrors main repo structure
+    const arPath = task.directory.startsWith(cwd)
+      ? task.directory.slice(cwd.length + 1) // relative from worktree root
+      : task.directory;
     return [
       `You are an autonomous task agent. Working directory: ${cwd}.`,
       '',
-      `Task: read ${task.directory}/autoresearch.md, then run the experiment loop.`,
-      `Use init_experiment, run_experiment (with ${task.directory}/autoresearch.sh),`,
+      `Task: read ${arPath}/autoresearch.md, then run the experiment loop.`,
+      `Use init_experiment, run_experiment (with ${arPath}/autoresearch.sh),`,
       `and log_experiment. Edit only files listed in the task's scope.`,
       'Iterate until metric=0 for 3 consecutive keep runs.',
     ].join('\n');
