@@ -77,6 +77,14 @@ npm run stat  --status              show dashboard
 - **Files** — one class per file, barrel exports in `index.ts`
 - **Tests** — see `TESTING.md` for conventions
 
+### Adding new tasks
+Use the same API — CLI and agents produce identical output:
+```bash
+orchestrator add <name>                         # scaffold with TODOs
+orchestrator add <name> --goal ... --metric ...  # with details
+```
+Agents should use the CLI: `execSync('orchestrator add <name>')` for consistency.
+
 ### Architecture
 ```
 src/

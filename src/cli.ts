@@ -3,6 +3,7 @@ import { parseArgs } from 'node:util';
 import { resolve, dirname } from 'node:path';
 import { existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
+import { addTask } from './addTask.js';
 import { Engine } from './Engine.js';
 import { TaskState, type TaskInfo } from './TaskState.js';
 import { PiSpawner } from './PiSpawner.js';
@@ -65,41 +66,15 @@ Environment variables (CLI flags override):
 
 // ── add command ──────────────────────────────────────────────────────────
 if (positionals[0] === 'add') {
-  const { mkdirSync, writeFileSync, readdirSync } = await import('node:fs');
   const name = positionals[1];
   if (!name) { console.error('Usage: orchestrator add <name> [--goal ...] [--metric ...] [--scope ...]'); process.exit(1); }
-
-  // Find next task number
-  let next = 0;
-  for (const s of ['pending','in_progress','converged','failed','blocked']) {
-    try { for (const e of readdirSync(resolve(dir, s))) {
-      const m = e.match(/^T(\d+)-/); if (m?.[1]) next = Math.max(next, parseInt(m[1] ?? '0', 10));
-    }} catch {}
-  }
-  next++;
-
-  const goal = values.goal || `TODO: describe what T${next} should accomplish`;
-  const metricName = values.metric || 'TODO_metric_name';
-  const scope = values.scope ? values.scope.split(/\s+/) : ['TODO: add scope files'];
-
-  const d = resolve(dir, 'pending', `T${String(next).padStart(2, '0')}-${name}`);
-  mkdirSync(d, { recursive: true });
-  writeFileSync(resolve(d, '.status'), 'PENDING\n');
-  writeFileSync(resolve(d, '.dependencies'), '');
-  writeFileSync(resolve(d, 'autoresearch.md'), [
-    `# T${next} — ${goal}`,
-    '## Goal', goal,
-    '## Metric', `\`${metricName}\` (lower is better) — Target: 0`,
-    '## Scope', ...scope.map(f => `- ${f}`),
-    '## Acceptance', `- ${metricName}=0 for 3 consecutive runs`,
-  ].join('\n'));
-  writeFileSync(resolve(d, 'benchmark.js'), [
-    '#!/usr/bin/env node',
-    'let g = 1; // TODO: add real checks — reduce g to 0 when done',
-    `console.log('METRIC ${metricName}=' + g);`,
-  ].join('\n'));
-  console.log(`✅ T${next} added: ${name}`);
-  console.log(`   ${d}`);
+  const r = addTask(dir, name, {
+    goal: values.goal || undefined,
+    metric: values.metric || undefined,
+    scope: values.scope ? values.scope.split(/\s+/) : undefined,
+  });
+  console.log(`✅ T${r.number} added: ${name}`);
+  console.log(`   ${r.directory}`);
   console.log(`   Next: edit autoresearch.md + benchmark.js, then npm run tick`);
   process.exit(0);
 }
