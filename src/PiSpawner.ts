@@ -1,0 +1,83 @@
+import { spawn, type ChildProcess } from 'node:child_process';
+import { TaskState } from './TaskState.js';
+import type { SpawnResult } from './Engine.js';
+
+export interface PiSpawnerOptions {
+  /** Default model when task doesn't specify one */
+  readonly model?: string;
+  /** Fallback model if primary fails */
+  readonly fallbackModel?: string;
+  /** Working directory for the agent */
+  readonly workDir?: string;
+}
+
+export class PiSpawner {
+  readonly #model: string;
+  readonly #fallback: string;
+  readonly #workDir: string;
+
+  constructor(opts: PiSpawnerOptions = {}) {
+    this.#model = opts.model
+      ?? process.env.ORCH_MODEL
+      ?? 'openrouter/owl-alpha';
+    this.#fallback = opts.fallbackModel ?? 'openrouter/owl-alpha';
+    this.#workDir = opts.workDir ?? process.cwd();
+  }
+
+  /** Resolve the model for a task: metadata → constructor → env → default */
+  modelFor(task: TaskState): string {
+    return task.model || this.#model;
+  }
+
+  async spawn(task: TaskState): Promise<SpawnResult> {
+    const models = [this.modelFor(task), this.#fallback]
+      .filter((m, i, arr) => m && arr.indexOf(m) === i); // dedupe
+
+    for (const model of models) {
+      const result = await this.#run(task, model);
+      if (result.success) return result;
+    }
+    return { success: false, iterations: 0 };
+  }
+
+  #run(task: TaskState, model: string): Promise<SpawnResult> {
+    return new Promise(resolve => {
+      const child: ChildProcess = spawn('pi', [
+        '--mode', 'json',
+        '--no-session',
+        '--model', model,
+        '-p', this.#prompt(task),
+      ], {
+        cwd: this.#workDir,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 600_000, // 10 min
+      });
+
+      let output = '';
+
+      child.stdout?.on('data', (d: Buffer) => {
+        output += d.toString();
+      });
+
+      child.on('close', (code: number | null) => {
+        const iterations = (output.match(/log_experiment/g) || []).length;
+        resolve({ success: code === 0, iterations });
+      });
+
+      child.on('error', () => {
+        resolve({ success: false, iterations: 0 });
+      });
+    });
+  }
+
+  #prompt(task: TaskState): string {
+    return [
+      `You are an autonomous task agent. Working directory: ${this.#workDir}.`,
+      '',
+      `Task: read ${task.directory}/autoresearch.md, then run the experiment loop.`,
+      `Use init_experiment, run_experiment (with ${task.directory}/autoresearch.sh),`,
+      `and log_experiment. Edit only files listed in the task's scope.`,
+      'Iterate until metric=0 for 3 consecutive keep runs.',
+    ].join('\n');
+  }
+}

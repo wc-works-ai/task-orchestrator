@@ -1,6 +1,7 @@
-import { statSync, readFileSync, readdirSync } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { statSync, readFileSync, readdirSync, existsSync } from 'node:fs';
+import { resolve, join, dirname } from 'node:path';
 import { TaskState, Status, type BenchmarkFn, type TickResult, type TickNull } from './TaskState.js';
+import { Worktree } from './Worktree.js';
 
 const HEARTBEAT_MAX_MS = 300_000;
 
@@ -15,17 +16,20 @@ export interface EngineOptions {
   readonly benchmark?: BenchmarkFn;
   readonly spawn?: SpawnFn;
   readonly instanceId?: string;
+  readonly repoDir?: string;     // for worktree creation
   readonly onTick?: (result: TickResult | TickNull, total: number) => void | Promise<void>;
 }
 
 export class Engine {
   readonly #dir: string;
+  readonly #repo: string;
   readonly #bench: BenchmarkFn;
   readonly #spawn: SpawnFn | null;
   readonly #id: string;
 
   constructor(tasksDir: string, opts: EngineOptions = {}) {
     this.#dir = tasksDir;
+    this.#repo = opts.repoDir ?? dirname(tasksDir);
     this.#bench = opts.benchmark ?? (() => 1);
     this.#spawn = opts.spawn ?? null;
     this.#id = opts.instanceId ?? `${process.pid}_${Date.now()}`;
@@ -50,10 +54,25 @@ export class Engine {
     task.resetConvergence();
 
     if (this.#spawn) {
+      // Create worktree for isolated agent work (if in a git repo)
+      const gitDir = resolve(this.#repo, '.git');
+      let wt: Worktree | null = null;
+      if (existsSync(gitDir)) {
+        wt = new Worktree(this.#repo, { name: task.taskName });
+        await wt.create();
+      }
       try {
         await this.#spawn(task);
-      } catch { /* spawn errors are non-fatal */ }
-      metric = await this.#run(task);
+        metric = await this.#run(task);
+        if (metric === 0 && task.convergenceCount + 1 >= 3) {
+          // will converge in handleZero
+          if (wt) { await wt.merge(); await wt.remove(); }
+        }
+      } catch (e: any) {
+        if (e?.message?.includes?.('conflict')) {
+          task.status = Status.FAILED;
+        }
+      }
       if (metric === 0) return this.#handleZero(task, metric);
     }
 
