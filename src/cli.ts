@@ -30,9 +30,14 @@ const { values, positionals } = await parseArgs({
     model:  { type: 'string', default: '' },
     stop:   { type: 'boolean', default: false },
     task:   { type: 'string', short: 't', default: '' },
+    goal:   { type: 'string', default: '' },
+    metric: { type: 'string', default: '' },
+    scope:  { type: 'string', default: '' },
     help:   { type: 'boolean', short: 'h', default: false },
   },
 });
+
+const dir = resolve(values.tasks!);
 
 if (values.help) {
   console.log(`
@@ -44,7 +49,8 @@ Task Orchestrator — autonomous task execution
   orchestrator --check          check prerequisites
   orchestrator --stop           signal all instances to stop
   orchestrator --task <n>       force-pick specific task
-  orchestrator add <name> <goal> <metric> [scope...]
+  orchestrator add <name>       scaffold a new task (AI fills details)
+  orchestrator add <name> --goal "..." --metric x --scope "a b"
 
 Environment variables (CLI flags override):
   ORCH_TASKS=<dir>         task directory
@@ -61,21 +67,21 @@ Environment variables (CLI flags override):
 if (positionals[0] === 'add') {
   const { mkdirSync, writeFileSync, readdirSync } = await import('node:fs');
   const name = positionals[1];
-  const goal = positionals[2];
-  const metric = positionals[3];
-  const scope = positionals.slice(4);
-  if (!name || !goal || !metric) {
-    console.error('Usage: orchestrator add <name> "<goal>" <metric> [scope...]');
-    process.exit(1);
-  }
-  // Find next task number across all shards
+  if (!name) { console.error('Usage: orchestrator add <name> [--goal ...] [--metric ...] [--scope ...]'); process.exit(1); }
+
+  // Find next task number
   let next = 0;
-  for (const shard of ['pending','in_progress','converged','failed','blocked']) {
-    try { for (const e of readdirSync(resolve(dir, shard))) {
-      const m = e.match(/^T(\d+)-/); if (m) next = Math.max(next, parseInt(m[1], 10));
+  for (const s of ['pending','in_progress','converged','failed','blocked']) {
+    try { for (const e of readdirSync(resolve(dir, s))) {
+      const m = e.match(/^T(\d+)-/); if (m?.[1]) next = Math.max(next, parseInt(m[1] ?? '0', 10));
     }} catch {}
   }
   next++;
+
+  const goal = values.goal || `TODO: describe what T${next} should accomplish`;
+  const metricName = values.metric || 'TODO_metric_name';
+  const scope = values.scope ? values.scope.split(/\s+/) : ['TODO: add scope files'];
+
   const d = resolve(dir, 'pending', `T${String(next).padStart(2, '0')}-${name}`);
   mkdirSync(d, { recursive: true });
   writeFileSync(resolve(d, '.status'), 'PENDING\n');
@@ -83,16 +89,18 @@ if (positionals[0] === 'add') {
   writeFileSync(resolve(d, 'autoresearch.md'), [
     `# T${next} — ${goal}`,
     '## Goal', goal,
-    '## Metric', `\`${metric}\` (lower is better) — Target: 0`,
+    '## Metric', `\`${metricName}\` (lower is better) — Target: 0`,
     '## Scope', ...scope.map(f => `- ${f}`),
-    '## Acceptance', `- ${metric}=0 for 3 consecutive runs`,
+    '## Acceptance', `- ${metricName}=0 for 3 consecutive runs`,
   ].join('\n'));
   writeFileSync(resolve(d, 'benchmark.js'), [
     '#!/usr/bin/env node',
-    'let g = 1; // TODO: add real checks',
-    `console.log('METRIC ${metric}=' + g);`,
+    'let g = 1; // TODO: add real checks — reduce g to 0 when done',
+    `console.log('METRIC ${metricName}=' + g);`,
   ].join('\n'));
-  console.log(`✅ T${next} added: ${goal}\n   ${d}`);
+  console.log(`✅ T${next} added: ${name}`);
+  console.log(`   ${d}`);
+  console.log(`   Next: edit autoresearch.md + benchmark.js, then npm run tick`);
   process.exit(0);
 }
 
@@ -102,7 +110,6 @@ if (values.check) {
   process.exit(results.every(r => r.ok) ? 0 : 1);
 }
 
-const dir = resolve(values.tasks!);
 const repo = resolve(repoDir);
 
 if (values.status) {
