@@ -29,18 +29,19 @@ export class PiSpawner {
     return task.model || this.#model;
   }
 
-  async spawn(task: TaskState): Promise<SpawnResult> {
+  async spawn(task: TaskState, worktreePath?: string): Promise<SpawnResult> {
+    const cwd = worktreePath ?? this.#workDir;
     const models = [this.modelFor(task), this.#fallback]
-      .filter((m, i, arr) => m && arr.indexOf(m) === i); // dedupe
+      .filter((m, i, arr) => m && arr.indexOf(m) === i);
 
     for (const model of models) {
-      const result = await this.#run(task, model);
+      const result = await this.#run(task, model, cwd);
       if (result.success) return result;
     }
     return { success: false, iterations: 0 };
   }
 
-  #run(task: TaskState, model: string): Promise<SpawnResult> {
+  #run(task: TaskState, model: string, cwd: string): Promise<SpawnResult> {
     return new Promise(resolve => {
       let settled = false;
       const done = (r: SpawnResult) => { if (!settled) { settled = true; resolve(r); } };
@@ -49,9 +50,9 @@ export class PiSpawner {
         '--mode', 'json',
         '--no-session',
         '--model', model,
-        '-p', this.#prompt(task),
+        '-p', this.#prompt(task, cwd),
       ], {
-        cwd: this.#workDir,
+        cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
         timeout: 600_000, // 10 min
       });
@@ -73,9 +74,9 @@ export class PiSpawner {
     });
   }
 
-  #prompt(task: TaskState): string {
+  #prompt(task: TaskState, cwd: string): string {
     return [
-      `You are an autonomous task agent. Working directory: ${this.#workDir}.`,
+      `You are an autonomous task agent. Working directory: ${cwd}.`,
       '',
       `Task: read ${task.directory}/autoresearch.md, then run the experiment loop.`,
       `Use init_experiment, run_experiment (with ${task.directory}/autoresearch.sh),`,

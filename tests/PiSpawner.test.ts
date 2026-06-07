@@ -62,11 +62,12 @@ describe('PiSpawner', () => {
     const mock = new MockChild();
     vi.mocked(spawn).mockReturnValue(mock as any);
 
-    const p = new PiSpawner().spawn(t);
+    const p = new PiSpawner().spawn(t, '/tmp/worktree');
     setTimeout(() => mock.emit('close', 0), 5);
     const r = await p;
     expect(r.success).toBe(true);
-    expect(spawn).toHaveBeenCalledWith('pi', expect.arrayContaining(['--model', 'test-model']), expect.any(Object));
+    expect(spawn).toHaveBeenCalledWith('pi', expect.arrayContaining(['--model', 'test-model']),
+      expect.objectContaining({ cwd: '/tmp/worktree' }));
   });
 
   it('returns failure on non-zero exit', async () => {

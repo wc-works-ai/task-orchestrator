@@ -10,7 +10,7 @@ export interface SpawnResult {
   readonly iterations: number;
 }
 
-export type SpawnFn = (task: TaskState) => Promise<SpawnResult>;
+export type SpawnFn = (task: TaskState, worktreePath?: string) => Promise<SpawnResult>;
 
 export interface EngineOptions {
   readonly benchmark?: BenchmarkFn;
@@ -64,7 +64,7 @@ export class Engine {
       }
       try {
         const hb = setInterval(() => task.heartbeat(), 30_000);
-        await this.#spawn(task);
+        await this.#spawn(task, wt?.path);
         clearInterval(hb);
         metric = await this.#run(task, wt?.path);
         if (metric === 0) return this.#handleZero(task, metric, wt);
