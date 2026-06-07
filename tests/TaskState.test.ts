@@ -3,6 +3,7 @@ import { rm } from 'node:fs/promises';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { TaskState, Status, CONVERGENCE_THRESHOLD, inProgress } from '../src/TaskState.js';
+import { MAX_FAILURES } from '../src/Status.js';
 import { statusToShard } from '../src/Status.js';
 
 function setup() {
@@ -164,6 +165,46 @@ describe('TaskState', () => {
     // pick should skip missing shard and not throw
     const result = await TaskState.pick(dir, 'test');
     expect(result).toBeNull();
+  });
+
+  it('pick blocks tasks that exceed max failures', async () => {
+    const t = make(dir, 1, 'a', { status: Status.FAILED });
+    for (let i = 0; i < MAX_FAILURES; i++) t.incrementFailures();
+    await TaskState.scan(dir);
+    const picked = await TaskState.pick(dir, 'test');
+    expect(picked).toBeNull();
+    expect(new TaskState(t.directory).status).toBe(Status.BLOCKED);
+  });
+
+  it('pick releases unclaimed in-progress tasks to FAILED', async () => {
+    make(dir, 1, 'a', { status: 'IN_PROGRESS:orphan' });
+    await TaskState.scan(dir);
+    const picked = await TaskState.pick(dir, 'test');
+    // The unclaimed IN_PROGRESS task should be released to FAILED and then picked
+    expect(picked).not.toBeNull();
+    expect(picked!.taskNumber).toBe(1);
+  });
+
+  it('pick skips task when claim fails', async () => {
+    // Create a task and manually set up a pre-existing claim from another instance
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const taskDir = resolve(dir, 'pending', 'T01-claimed');
+    mkdirSync(taskDir, { recursive: true });
+    // Pre-claim by creating .claim directory before TaskState is constructed
+    const claimDir = join(taskDir, '.claim');
+    mkdirSync(claimDir, { recursive: true });
+    writeFileSync(join(claimDir, 'owner'), 'pid:1\nstarted:1\ninstance:other\n');
+    writeFileSync(join(taskDir, '.status'), 'PENDING\n');
+
+    // Another task that's free
+    make(dir, 2, 'b', { status: Status.PENDING });
+
+    await TaskState.scan(dir);
+    const picked = await TaskState.pick(dir, 'test');
+    // Should skip T01 (claim already taken) and pick T02
+    expect(picked).not.toBeNull();
+    expect(picked!.taskNumber).toBe(2);
   });
 
   // ── scope / goal / model getters ──────────────────────────────────
