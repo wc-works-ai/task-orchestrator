@@ -58,6 +58,16 @@ npm run tc    vitest run --coverage  test + coverage
 npm run tw    vitest                 watch mode
 npm run all   c + t + b             full pipeline
 npm run stat  --status              show dashboard
+
+### Environment variables (CLI flags override)
+| Variable | Default | Controls |
+|---|---|---|
+| `ORCH_TASKS` | `./tasks` | Task directory |
+| `ORCH_REPO` | auto-detect | Git repo root |
+| `ORCH_MODEL` | `openrouter/owl-alpha` | Default AI model |
+| `ORCH_CONVERGE` | `3` | Zero-runs to converge |
+| `ORCH_MAX_FAILURES` | `5` | Failures before BLOCKED |
+| `ORCH_HEARTBEAT_MS` | `300000` | Stale claim timeout |
 ```
 
 ### Code conventions
