@@ -85,11 +85,11 @@ describe('TaskState', () => {
     expect(t.dependencies).toEqual([38, 17]);
   });
 
-  it('dependenciesMet uses cache for CONVERGED deps', () => {
+  it('dependenciesMet reads from disk', () => {
     const t = make(dir, 1, 'a');
     t.dependencies = [2];
-    // No cache → dep not found → not met
-    expect(t.dependenciesMet()).toBe(false);
+    // T2 doesn't exist — deps not met
+    expect(t.dependenciesMet(dir)).toBe(false);
   });
 
   it('claim uses atomic mkdir', () => {

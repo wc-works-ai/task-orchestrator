@@ -108,14 +108,14 @@ export class Engine {
       task.status = Status.CONVERGED;
       // Use passed worktree or look up from map (for subsequent ticks after spawn)
       const tree = wt ?? this.#worktrees.get(task.taskNumber) ?? null;
-      if (tree) { this.#mergeAndRemove(task.taskNumber, tree); }
+      if (tree) { this.#mergeAndRemove(task.taskNumber, tree, task.scope); }
       return { task: task.info, metric, converged: true };
     }
     return { task: task.info, metric, converged: false };
   }
 
-  async #mergeAndRemove(tn: number, wt: Worktree): Promise<void> {
-    try { await wt.merge(); await wt.remove(); } catch { /* leave for inspection */ }
+  async #mergeAndRemove(tn: number, wt: Worktree, scope?: string[]): Promise<void> {
+    try { await wt.merge(scope); await wt.remove(); } catch { /* leave for inspection */ }
     this.#worktrees.delete(tn);
   }
 

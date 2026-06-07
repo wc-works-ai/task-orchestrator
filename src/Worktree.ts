@@ -40,17 +40,39 @@ export class Worktree {
     return this.#path;
   }
 
-  async merge(): Promise<void> {
+  async merge(taskScope?: string[]): Promise<void> {
     const prevBranch = this.#git('rev-parse', '--abbrev-ref', 'HEAD').trim();
     try {
       this.#git('checkout', this.#base);
       this.#git('merge', '--no-ff', this.#branch, '-m', `Merge ${this.#branch}`);
-    } catch (e: unknown) {
-      try { this.#git('merge', '--abort'); } catch {}
-      try { this.#git('checkout', prevBranch); } catch {}
-      const msg = e instanceof Error ? e.message : String(e);
-      throw new Error(`Merge conflict in ${this.#name}: ${msg}`);
+    } catch {
+      // Conflict — try auto-resolution
+      try { this.#autoResolve(taskScope ?? []); } catch {
+        try { this.#git('merge', '--abort'); } catch {}
+        try { this.#git('checkout', prevBranch); } catch {}
+        throw new Error(`Merge conflict in ${this.#name} — manual resolution required`);
+      }
     }
+  }
+
+  /** Auto-resolve: accept worktree version for scoped files, main version for rest */
+  #autoResolve(scopeFiles: string[]): void {
+    const conflicted = this.#git('diff', '--name-only', '--diff-filter=U')
+      .trim().split('\n').filter(Boolean);
+    if (conflicted.length === 0) return;
+
+    for (const file of conflicted) {
+      const isScoped = scopeFiles.some(sf => file.includes(sf));
+      if (isScoped) {
+        // Accept worktree version (theirs) for task's own scope
+        this.#git('checkout', '--theirs', file);
+      } else {
+        // Accept main version (ours) for files outside scope
+        this.#git('checkout', '--ours', file);
+      }
+      this.#git('add', file);
+    }
+    this.#git('commit', '--no-edit');
   }
 
   /** Discard all worktree changes — agent starts fresh on retry */

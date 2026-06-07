@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach, expect } from 'vitest';
 import { rm } from 'node:fs/promises';
-import { mkdtempSync, existsSync } from 'node:fs';
+import { mkdtempSync, existsSync, readFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { execSync } from 'node:child_process';
 import { Worktree } from '../src/Worktree.js';
@@ -50,17 +50,34 @@ describe('Worktree', () => {
     expect(existsSync(join(repo, 'test.txt'))).toBe(true);
   });
 
-  it('merge conflict marks as failed', async () => {
+  it('auto-resolves conflict in unscoped files', async () => {
     const wt = new Worktree(repo, { name: 'T01-test' });
     await wt.create();
-    // Create conflicting changes in both main and worktree
     const { writeFileSync } = await import('node:fs');
-    writeFileSync(join(repo, 'conflict.txt'), 'main');
-    execSync('git add conflict.txt && git commit -m "main change"', { cwd: repo });
-    writeFileSync(join(wt.path, 'conflict.txt'), 'worktree');
-    execSync('git add conflict.txt && git commit -m "wt change"', { cwd: wt.path });
-    // Merge should throw
-    await expect(wt.merge()).rejects.toThrow(/conflict/i);
+    // Main: creates file
+    writeFileSync(join(repo, 'shared.txt'), 'main content');
+    execSync('git add shared.txt && git commit -m "main change"', { cwd: repo });
+    // Worktree: conflicting change
+    writeFileSync(join(wt.path, 'shared.txt'), 'worktree content');
+    execSync('git add shared.txt && git commit -m "wt change"', { cwd: wt.path });
+    // Merge with empty scope → auto-resolve: accept main (ours)
+    await wt.merge([]);
+    // Main version should win (ours for unscoped files)
+    const content = readFileSync(join(repo, 'shared.txt'), 'utf-8');
+    expect(content).toBe('main content');
+  });
+
+  it('auto-resolves conflict: worktree wins for scoped files', async () => {
+    const { writeFileSync, mkdirSync } = await import('node:fs');
+    mkdirSync(join(repo, 'docs'), { recursive: true });
+    writeFileSync(join(repo, 'docs/contract.md'), 'main');
+    execSync('git add docs/contract.md && git commit -m main', { cwd: repo });
+    const wt = new Worktree(repo, { name: 'T01-test' });
+    await wt.create();
+    writeFileSync(join(wt.path, 'docs/contract.md'), 'worktree');
+    execSync('git add docs/contract.md && git commit -m wt', { cwd: wt.path });
+    await wt.merge(['docs/contract.md']);
+    expect(readFileSync(join(repo, 'docs/contract.md'), 'utf-8')).toBe('worktree');
   });
 
   it('remove deletes worktree and branch', async () => {

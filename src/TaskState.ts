@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, renameSync, readdirSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { resolve, basename, join, dirname } from 'node:path';
 import {
@@ -81,7 +81,10 @@ export class TaskState {
 
   set status(v: Status | string) {
     const base = isInProgress(v) ? Status.PENDING : (v as Status);
-    writeFileSync(join(this.#dir, F_STATUS), `${v}\n`);
+    // Atomic write: temp → rename (survives crash mid-write)
+    const tmp = join(this.#dir, F_STATUS + '.tmp');
+    writeFileSync(tmp, `${v}\n`);
+    renameSync(tmp, join(this.#dir, F_STATUS));
     TaskState.#cache.set(String(this.taskNumber), base as Status);
     // Migrate to correct shard
     const target = statusToShard(base);
@@ -135,11 +138,24 @@ export class TaskState {
     writeFileSync(join(this.#dir, F_DEPS), nums.join('\n') + '\n');
   }
 
-  dependenciesMet(): boolean {
+  dependenciesMet(tasksDir: string): boolean {
     for (const d of this.dependencies) {
-      if (TaskState.#cache.get(String(d)) !== Status.CONVERGED) return false;
+      // Read from disk — cache is per-process, another process may have changed status
+      const depTask = TaskState.#findByNumber(tasksDir, d);
+      if (!depTask || depTask.status !== Status.CONVERGED) return false;
     }
     return true;
+  }
+
+  static #findByNumber(tasksDir: string, num: number): TaskState | null {
+    for (const shard of SHARDS) {
+      const shardDir = resolve(tasksDir, shard);
+      let entries: string[];
+      try { entries = readdirSync(shardDir); } catch { continue; }
+      const match = entries.find(e => new RegExp(`^T0*${num}-`).test(e));
+      if (match) return new TaskState(resolve(shardDir, match));
+    }
+    return null;
   }
 
   // ── Claim ───────────────────────────────────────────────────────────
@@ -183,6 +199,14 @@ export class TaskState {
   }
 
   // ── Metadata ────────────────────────────────────────────────────────
+  get scope(): string[] {
+    try {
+      const c = readFileSync(join(this.#dir, 'autoresearch.md'), 'utf-8');
+      const section = c.match(/^## Scope\s*\n([\s\S]*?)(?=^## |\Z)/m);
+      return (section?.[1] ?? '').split('\n').map(s => s.replace(/^[-*]\s*/, '').trim()).filter(Boolean);
+    } catch { return []; }
+  }
+
   get goal(): string {
     try {
       const c = readFileSync(join(this.#dir, 'autoresearch.md'), 'utf-8');
@@ -250,7 +274,7 @@ export class TaskState {
           if (t.claimOwnerId !== instanceId) continue;
           return t;
         }
-        if (!t.isActionable || !t.dependenciesMet()) continue;
+        if (!t.isActionable || !t.dependenciesMet(tasksDir)) continue;
         if (!t.claim(instanceId)) continue;
         return t;
       }
