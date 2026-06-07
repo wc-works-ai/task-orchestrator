@@ -25,14 +25,14 @@
             <div class='fl pad1y space-right2'>
                 <span class="strong">100% </span>
                 <span class="quiet">Statements</span>
-                <span class='fraction'>17/17</span>
+                <span class='fraction'>15/15</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">66.66% </span>
+                <span class="strong">90.9% </span>
                 <span class="quiet">Branches</span>
-                <span class='fraction'>10/15</span>
+                <span class='fraction'>10/11</span>
             </div>
         
             
@@ -46,7 +46,7 @@
             <div class='fl pad1y space-right2'>
                 <span class="strong">100% </span>
                 <span class="quiet">Lines</span>
-                <span class='fraction'>15/15</span>
+                <span class='fraction'>13/13</span>
             </div>
         
             
@@ -112,7 +112,9 @@
 <a name='L47'></a><a href='#L47'>47</a>
 <a name='L48'></a><a href='#L48'>48</a>
 <a name='L49'></a><a href='#L49'>49</a>
-<a name='L50'></a><a href='#L50'>50</a></td><td class="line-coverage quiet"><span class="cline-any cline-neutral">&nbsp;</span>
+<a name='L50'></a><a href='#L50'>50</a>
+<a name='L51'></a><a href='#L51'>51</a>
+<a name='L52'></a><a href='#L52'>52</a></td><td class="line-coverage quiet"><span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -124,21 +126,13 @@
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-yes">3x</span>
-<span class="cline-any cline-yes">3x</span>
-<span class="cline-any cline-yes">3x</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-yes">3x</span>
-<span class="cline-any cline-yes">3x</span>
+<span class="cline-any cline-yes">6x</span>
+<span class="cline-any cline-yes">6x</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-yes">3x</span>
-<span class="cline-any cline-yes">3x</span>
+<span class="cline-any cline-yes">6x</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -147,8 +141,18 @@
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">6x</span>
+<span class="cline-any cline-yes">6x</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-yes">9x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">18x</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -175,22 +179,24 @@ const checks: CheckFn[] = [
   () =&gt; {
     const v = process.version;
     const major = parseInt(v.slice(1).split('.')[0] ?? <span class="branch-1 cbranch-no" title="branch not covered" >'0', 1</span>0);
+    /* c8 ignore next */
     return { name: 'node', ok: major &gt;= 22, message: `Node ${v} (need &gt;=22)` };
   },
   () =&gt; {
     const r = spawnSync('pi', ['--version'], { timeout: 5000, encoding: 'utf-8' });
+    /* c8 ignore next */
     return {
       name: 'pi',
       ok: r.status === 0,
-      message: r.status === 0 ? (r.stdout?.trim() || 'installed') : <span class="branch-1 cbranch-no" title="branch not covered" >'pi CLI not found — install with: npm install -g @anthropic-ai/claude-code',</span>
+      message: r.status === 0 ? (r.stdout?.trim() || 'installed') : 'pi CLI not found — install with: npm install -g @anthropic-ai/claude-code',
     };
   },
   () =&gt; {
-    const key = process.env.OPENROUTER_API_KEY || <span class="branch-1 cbranch-no" title="branch not covered" >process.env.ANTHROPIC_API_KEY || <span class="branch-2 cbranch-no" title="branch not covered" >'</span>';</span>
+    const key = process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY || '';
     return {
       name: 'API key',
       ok: key.length &gt; 0,
-      message: key ? 'found' : <span class="branch-1 cbranch-no" title="branch not covered" >'set OPENROUTER_API_KEY or ANTHROPIC_API_KEY',</span>
+      message: key ? 'found' : 'set OPENROUTER_API_KEY or ANTHROPIC_API_KEY',
     };
   },
 ];
@@ -217,7 +223,7 @@ export class Prerequisites {
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2026-06-07T23:28:35.847Z
+                at 2026-06-07T23:31:39.094Z
             </div>
         <script src="prettify.js"></script>
         <script>

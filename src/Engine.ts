@@ -55,9 +55,10 @@ export class Engine {
     if (!task) return { task: null, metric: 0, converged: false };
 
     // Reset worktree on retry so agent starts fresh (discard conflicting changes)
-    /* c8 ignore next 4 */
+    /* istanbul ignore next: dead code — pick() always sets IN_PROGRESS */
     if (task.isFailed) {
       const wt = this.#worktrees.get(task.taskNumber);
+      /* istanbul ignore next */
       if (wt) await wt.resetForRetry();
     }
 

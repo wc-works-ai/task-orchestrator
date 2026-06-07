@@ -75,7 +75,7 @@ npm run stat  --status              show dashboard
 - **Private fields** — `#name` for encapsulation, never `private name`
 - **Imports** — `import type` for type-only imports, `verbatimModuleSyntax`
 - **Files** — one class per file, barrel exports in `index.ts`
-- **Tests** — co-located in `tests/`, vitest with `describe`/`it`/`expect`
+- **Tests** — see `TESTING.md` for conventions
 
 ### Architecture
 ```

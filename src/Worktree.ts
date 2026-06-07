@@ -25,7 +25,7 @@ export class Worktree {
 
   get path(): string { return this.#path; }
   get branch(): string { return this.#branch; }
-  /* c8 ignore next */
+  /* istanbul ignore next: v8 getter tracking quirk */
   get exists(): boolean { return existsSync(join(this.#path, '.git')); }
 
   async create(): Promise<string> {
@@ -48,7 +48,7 @@ export class Worktree {
       this.#git('merge', '--no-ff', this.#branch, '-m', `Merge ${this.#branch}`);
     } catch {
       // Conflict — try auto-resolution
-      /* c8 ignore next 4 */
+      /* istanbul ignore next: auto-resolve failure unreachable without git corruption */
       try { this.#autoResolve(taskScope ?? []); } catch {
         try { this.#git('merge', '--abort'); } catch {}
         try { this.#git('checkout', prevBranch); } catch {}
@@ -67,7 +67,7 @@ export class Worktree {
       const isScoped = scopeFiles.some(sf => file.includes(sf));
       if (isScoped) {
         // Accept worktree version (theirs) for task's own scope
-        /* c8 ignore next */
+        /* istanbul ignore next: v8 branch tracking limitation */
         this.#git('checkout', '--theirs', file);
       } else {
         // Accept main version (ours) for files outside scope
@@ -103,7 +103,7 @@ export class Worktree {
 
   #gitConfig(key: string): string {
     try { return execFileSync('git', ['config', key], { cwd: this.#repo, encoding: 'utf-8' }).trim(); }
-    /* c8 ignore next */
+    /* istanbul ignore next: git config only throws on binary failure */
     catch { return ''; }
   }
 }
