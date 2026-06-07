@@ -1,4 +1,4 @@
-import { statSync, readFileSync, readdirSync, existsSync } from 'node:fs';
+import { statSync, readFileSync, readdirSync, existsSync, rmSync } from 'node:fs';
 import { resolve, join, dirname } from 'node:path';
 import { TaskState, Status, type BenchmarkFn, type TickResult, type TickNull } from './TaskState.js';
 import { Worktree } from './Worktree.js';
@@ -39,9 +39,15 @@ export class Engine {
 
   get instanceId(): string { return this.#id; }
 
+  get #stopFile(): string { return resolve(this.#dir, '.stop'); }
+
   // ── Single tick ─────────────────────────────────────────────────────
 
   async tick(): Promise<TickResult | TickNull> {
+    if (existsSync(this.#stopFile)) {
+      try { rmSync(this.#stopFile); } catch {}
+      return { task: null, metric: 0, converged: false };
+    }
     this.#recover();
     await TaskState.scan(this.#dir);
 

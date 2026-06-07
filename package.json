@@ -1,35 +1,45 @@
 {
   "name": "task-orchestrator",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "type": "module",
   "description": "Autonomous task execution engine with atomic claiming, convergence tracking, and sharded state",
   "license": "MIT",
-  "author": "MarketMind",
-  "repository": "github:marketmind/task-orchestrator",
   "engines": { "node": ">=22" },
   "bin": { "orchestrator": "./bin.mjs" },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./TaskState": "./src/TaskState.ts",
-    "./Engine": "./src/Engine.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
   },
   "files": [
-    "src/",
-    "orchestrator.mjs",
-    "tsconfig.json",
-    "dist/"
+    "dist/",
+    "bin.mjs"
   ],
+  "sideEffects": false,
   "scripts": {
+    "test":        "npm run t",
+    "test:watch":   "npm run tw",
+    "test:coverage": "npm run tc",
+    "typecheck":   "npm run c",
+    "build":       "npm run b",
+    "pkg:lint":    "node -e \"const s=require('./package.json').scripts;const r=['test','test:watch','test:coverage','typecheck','build','prepublishOnly'];const a=['t','tw','tc','c','b'];r.forEach(k=>{if(!s[k]){console.error('Missing canonical script: '+k);process.exit(1)}});a.forEach(k=>{if(!s[k]){console.error('Missing shortcut script: '+k);process.exit(1)}})\"",
+
     "t":      "vitest run",
     "tw":     "vitest",
     "tc":     "vitest run --coverage",
     "c":      "tsc --noEmit",
-    "b":      "tsc",
-    "dev":    "tsx --watch src/index.ts",
+    "b":      "tsc --project tsconfig.build.json",
+    "dev":    "tsx --watch src/cli.ts",
     "run":    "tsx src/cli.ts",
     "loop":   "tsx src/cli.ts --loop",
     "stat":   "tsx src/cli.ts --status",
-    "all":    "npm run c && npm run t && npm run b",
+    "all":    "npm run pkg:lint && npm run c && npm run t && npm run b",
+    "preversion": "npm run all",
+    "version": "npm run b && git add dist/",
+    "postversion": "git push --follow-tags",
     "prepublishOnly": "npm run all"
   },
   "keywords": ["orchestrator", "task-runner", "autonomous", "convergence", "claim-based"],

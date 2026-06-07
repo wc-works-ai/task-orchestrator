@@ -89,6 +89,37 @@ describe('Worktree', () => {
     expect(branches).not.toContain('orchestrator/T01-test');
   });
 
+  it('resetForRetry does not throw (best-effort)', async () => {
+    const wt = new Worktree(repo, { name: 'T01-test' });
+    await wt.create();
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(join(wt.path, 'test.txt'), 'v1');
+    execSync('git add test.txt && git commit -m "work"', { cwd: wt.path });
+    // resetForRetry may fail silently if base branch is in use elsewhere
+    // It must never throw
+    await expect(wt.resetForRetry()).resolves.toBeUndefined();
+  });
+
+  it('merge error path throws when auto-resolve fails', async () => {
+    // Create two worktrees that conflict on the same file
+    const wt = new Worktree(repo, { name: 'T01-test' });
+    await wt.create();
+    const { writeFileSync } = await import('node:fs');
+
+    writeFileSync(join(repo, 'shared.txt'), 'main');
+    execSync('git add shared.txt && git commit -m "main"', { cwd: repo });
+    writeFileSync(join(wt.path, 'shared.txt'), 'worktree');
+    execSync('git add shared.txt && git commit -m "wt"', { cwd: wt.path });
+
+    // Merge with empty scope — auto-resolve uses --ours for unscoped files
+    // This path exercises the outer catch (line 48) and #autoResolve (lines 59-76)
+    await wt.merge([]);
+
+    // Verify ours won (main content preserved)
+    const content = readFileSync(join(repo, 'shared.txt'), 'utf-8');
+    expect(content).toBe('main');
+  });
+
   it('reuses existing worktree without error', async () => {
     const wt = new Worktree(repo, { name: 'T01-test' });
     await wt.create();

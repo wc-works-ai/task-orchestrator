@@ -3,6 +3,7 @@ import { rm } from 'node:fs/promises';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { EventEmitter } from 'node:events';
+import type { ChildProcess } from 'node:child_process';
 import { TaskState, Status } from '../src/TaskState.js';
 import { PiSpawner } from '../src/PiSpawner.js';
 
@@ -13,6 +14,10 @@ const { spawn } = await vi.importMock<typeof import('node:child_process')>('node
 class MockChild extends EventEmitter {
   stdout = new EventEmitter();
   stderr = new EventEmitter();
+}
+
+function mockChild(): ChildProcess {
+  return new MockChild() as unknown as ChildProcess;
 }
 
 function setup() {
@@ -59,8 +64,8 @@ describe('PiSpawner', () => {
   it('spawn calls pi with correct model', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
     t.status = Status.PENDING;
-    const mock = new MockChild();
-    vi.mocked(spawn).mockReturnValue(mock as any);
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
 
     const p = new PiSpawner().spawn(t, '/tmp/worktree');
     setTimeout(() => mock.emit('close', 0), 5);
@@ -71,10 +76,49 @@ describe('PiSpawner', () => {
   });
 
   it('returns failure on non-zero exit', async () => {
-    const mock = new MockChild();
-    vi.mocked(spawn).mockReturnValue(mock as any);
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
     const p = new PiSpawner().spawn(make(dir, 1, 'a'));
     setTimeout(() => mock.emit('close', 1), 5);
+    expect((await p).success).toBe(false);
+  });
+
+  it('captures stdout and counts iterations', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiSpawner().spawn(t, '/tmp/worktree');
+    // Emit data before close — each log_experiment = 1 iteration
+    setTimeout(() => {
+      mock.stdout!.emit('data', Buffer.from('Running...\n'));
+      mock.stdout!.emit('data', Buffer.from('log_experiment\n'));
+      mock.stdout!.emit('data', Buffer.from('log_experiment\n'));
+      mock.stdout!.emit('data', Buffer.from('log_experiment\n'));
+      mock.emit('close', 0);
+    }, 5);
+    const r = await p;
+    expect(r.success).toBe(true);
+    expect(r.iterations).toBe(3);
+  });
+
+  it('handles spawn error gracefully', async () => {
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+    const p = new PiSpawner().spawn(make(dir, 1, 'a'));
+    setTimeout(() => mock.emit('error', new Error('spawn failed')), 5);
+    expect((await p).success).toBe(false);
+  });
+
+  it('error handler ignores late close', async () => {
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+    const p = new PiSpawner().spawn(make(dir, 1, 'a'));
+    setTimeout(() => {
+      mock.emit('error', new Error('crash'));
+      mock.emit('close', 0); // should be ignored — already settled
+    }, 5);
     expect((await p).success).toBe(false);
   });
 });

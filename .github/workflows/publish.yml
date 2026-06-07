@@ -1,0 +1,54 @@
+name: Publish
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # for npm provenance
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: npm ci
+
+      - name: Pre-publish checks
+        run: |
+          # Must be on a clean tag
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "FAIL: uncommitted changes"
+            git status --porcelain
+            exit 1
+          fi
+
+          # Verify version matches tag
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "FAIL: tag v$TAG_VERSION != package.json $PKG_VERSION"
+            exit 1
+          fi
+
+      - run: npm run all
+
+      - name: Verify tarball contents
+        run: |
+          npm pack --dry-run 2>&1 | tee pack-output.txt
+          if grep -q 'dist/.*\.test\.' pack-output.txt; then
+            echo "FAIL: test files in tarball"
+            exit 1
+          fi
+
+      - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

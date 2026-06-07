@@ -202,7 +202,7 @@ export class TaskState {
   get scope(): string[] {
     try {
       const c = readFileSync(join(this.#dir, 'autoresearch.md'), 'utf-8');
-      const section = c.match(/^## Scope\s*\n([\s\S]*?)(?=^## |\Z)/m);
+      const section = c.match(/^## Scope\s*\n([\s\S]*?)(?=^## |$(?!.))/ms);
       return (section?.[1] ?? '').split('\n').map(s => s.replace(/^[-*]\s*/, '').trim()).filter(Boolean);
     } catch { return []; }
   }

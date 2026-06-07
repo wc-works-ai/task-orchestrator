@@ -1,8 +1,9 @@
 import { describe, it, beforeEach, afterEach, expect } from 'vitest';
 import { rm } from 'node:fs/promises';
-import { mkdtempSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { TaskState, Status, CONVERGENCE_THRESHOLD, inProgress } from '../src/TaskState.js';
+import { statusToShard } from '../src/Status.js';
 
 function setup() {
   const dir = mkdtempSync(resolve('/tmp', 'ts-test-'));
@@ -154,5 +155,78 @@ describe('TaskState', () => {
   it('pick returns null when nothing actionable', async () => {
     await TaskState.scan(dir);
     expect(await TaskState.pick(dir, 'test')).toBeNull();
+  });
+
+  // ── scope / goal / model getters ──────────────────────────────────
+
+  it('scope returns [] when no autoresearch.md', () => {
+    const t = make(dir, 1, 'a');
+    expect(t.scope).toEqual([]);
+  });
+
+  it('scope parses bulleted list', () => {
+    const t = make(dir, 1, 'a', { status: Status.PENDING });
+    writeFileSync(t.directory + '/autoresearch.md', '## Scope\n- file1.ts\n- file2.ts');
+    const fresh = new TaskState(t.directory);
+    expect(fresh.scope).toEqual(['file1.ts', 'file2.ts']);
+  });
+
+  it('goal returns taskName when no autoresearch.md', () => {
+    const t = make(dir, 1, 'a');
+    expect(t.goal).toBe('T01-a');
+  });
+
+  it('goal parses ## Goal: inline format', () => {
+    const t = make(dir, 1, 'a', { status: Status.PENDING });
+    writeFileSync(t.directory + '/autoresearch.md', '## Goal: optimize speed');
+    const fresh = new TaskState(t.directory);
+    expect(fresh.goal).toBe('optimize speed');
+  });
+
+  it('goal parses ## Goal block format', () => {
+    const t = make(dir, 1, 'a', { status: Status.PENDING });
+    writeFileSync(t.directory + '/autoresearch.md', '## Goal\nreduce latency');
+    const fresh = new TaskState(t.directory);
+    expect(fresh.goal).toBe('reduce latency');
+  });
+
+  it('model returns empty when no autoresearch.md', () => {
+    const t = make(dir, 1, 'a');
+    expect(t.model).toBe('');
+  });
+
+  it('model parses **Model:** metadata', () => {
+    const t = make(dir, 1, 'a', { status: Status.PENDING });
+    writeFileSync(t.directory + '/autoresearch.md', '- **Model:** gpt-5\n## Goal\nTest');
+    const fresh = new TaskState(t.directory);
+    expect(fresh.model).toBe('gpt-5');
+  });
+
+  // ── Claim details ──────────────────────────────────────────────────
+
+  it('claimOwner returns null when unclaimed', () => {
+    const t = make(dir, 1, 'a');
+    expect(t.claimOwner).toBeNull();
+    expect(t.claimOwnerId).toBe('');
+  });
+
+  it('heartbeat writes without error', () => {
+    const t = make(dir, 1, 'a');
+    t.claim('test');
+    expect(() => t.heartbeat()).not.toThrow();
+  });
+
+  it('statusCache returns the internal cache', () => {
+    expect(TaskState.statusCache).toBeInstanceOf(Map);
+  });
+
+  // ── Status utilities ───────────────────────────────────────────────
+
+  it('statusToShard maps all Status values', () => {
+    expect(statusToShard(Status.PENDING)).toBe('pending');
+    expect(statusToShard(Status.FAILED)).toBe('failed');
+    expect(statusToShard(Status.BLOCKED)).toBe('blocked');
+    expect(statusToShard(Status.CONVERGED)).toBe('converged');
+    expect(statusToShard('IN_PROGRESS:orchestrator-1')).toBe('in_progress');
   });
 });

@@ -26,4 +26,36 @@ describe('Prerequisites', () => {
       expect(typeof r.message).toBe('string');
     }
   });
+
+  // ── format ─────────────────────────────────────────────────────────
+
+  it('format shows all-pass', () => {
+    const out = Prerequisites.format([
+      { name: 'node', ok: true, message: 'Node v22' },
+      { name: 'git',  ok: true, message: 'installed' },
+    ]);
+    expect(out).toContain('✅ node: Node v22');
+    expect(out).toContain('✅ git: installed');
+    expect(out).not.toContain('issue(s) found');
+  });
+
+  it('format shows failures with count', () => {
+    const out = Prerequisites.format([
+      { name: 'node', ok: false, message: 'Node v18 (need >=22)' },
+      { name: 'pi',   ok: false, message: 'not found' },
+    ]);
+    expect(out).toContain('❌ node: Node v18 (need >=22)');
+    expect(out).toContain('❌ pi: not found');
+    expect(out).toContain('2 issue(s) found. Fix before running.');
+  });
+
+  it('format shows mixed results', () => {
+    const out = Prerequisites.format([
+      { name: 'node', ok: true,  message: 'Node v22' },
+      { name: 'pi',   ok: false, message: 'not found' },
+    ]);
+    expect(out).toContain('✅ node: Node v22');
+    expect(out).toContain('❌ pi: not found');
+    expect(out).toContain('1 issue(s) found. Fix before running.');
+  });
 });

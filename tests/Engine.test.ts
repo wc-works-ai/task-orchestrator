@@ -103,4 +103,62 @@ describe('Engine', () => {
     });
     expect(ticks).toEqual([1, 1, 1]); // 3 ticks on T1
   });
+
+  // ── Recovery ───────────────────────────────────────────────────────
+
+  it('recovers stale claimed tasks on tick', async () => {
+    const { writeFileSync, mkdirSync, utimesSync } = await import('node:fs');
+    const { join } = await import('node:path');
+
+    // Manually create a task in in_progress with a stale claim
+    const taskDir = resolve(dir, 'in_progress', 'T01-stale');
+    mkdirSync(taskDir, { recursive: true });
+
+    // Claim it
+    const claimDir = join(taskDir, '.claim');
+    mkdirSync(claimDir, { recursive: true });
+    writeFileSync(join(claimDir, 'owner'), 'pid:99999\n');
+    writeFileSync(join(claimDir, 'heartbeat'), 'stale');
+
+    // Set status to IN_PROGRESS
+    writeFileSync(join(taskDir, '.status'), 'IN_PROGRESS:orchestrator-dead\n');
+
+    // Age the heartbeat past HEARTBEAT_MAX_MS (300s)
+    const oldTime = (Date.now() - 400_000) / 1000; // 400s ago
+    utimesSync(join(claimDir, 'heartbeat'), oldTime, oldTime);
+
+    // tick() should recover this task
+    const engine = new Engine(dir, { benchmark: zero, instanceId: 'recover-test' });
+    const r = await engine.tick();
+
+    // The stale task was recovered: moved to failed, then picked up and processed to converged
+    // Since benchmark = zero, it should converge
+    expect(r.task).not.toBeNull();
+  });
+
+  it('skips claimed tasks with alive PID', async () => {
+    const { writeFileSync, mkdirSync, utimesSync } = await import('node:fs');
+    const { join } = await import('node:path');
+
+    const taskDir = resolve(dir, 'in_progress', 'T01-alive');
+    mkdirSync(taskDir, { recursive: true });
+
+    const claimDir = join(taskDir, '.claim');
+    mkdirSync(claimDir, { recursive: true });
+    writeFileSync(join(claimDir, 'owner'), `pid:${process.pid}\n`);
+    writeFileSync(join(claimDir, 'heartbeat'), 'fresh');
+    writeFileSync(join(taskDir, '.status'), 'IN_PROGRESS:orchestrator-alive\n');
+
+    // Age the heartbeat
+    const oldTime = (Date.now() - 400_000) / 1000;
+    utimesSync(join(claimDir, 'heartbeat'), oldTime, oldTime);
+
+    // PID is alive (process.pid) — recovery should skip this task
+    // tick() will find it in in_progress, skip it (claimed by alive instance), return null if nothing else
+    const engine = new Engine(dir, { benchmark: zero, instanceId: 'recover-test' });
+    const r = await engine.tick();
+
+    // No actionable tasks (the alive task is skipped by recovery, nothing else to pick)
+    expect(r.task).toBeNull();
+  });
 });

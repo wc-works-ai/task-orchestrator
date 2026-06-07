@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [22, 23]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run c
+      - run: npm run t
+      - run: npm run b
+
+      - name: Validate published tarball
+        run: |
+          npm pack --dry-run 2>&1 | tee pack-output.txt
+
+          # Fail if tests leaked into dist
+          if npm pack --dry-run 2>&1 | grep -q 'dist/.*\.test\.'; then
+            echo "FAIL: test artifacts in published tarball"
+            exit 1
+          fi
+
+          # Fail if tsconfig or other config leaked
+          if npm pack --dry-run 2>&1 | grep -qE '(tsconfig|\.eslint|\.prettier)'; then
+            echo "FAIL: config files in published tarball"
+            exit 1
+          fi
+
+      - name: Verify clean dist
+        run: |
+          UNTRACKED=$(ls dist/ 2>/dev/null | grep -vE '\.(js|d\.ts|js\.map)$' || true)
+          if [ -n "$UNTRACKED" ]; then
+            echo "FAIL: unexpected files in dist/"
+            echo "$UNTRACKED"
+            exit 1
+          fi

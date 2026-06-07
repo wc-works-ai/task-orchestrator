@@ -26,6 +26,7 @@ const { values } = await parseArgs({
     loop:   { type: 'boolean', default: false },
     status: { type: 'boolean', default: false },
     check:  { type: 'boolean', default: false },
+    stop:   { type: 'boolean', default: false },
     help:   { type: 'boolean', short: 'h', default: false },
   },
 });
@@ -38,7 +39,7 @@ Task Orchestrator — autonomous task execution
   orchestrator --loop           run until all done
   orchestrator --status         show dashboard
   orchestrator --check          check prerequisites
-  orchestrator --tasks <dir>    custom task directory
+  orchestrator --stop            signal all running --loop instances to stop
 
   ORCH_TASKS=<dir>              env override for --tasks
   ORCH_REPO=<dir>               git repo root (for worktree isolation)
@@ -84,6 +85,13 @@ if (failed.length > 0) {
 }
 
 const spawner = new PiSpawner();
+
+if (values.stop) {
+  const { writeFileSync } = await import('node:fs');
+  writeFileSync(resolve(dir, '.stop'), '');
+  console.log('Stop signal sent.');
+  process.exit(0);
+}
 
 const engine = new Engine(dir, {
   repoDir: repo,
