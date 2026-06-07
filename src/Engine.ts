@@ -66,7 +66,7 @@ export class Engine {
         const hb = setInterval(() => task.heartbeat(), 30_000);
         await this.#spawn(task);
         clearInterval(hb);
-        metric = await this.#run(task);
+        metric = await this.#run(task, wt?.path);
         if (metric === 0) return this.#handleZero(task, metric, wt);
       } catch (e: any) {
         if (e?.message?.includes?.('conflict')) task.status = Status.FAILED;
@@ -96,7 +96,9 @@ export class Engine {
     task.incrementConvergence();
     if (task.hasConverged) {
       task.status = Status.CONVERGED;
-      if (wt) { this.#mergeAndRemove(task.taskNumber, wt); }
+      // Use passed worktree or look up from map (for subsequent ticks after spawn)
+      const tree = wt ?? this.#worktrees.get(task.taskNumber) ?? null;
+      if (tree) { this.#mergeAndRemove(task.taskNumber, tree); }
       return { task: task.info, metric, converged: true };
     }
     return { task: task.info, metric, converged: false };
@@ -107,8 +109,13 @@ export class Engine {
     this.#worktrees.delete(tn);
   }
 
-  async #run(task: TaskState): Promise<number> {
-    try { return await this.#bench(task.info); }
+  async #run(task: TaskState, worktreePath?: string): Promise<number> {
+    try {
+      const info = worktreePath
+        ? { ...task.info, directory: resolve(worktreePath, task.directory.replace(this.#repo, '')) }
+        : task.info;
+      return await this.#bench(info);
+    }
     catch { return 1; }
   }
 

@@ -100,7 +100,11 @@ const engine = new Engine(dir, {
 
 if (values.loop) {
   console.log(`Looping (${dir}, repo: ${repo})`);
-  const n = await engine.loop();
+  const n = await engine.loop({
+    onTick: (r) => {
+      if (r.task) console.log(`  ${r.converged ? '✅' : '⏳'} T${r.task.number}: ${r.task.goal.slice(0, 60)}`);
+    },
+  });
   console.log(`\n🎉 ${n} ticks\n`);
 } else {
   const r = await engine.tick();
