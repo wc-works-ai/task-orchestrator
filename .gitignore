@@ -7,3 +7,4 @@ dist/
 tasks/*
 !tasks/.gitkeep
 .worktrees/
+tasks/
