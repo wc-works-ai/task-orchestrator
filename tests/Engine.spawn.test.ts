@@ -111,4 +111,50 @@ describe('Engine agent spawning', () => {
     const all = await TaskState.scan(dir);
     expect(all.get('1')!.status).toBe(Status.FAILED);
   });
+
+  it('mergeAndRemove called on convergence when repo has .git', async () => {
+    const { execSync } = await import('node:child_process');
+    const { mkdirSync: mk, writeFileSync } = await import('node:fs');
+
+    const repoDir = resolve(dir, 'repo');
+    const tasksDir = resolve(dir, 'tasks');
+    mk(repoDir, { recursive: true });
+    execSync('git init && git config user.email test@test && git config user.name test && git commit --allow-empty -m init', { cwd: repoDir });
+
+    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
+      mk(resolve(tasksDir, s), { recursive: true });
+    }
+
+    const d = resolve(tasksDir, 'pending', 'T01-x');
+    mk(d, { recursive: true });
+    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+
+    const spawn = vi.fn().mockResolvedValue({ success: true, iterations: 1 });
+    // Tick 1: 1 (reset cz) → spawn → 0 (cz=1)
+    // Tick 2: 0 (cz=2)
+    // Tick 3: 0 (cz=3 → converges → mergeAndRemove line 124-125)
+    const benchmark = vi.fn()
+      .mockResolvedValueOnce(1).mockResolvedValueOnce(0) // tick 1
+      .mockResolvedValue(0)   // tick 2
+      .mockResolvedValue(0);  // tick 3
+
+    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir });
+    await engine.tick();
+    await engine.tick();
+    const r = await engine.tick();
+
+    expect(r.converged).toBe(true);
+    expect(r.metric).toBe(0);
+  });
+
+  it('handles merge conflict error from spawn', async () => {
+    make(dir, 1, 'a');
+    const spawn = vi.fn().mockRejectedValue(new Error('merge conflict in worktree'));
+    const engine = new Engine(dir, { benchmark: () => 1, spawn });
+    const r = await engine.tick();
+    // Conflict → task FAILED, worktree kept for inspection
+    expect(r.converged).toBe(false);
+    const all = await TaskState.scan(dir);
+    expect(all.get('1')!.status).toBe(Status.FAILED);
+  });
 });

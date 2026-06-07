@@ -3,7 +3,7 @@ import { resolve, join, dirname } from 'node:path';
 import { TaskState, Status, type BenchmarkFn, type TickResult, type TickNull } from './TaskState.js';
 import { Worktree } from './Worktree.js';
 
-const HEARTBEAT_MAX_MS = 300_000;
+const HEARTBEAT_MAX_MS = parseInt(process.env.ORCH_HEARTBEAT_MS ?? '300000', 10);
 
 export interface SpawnResult {
   readonly success: boolean;

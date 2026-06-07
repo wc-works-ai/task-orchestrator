@@ -11,8 +11,8 @@ export const isInProgress = (s: string): boolean => s.startsWith('IN_PROGRESS');
 export const isActionable = (s: Status | string): boolean =>
   s === Status.PENDING || s === Status.FAILED;
 
-export const CONVERGENCE_THRESHOLD = 3;
-export const MAX_FAILURES = 5;
+export const CONVERGENCE_THRESHOLD = parseInt(process.env.ORCH_CONVERGE ?? '3', 10);
+export const MAX_FAILURES = parseInt(process.env.ORCH_MAX_FAILURES ?? '5', 10);
 
 export const statusToShard = (s: Status | string): string => {
   if (s === Status.PENDING) return 'pending';

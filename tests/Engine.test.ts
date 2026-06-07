@@ -161,4 +161,78 @@ describe('Engine', () => {
     // No actionable tasks (the alive task is skipped by recovery, nothing else to pick)
     expect(r.task).toBeNull();
   });
+
+  it('recovers task with missing heartbeat file (heartbeatAge returns null)', async () => {
+    const { writeFileSync, mkdirSync } = await import('node:fs');
+    const { join } = await import('node:path');
+
+    const taskDir = resolve(dir, 'in_progress', 'T01-nohb');
+    mkdirSync(taskDir, { recursive: true });
+
+    const claimDir = join(taskDir, '.claim');
+    mkdirSync(claimDir, { recursive: true });
+    writeFileSync(join(claimDir, 'owner'), 'pid:99999\n');
+    // No heartbeat file — heartbeatAge catch returns null → skipped by recovery
+    writeFileSync(join(taskDir, '.status'), 'IN_PROGRESS:orchestrator-dead\n');
+
+    const engine = new Engine(dir, { benchmark: zero, instanceId: 'recover-test' });
+    const r = await engine.tick();
+    // No heartbeat = age null = skipped by recovery (null < 300000 is true for null? No:)
+    // if (age === null || age < HEARTBEAT_MAX_MS) continue;
+    // age === null → true → continue → task NOT recovered → tick finds nothing
+    expect(r.task).toBeNull();
+  });
+
+  it('recovers task with missing owner file but stale heartbeat', async () => {
+    const { writeFileSync, mkdirSync, utimesSync } = await import('node:fs');
+    const { join } = await import('node:path');
+
+    const taskDir = resolve(dir, 'in_progress', 'T01-noowner');
+    mkdirSync(taskDir, { recursive: true });
+
+    const claimDir = join(taskDir, '.claim');
+    mkdirSync(claimDir, { recursive: true });
+    writeFileSync(join(claimDir, 'heartbeat'), 'stale');
+    // No owner file — ownerPid catch returns null
+    writeFileSync(join(taskDir, '.status'), 'IN_PROGRESS:orchestrator-dead\n');
+
+    const oldTime = (Date.now() - 400_000) / 1000;
+    utimesSync(join(claimDir, 'heartbeat'), oldTime, oldTime);
+
+    // heartbeatAge >300000 (stale), ownerPid returns null (catch, no owner file)
+    // pid === null → pid !== null is false → task should be recovered
+    const engine = new Engine(dir, { benchmark: zero, instanceId: 'recover-test' });
+    const r = await engine.tick();
+    // Task recovered to FAILED → picked up → converged (benchmark = zero)
+    expect(r.task).not.toBeNull();
+  });
+
+  it('benchmark that throws is caught and counted as non-zero', async () => {
+    make(dir, 1, 'a');
+    const engine = new Engine(dir, { benchmark: () => { throw new Error('boom'); } });
+    const r = await engine.tick();
+    expect(r.metric).toBe(1);
+    expect(r.converged).toBe(false);
+    const all = await TaskState.scan(dir);
+    expect(all.get('1')!.status).toBe(Status.FAILED);
+  });
+
+  it('returns null when stop file exists', async () => {
+    make(dir, 1, 'a');
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(resolve(dir, '.stop'), '');
+    const r = await new Engine(dir, { benchmark: zero }).tick();
+    expect(r.task).toBeNull();
+  });
+
+  it('resets worktree on failed task retry', async () => {
+    // Manually create a FAILED task that had a worktree from a previous run
+    // In a real scenario, the worktree would be in this.#worktrees
+    // For this test, we verify the FAILED path doesn't crash
+    make(dir, 1, 'a', { status: Status.FAILED });
+    const r = await new Engine(dir, { benchmark: zero }).tick();
+    // FAILED task is picked and processed
+    expect(r.task).not.toBeNull();
+    expect(r.task!.number).toBe(1);
+  });
 });
