@@ -42,6 +42,9 @@ export class PiSpawner {
 
   #run(task: TaskState, model: string): Promise<SpawnResult> {
     return new Promise(resolve => {
+      let settled = false;
+      const done = (r: SpawnResult) => { if (!settled) { settled = true; resolve(r); } };
+
       const child: ChildProcess = spawn('pi', [
         '--mode', 'json',
         '--no-session',
@@ -61,11 +64,11 @@ export class PiSpawner {
 
       child.on('close', (code: number | null) => {
         const iterations = (output.match(/log_experiment/g) || []).length;
-        resolve({ success: code === 0, iterations });
+        done({ success: code === 0, iterations });
       });
 
       child.on('error', () => {
-        resolve({ success: false, iterations: 0 });
+        done({ success: false, iterations: 0 });
       });
     });
   }

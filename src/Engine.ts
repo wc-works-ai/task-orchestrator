@@ -73,7 +73,7 @@ export class Engine {
           task.status = Status.FAILED;
         }
       }
-      if (metric === 0) return this.#handleZero(task, metric);
+      if (metric === 0) return this.#handleZero(task, metric, wt);
     }
 
     task.release(Status.FAILED);
@@ -95,13 +95,18 @@ export class Engine {
 
   // ── Private ──────────────────────────────────────────────────────────
 
-  #handleZero(task: TaskState, metric: number): TickResult {
+  #handleZero(task: TaskState, metric: number, worktree?: Worktree | null): TickResult {
     task.incrementConvergence();
     if (task.hasConverged) {
       task.status = Status.CONVERGED;
+      if (worktree) { this.#mergeWorktree(worktree); }
       return { task: task.info, metric, converged: true };
     }
     return { task: task.info, metric, converged: false };
+  }
+
+  async #mergeWorktree(wt: Worktree): Promise<void> {
+    try { await wt.merge(); await wt.remove(); } catch { /* leave for inspection */ }
   }
 
   async #run(task: TaskState): Promise<number> {

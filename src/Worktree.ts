@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 
@@ -63,15 +63,15 @@ export class Worktree {
   // ── Private ──────────────────────────────────────────────────────────
 
   #git(...args: string[]): string {
-    return execSync(`git ${args.join(' ')}`, { cwd: this.#repo, encoding: 'utf-8' });
+    return execFileSync('git', args, { cwd: this.#repo, encoding: 'utf-8' });
   }
 
   #gitInWT(...args: string[]): string {
-    return execSync(`git ${args.join(' ')}`, { cwd: this.#path, encoding: 'utf-8' });
+    return execFileSync('git', args, { cwd: this.#path, encoding: 'utf-8' });
   }
 
   #gitConfig(key: string): string {
-    try { return execSync(`git config ${key}`, { cwd: this.#repo, encoding: 'utf-8' }).trim(); }
+    try { return execFileSync('git', ['config', key], { cwd: this.#repo, encoding: 'utf-8' }).trim(); }
     catch { return ''; }
   }
 }
