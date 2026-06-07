@@ -1,0 +1,34 @@
+{
+  "name": "task-orchestrator",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Autonomous task execution engine with atomic claiming, convergence, and sharded state",
+  "engines": { "node": ">=22" },
+  "bin": { "orchestrator": "./orchestrator.mjs" },
+  "exports": {
+    ".": "./src/index.ts",
+    "./TaskState": "./src/TaskState.ts",
+    "./Engine": "./src/Engine.ts"
+  },
+  "scripts": {
+    "t":    "vitest run",
+    "tw":   "vitest",
+    "tc":   "vitest run --coverage",
+    "c":    "tsc --noEmit",
+    "b":    "tsc",
+    "dev":  "tsx --watch src/index.ts",
+    "run":  "tsx orchestrator.mjs",
+    "loop": "tsx orchestrator.mjs --loop",
+    "stat": "tsx orchestrator.mjs --status",
+    "all":  "npm run c && npm run t && npm run b"
+  },
+  "keywords": ["orchestrator", "task-runner", "autonomous", "convergence"],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^25.9.2",
+    "@vitest/coverage-v8": "^4.1.8",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  }
+}
