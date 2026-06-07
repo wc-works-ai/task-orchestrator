@@ -2,7 +2,10 @@
   "name": "task-orchestrator",
   "version": "1.0.0",
   "type": "module",
-  "description": "Autonomous task execution engine with atomic claiming, convergence, and sharded state",
+  "description": "Autonomous task execution engine with atomic claiming, convergence tracking, and sharded state",
+  "license": "MIT",
+  "author": "MarketMind",
+  "repository": "github:marketmind/task-orchestrator",
   "engines": { "node": ">=22" },
   "bin": { "orchestrator": "./orchestrator.mjs" },
   "exports": {
@@ -10,20 +13,26 @@
     "./TaskState": "./src/TaskState.ts",
     "./Engine": "./src/Engine.ts"
   },
+  "files": [
+    "src/",
+    "orchestrator.mjs",
+    "tsconfig.json",
+    "dist/"
+  ],
   "scripts": {
-    "t":    "vitest run",
-    "tw":   "vitest",
-    "tc":   "vitest run --coverage",
-    "c":    "tsc --noEmit",
-    "b":    "tsc",
-    "dev":  "tsx --watch src/index.ts",
-    "run":  "tsx orchestrator.mjs",
-    "loop": "tsx orchestrator.mjs --loop",
-    "stat": "tsx orchestrator.mjs --status",
-    "all":  "npm run c && npm run t && npm run b"
+    "t":      "vitest run",
+    "tw":     "vitest",
+    "tc":     "vitest run --coverage",
+    "c":      "tsc --noEmit",
+    "b":      "tsc",
+    "dev":    "tsx --watch src/index.ts",
+    "run":    "tsx orchestrator.mjs",
+    "loop":   "tsx orchestrator.mjs --loop",
+    "stat":   "tsx orchestrator.mjs --status",
+    "all":    "npm run c && npm run t && npm run b",
+    "prepublishOnly": "npm run all"
   },
-  "keywords": ["orchestrator", "task-runner", "autonomous", "convergence"],
-  "license": "MIT",
+  "keywords": ["orchestrator", "task-runner", "autonomous", "convergence", "claim-based"],
   "devDependencies": {
     "@types/node": "^25.9.2",
     "@vitest/coverage-v8": "^4.1.8",
