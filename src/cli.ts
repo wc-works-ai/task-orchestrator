@@ -1,18 +1,31 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
-import { resolve } from 'node:path';
-import { Engine } from './Engine.js';
-import { TaskState } from './TaskState.js';
+import { resolve, dirname } from 'node:path';
+import { existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
+import { Engine } from './Engine.js';
+import { TaskState, type TaskInfo } from './TaskState.js';
+import { PiSpawner } from './PiSpawner.js';
+import { Prerequisites } from './Prerequisites.js';
 
-const TASKS = resolve(process.env.ORCH_TASKS ?? './tasks');
-import type { TaskInfo } from './TaskState.js';
+const tasksDir = resolve(process.env.ORCH_TASKS ?? './tasks');
+const repoDir = resolve(process.env.ORCH_REPO ?? findRepoRoot(tasksDir));
+
+function findRepoRoot(start: string): string {
+  let dir = resolve(start);
+  while (dir !== '/') {
+    if (existsSync(resolve(dir, '.git'))) return dir;
+    dir = dirname(dir);
+  }
+  return process.cwd();
+}
 
 const { values } = await parseArgs({
   options: {
-    tasks:  { type: 'string', default: TASKS },
+    tasks:  { type: 'string', default: tasksDir },
     loop:   { type: 'boolean', default: false },
     status: { type: 'boolean', default: false },
+    check:  { type: 'boolean', default: false },
     help:   { type: 'boolean', short: 'h', default: false },
   },
 });
@@ -21,17 +34,27 @@ if (values.help) {
   console.log(`
 Task Orchestrator — autonomous task execution
 
-  orchestrator                process one task
-  orchestrator --loop         run until all done
-  orchestrator --status       show dashboard
-  orchestrator --tasks <dir>  custom task directory
+  orchestrator                  process one task
+  orchestrator --loop           run until all done
+  orchestrator --status         show dashboard
+  orchestrator --check          check prerequisites
+  orchestrator --tasks <dir>    custom task directory
 
-  ORCH_TASKS=<dir>            env override for --tasks
+  ORCH_TASKS=<dir>              env override for --tasks
+  ORCH_REPO=<dir>               git repo root (for worktree isolation)
+  ORCH_MODEL=<model>            default AI model
 `);
   process.exit(0);
 }
 
+if (values.check) {
+  const results = await Prerequisites.check();
+  console.log(Prerequisites.format(results));
+  process.exit(results.every(r => r.ok) ? 0 : 1);
+}
+
 const dir = resolve(values.tasks!);
+const repo = resolve(repoDir);
 
 if (values.status) {
   const all = await TaskState.scan(dir);
@@ -51,11 +74,24 @@ if (values.status) {
   process.exit(0);
 }
 
+// Quick prerequisite check before running
+const prereqs = await Prerequisites.check();
+const failed = prereqs.filter(r => !r.ok);
+if (failed.length > 0) {
+  console.error(Prerequisites.format(prereqs));
+  if (failed.some(r => r.name === 'node')) process.exit(1);
+  // pi/API key missing — warn but continue (user might have custom benchmark)
+}
+
+const spawner = new PiSpawner();
+
 const engine = new Engine(dir, {
+  repoDir: repo,
+  spawn: (task) => spawner.spawn(task),
   benchmark: async (t: TaskInfo) => {
     try {
       const out = execSync(`node ${t.directory}/benchmark.js`, {
-        timeout: 30_000, encoding: 'utf-8', cwd: process.cwd(),
+        timeout: 30_000, encoding: 'utf-8', cwd: repo,
       });
       return parseInt(out.match(/METRIC\s+\w+=(\d+)/)?.[1] ?? '1', 10);
     } catch { return 1; }
@@ -63,7 +99,7 @@ const engine = new Engine(dir, {
 });
 
 if (values.loop) {
-  console.log(`Looping (${dir})`);
+  console.log(`Looping (${dir}, repo: ${repo})`);
   const n = await engine.loop();
   console.log(`\n🎉 ${n} ticks\n`);
 } else {

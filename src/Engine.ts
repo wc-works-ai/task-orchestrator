@@ -26,6 +26,8 @@ export class Engine {
   readonly #bench: BenchmarkFn;
   readonly #spawn: SpawnFn | null;
   readonly #id: string;
+  /** Track active worktrees by task number */
+  readonly #worktrees = new Map<number, Worktree>();
 
   constructor(tasksDir: string, opts: EngineOptions = {}) {
     this.#dir = tasksDir;
@@ -54,26 +56,21 @@ export class Engine {
     task.resetConvergence();
 
     if (this.#spawn) {
-      // Create worktree for isolated agent work (if in a git repo)
-      const gitDir = resolve(this.#repo, '.git');
-      let wt: Worktree | null = null;
-      if (existsSync(gitDir)) {
+      let wt = this.#worktrees.get(task.taskNumber) ?? null;
+      if (!wt && existsSync(resolve(this.#repo, '.git'))) {
         wt = new Worktree(this.#repo, { name: task.taskName });
         await wt.create();
+        this.#worktrees.set(task.taskNumber, wt);
       }
       try {
+        const hb = setInterval(() => task.heartbeat(), 30_000);
         await this.#spawn(task);
+        clearInterval(hb);
         metric = await this.#run(task);
-        if (metric === 0 && task.convergenceCount + 1 >= 3) {
-          // will converge in handleZero
-          if (wt) { await wt.merge(); await wt.remove(); }
-        }
+        if (metric === 0) return this.#handleZero(task, metric, wt);
       } catch (e: any) {
-        if (e?.message?.includes?.('conflict')) {
-          task.status = Status.FAILED;
-        }
+        if (e?.message?.includes?.('conflict')) task.status = Status.FAILED;
       }
-      if (metric === 0) return this.#handleZero(task, metric, wt);
     }
 
     task.release(Status.FAILED);
@@ -95,18 +92,19 @@ export class Engine {
 
   // ── Private ──────────────────────────────────────────────────────────
 
-  #handleZero(task: TaskState, metric: number, worktree?: Worktree | null): TickResult {
+  #handleZero(task: TaskState, metric: number, wt: Worktree | null = null): TickResult {
     task.incrementConvergence();
     if (task.hasConverged) {
       task.status = Status.CONVERGED;
-      if (worktree) { this.#mergeWorktree(worktree); }
+      if (wt) { this.#mergeAndRemove(task.taskNumber, wt); }
       return { task: task.info, metric, converged: true };
     }
     return { task: task.info, metric, converged: false };
   }
 
-  async #mergeWorktree(wt: Worktree): Promise<void> {
+  async #mergeAndRemove(tn: number, wt: Worktree): Promise<void> {
     try { await wt.merge(); await wt.remove(); } catch { /* leave for inspection */ }
+    this.#worktrees.delete(tn);
   }
 
   async #run(task: TaskState): Promise<number> {
