@@ -68,11 +68,11 @@ Environment variables (CLI flags override):
 if (positionals[0] === 'add') {
   const name = positionals[1];
   if (!name) { console.error('Usage: orchestrator add <name> [--goal ...] [--metric ...] [--scope ...]'); process.exit(1); }
-  const r = addTask(dir, name, {
-    goal: values.goal || undefined,
-    metric: values.metric || undefined,
-    scope: values.scope ? values.scope.split(/\s+/) : undefined,
-  });
+  const opts: Record<string, string | string[]> = {};
+  if (values.goal) opts.goal = values.goal;
+  if (values.metric) opts.metric = values.metric;
+  if (values.scope) opts.scope = values.scope.split(/\s+/);
+  const r = addTask(dir, name, opts);
   console.log(`✅ T${r.number} added: ${name}`);
   console.log(`   ${r.directory}`);
   console.log(`   Next: edit autoresearch.md + benchmark.js, then npm run tick`);
