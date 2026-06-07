@@ -58,4 +58,39 @@ describe('Prerequisites', () => {
     expect(out).toContain('❌ pi: not found');
     expect(out).toContain('1 issue(s) found. Fix before running.');
   });
+
+  it('API key check fails when no env var set', async () => {
+    const prev = process.env.OPENROUTER_API_KEY;
+    const prevA = process.env.ANTHROPIC_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    try {
+      const results = await Prerequisites.check();
+      const api = results.find(r => r.name === 'API key')!;
+      expect(api.ok).toBe(false);
+      expect(api.message).toContain('set');
+    } finally {
+      if (prev) process.env.OPENROUTER_API_KEY = prev;
+      if (prevA) process.env.ANTHROPIC_API_KEY = prevA;
+    }
+  });
+
+  it('API key check passes when env var set', async () => {
+    const prev = process.env.OPENROUTER_API_KEY;
+    process.env.OPENROUTER_API_KEY = 'sk-test';
+    try {
+      const results = await Prerequisites.check();
+      const api = results.find(r => r.name === 'API key')!;
+      expect(api.ok).toBe(true);
+    } finally {
+      if (prev) process.env.OPENROUTER_API_KEY = prev;
+      else delete process.env.OPENROUTER_API_KEY;
+    }
+  });
+
+  it('node check passes when version >= 22', async () => {
+    const results = await Prerequisites.check();
+    const node = results.find(r => r.name === 'node')!;
+    expect(node.ok).toBe(true);
+  });
 });

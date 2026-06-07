@@ -157,6 +157,15 @@ describe('TaskState', () => {
     expect(await TaskState.pick(dir, 'test')).toBeNull();
   });
 
+  it('pick handles missing shard directory gracefully', async () => {
+    // Remove the failed shard to trigger readdir failure
+    const { rmSync } = await import('node:fs');
+    rmSync(resolve(dir, 'failed'), { recursive: true, force: true });
+    // pick should skip missing shard and not throw
+    const result = await TaskState.pick(dir, 'test');
+    expect(result).toBeNull();
+  });
+
   // ── scope / goal / model getters ──────────────────────────────────
 
   it('scope returns [] when no autoresearch.md', () => {

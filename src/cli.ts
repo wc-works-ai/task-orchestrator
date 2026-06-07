@@ -100,6 +100,13 @@ if (values.stop) {
   process.exit(0);
 }
 
+// Verify tasks directory exists before running
+if (!existsSync(dir)) {
+  console.error(`\n  ❌ Tasks directory not found: ${dir}`);
+  console.error(`  Create it or set ORCH_TASKS to a valid path.\n`);
+  process.exit(1);
+}
+
 const engine = new Engine(dir, {
   repoDir: repo,
   spawn: (task) => spawner.spawn(task),
@@ -112,6 +119,13 @@ const engine = new Engine(dir, {
     } catch { return 1; }
   },
 });
+
+// Verify tasks directory exists before running
+if (!existsSync(dir)) {
+  console.error(`\n  ❌ Tasks directory not found: ${dir}`);
+  console.error(`  Create it or set ORCH_TASKS to a valid path.\n`);
+  process.exit(1);
+}
 
 if (values.loop) {
   console.log(`Looping (${dir}, repo: ${repo})`);

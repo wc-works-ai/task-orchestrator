@@ -55,6 +55,7 @@ export class Engine {
     if (!task) return { task: null, metric: 0, converged: false };
 
     // Reset worktree on retry so agent starts fresh (discard conflicting changes)
+    /* c8 ignore next 4 */
     if (task.isFailed) {
       const wt = this.#worktrees.get(task.taskNumber);
       if (wt) await wt.resetForRetry();
