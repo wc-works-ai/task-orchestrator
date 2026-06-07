@@ -1,13 +1,14 @@
-#!/usr/bin/env -S tsx
+#!/usr/bin/env node
 import { parseArgs } from 'node:util';
 import { resolve } from 'node:path';
-import { Engine } from './src/Engine.js';
-import { TaskState } from './src/TaskState.js';
+import { Engine } from './Engine.js';
+import { TaskState } from './TaskState.js';
 import { execSync } from 'node:child_process';
 
 const TASKS = resolve(process.env.ORCH_TASKS ?? './tasks');
+import type { TaskInfo } from './TaskState.js';
 
-const { values } = parseArgs({
+const { values } = await parseArgs({
   options: {
     tasks:  { type: 'string', default: TASKS },
     loop:   { type: 'boolean', default: false },
@@ -18,11 +19,14 @@ const { values } = parseArgs({
 
 if (values.help) {
   console.log(`
-Orchestrator — env: ORCH_TASKS (default: ./tasks)
+Task Orchestrator — autonomous task execution
 
-  npm run stat         show dashboard
-  npm run run          process one task
-  npm run loop         run until all done
+  orchestrator                process one task
+  orchestrator --loop         run until all done
+  orchestrator --status       show dashboard
+  orchestrator --tasks <dir>  custom task directory
+
+  ORCH_TASKS=<dir>            env override for --tasks
 `);
   process.exit(0);
 }
@@ -48,7 +52,7 @@ if (values.status) {
 }
 
 const engine = new Engine(dir, {
-  benchmark: async (t) => {
+  benchmark: async (t: TaskInfo) => {
     try {
       const out = execSync(`node ${t.directory}/benchmark.js`, {
         timeout: 30_000, encoding: 'utf-8', cwd: process.cwd(),

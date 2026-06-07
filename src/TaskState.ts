@@ -19,6 +19,7 @@ const F_BEAT     = 'heartbeat';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 export interface TaskInfo {
+  readonly directory: string;
   readonly number: number;
   readonly name: string;
   readonly goal: string;

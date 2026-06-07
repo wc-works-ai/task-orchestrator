@@ -7,7 +7,7 @@
   "author": "MarketMind",
   "repository": "github:marketmind/task-orchestrator",
   "engines": { "node": ">=22" },
-  "bin": { "orchestrator": "./orchestrator.mjs" },
+  "bin": { "orchestrator": "./bin.mjs" },
   "exports": {
     ".": "./src/index.ts",
     "./TaskState": "./src/TaskState.ts",
@@ -26,9 +26,9 @@
     "c":      "tsc --noEmit",
     "b":      "tsc",
     "dev":    "tsx --watch src/index.ts",
-    "run":    "tsx orchestrator.mjs",
-    "loop":   "tsx orchestrator.mjs --loop",
-    "stat":   "tsx orchestrator.mjs --status",
+    "run":    "tsx src/cli.ts",
+    "loop":   "tsx src/cli.ts --loop",
+    "stat":   "tsx src/cli.ts --status",
     "all":    "npm run c && npm run t && npm run b",
     "prepublishOnly": "npm run all"
   },
