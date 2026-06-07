@@ -28,6 +28,7 @@ const { values } = await parseArgs({
     check:  { type: 'boolean', default: false },
     model:  { type: 'string', default: '' },
     stop:   { type: 'boolean', default: false },
+    task:   { type: 'string', short: 't', default: '' },
     help:   { type: 'boolean', short: 'h', default: false },
   },
 });
@@ -125,6 +126,20 @@ if (!existsSync(dir)) {
   console.error(`\n  ❌ Tasks directory not found: ${dir}`);
   console.error(`  Create it or set ORCH_TASKS to a valid path.\n`);
   process.exit(1);
+}
+
+// Force-pick a specific task by number
+if (values.task) {
+  const tn = parseInt(values.task, 10);
+  if (isNaN(tn)) { console.error('Invalid task number'); process.exit(1); }
+  const task = await engine.pickByNumber(tn);
+  if (!task) { console.error(`T${tn} not found`); process.exit(1); }
+  try {
+    const out = execSync(`node ${task.directory}/benchmark.js`, { timeout: 30_000, encoding: 'utf-8', cwd: repo });
+    const metric = parseInt(out.match(/METRIC\s+\w+=(\d+)/)?.[1] ?? '1', 10);
+    console.log(`${metric === 0 ? '⏳' : '❌'} T${tn}: ${task.goal.slice(0, 60)} (metric=${metric})`);
+  } catch { console.log(`❌ T${tn}: benchmark failed`); }
+  process.exit(0);
 }
 
 if (values.loop) {

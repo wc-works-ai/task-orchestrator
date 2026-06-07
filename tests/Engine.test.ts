@@ -228,13 +228,53 @@ describe('Engine', () => {
   });
 
   it('resets worktree on failed task retry', async () => {
-    // Manually create a FAILED task that had a worktree from a previous run
-    // In a real scenario, the worktree would be in this.#worktrees
-    // For this test, we verify the FAILED path doesn't crash
     make(dir, 1, 'a', { status: Status.FAILED });
     const r = await new Engine(dir, { benchmark: zero }).tick();
-    // FAILED task is picked and processed
     expect(r.task).not.toBeNull();
     expect(r.task!.number).toBe(1);
+  });
+
+  it('uses default benchmark (() => 1) when not provided', async () => {
+    make(dir, 1, 'a');
+    const engine = new Engine(dir, {}); // no benchmark
+    const r = await engine.tick();
+    // Default returns 1 → non-zero → task FAILED
+    expect(r.metric).toBe(1);
+    expect(r.converged).toBe(false);
+  });
+
+  it('handles recovery when entry does not start with T', async () => {
+    const { mkdirSync } = await import('node:fs');
+    const nonTaskDir = resolve(dir, 'in_progress', 'not-a-task');
+    mkdirSync(nonTaskDir, { recursive: true });
+    // tick() calls #recover() which skips non-T entries
+    const r = await new Engine(dir, { benchmark: zero }).tick();
+    expect(r.task).toBeNull();
+  });
+
+  it('handles recovery when claim lacks valid pid', async () => {
+    const { writeFileSync, mkdirSync, utimesSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const taskDir = resolve(dir, 'in_progress', 'T01-nopid');
+    mkdirSync(taskDir, { recursive: true });
+    const claimDir = join(taskDir, '.claim');
+    mkdirSync(claimDir, { recursive: true });
+    writeFileSync(join(claimDir, 'owner'), 'pid:abc\n'); // non-numeric pid
+    writeFileSync(join(claimDir, 'heartbeat'), 'stale');
+    writeFileSync(join(taskDir, '.status'), 'IN_PROGRESS:orchestrator-dead\n');
+    const oldTime = (Date.now() - 400_000) / 1000;
+    utimesSync(join(claimDir, 'heartbeat'), oldTime, oldTime);
+    const engine = new Engine(dir, { benchmark: zero, instanceId: 'recover-test' });
+    const r = await engine.tick();
+    expect(r.task).not.toBeNull();
+  });
+
+  it('recovery skips IN_PROGRESS task without claim', async () => {
+    const { writeFileSync, mkdirSync } = await import('node:fs');
+    const taskDir = resolve(dir, 'in_progress', 'T01-noclaim');
+    mkdirSync(taskDir, { recursive: true });
+    writeFileSync(resolve(taskDir, '.status'), 'IN_PROGRESS:orphan\n');
+    const r = await new Engine(dir, { benchmark: zero }).tick();
+    expect(r.task).toBeNull();
   });
 });

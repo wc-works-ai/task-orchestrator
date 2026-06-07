@@ -25,7 +25,6 @@ export class Worktree {
 
   get path(): string { return this.#path; }
   get branch(): string { return this.#branch; }
-  /* istanbul ignore next: v8 getter tracking quirk */
   get exists(): boolean { return existsSync(join(this.#path, '.git')); }
 
   async create(): Promise<string> {

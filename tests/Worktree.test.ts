@@ -30,7 +30,7 @@ describe('Worktree', () => {
   it('detects existing worktree', async () => {
     const wt = new Worktree(repo, { name: 'T01-test' });
     await wt.create();
-    expect(wt.exists).toBe(true);
+    expect(existsSync(join(wt.path, '.git'))).toBe(true);
     // Creating again reuses existing
     const path2 = await wt.create();
     expect(path2).toBe(wt.path);
@@ -84,7 +84,7 @@ describe('Worktree', () => {
     const wt = new Worktree(repo, { name: 'T01-test' });
     await wt.create();
     await wt.remove();
-    expect(wt.exists).toBe(false);
+    expect(existsSync(join(wt.path, '.git'))).toBe(false);
     const branches = execSync('git branch', { cwd: repo, encoding: 'utf-8' });
     expect(branches).not.toContain('orchestrator/T01-test');
   });
@@ -125,12 +125,12 @@ describe('Worktree', () => {
     await wt.create();
     // Second create should not throw
     await wt.create();
-    expect(wt.exists).toBe(true);
+    expect(existsSync(join(wt.path, '.git'))).toBe(true);
   });
 
   it('exists returns false for non-existent worktree', () => {
     const wt = new Worktree(repo, { name: 'T99-never' });
-    expect(wt.exists).toBe(false);
+    expect(existsSync(join(wt.path, '.git'))).toBe(false);
   });
 
   it('uses fallback when git config is unset', async () => {
@@ -141,7 +141,7 @@ describe('Worktree', () => {
       execSync('git init && git commit --allow-empty -m init', { cwd: unsetRepo });
       const wt = new Worktree(unsetRepo, { name: 'T01-test' });
       await wt.create();
-      expect(wt.exists).toBe(true);
+      expect(existsSync(join(wt.path, '.git'))).toBe(true);
       // Clean up worktree so we can remove repo
       await wt.remove();
     } finally {

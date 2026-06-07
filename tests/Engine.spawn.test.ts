@@ -194,4 +194,16 @@ describe('Engine agent spawning', () => {
     // Should process the failed task (worktree reset + re-run)
     expect(r2.task).not.toBeNull();
   });
+
+  it('handles non-Error spawn rejection', async () => {
+    make(dir, 1, 'a');
+    // Throw a string instead of Error to cover String(e) branch (Engine L86)
+    const spawn = vi.fn().mockRejectedValue('plain string error');
+    const engine = new Engine(dir, { benchmark: () => 1, spawn });
+    const r = await engine.tick();
+    // Non-conflict non-Error → task FAILED
+    expect(r.converged).toBe(false);
+    const all = await TaskState.scan(dir);
+    expect(all.get('1')!.status).toBe(Status.FAILED);
+  });
 });

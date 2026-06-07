@@ -43,6 +43,16 @@ export class Engine {
 
   // ── Single tick ─────────────────────────────────────────────────────
 
+
+  async pickByNumber(num: number): Promise<TaskState | null> {
+    await TaskState.scan(this.#dir);
+    for (const shard of ["pending","in_progress","failed","converged","blocked"]) {
+      try { for (const e of readdirSync(resolve(this.#dir, shard))) {
+        if (new RegExp(`^T0*${num}-`).test(e)) return new TaskState(resolve(this.#dir, shard, e));
+      }} catch {}
+    }
+    return null;
+  }
   async tick(): Promise<TickResult | TickNull> {
     if (existsSync(this.#stopFile)) {
       try { rmSync(this.#stopFile); } catch {}

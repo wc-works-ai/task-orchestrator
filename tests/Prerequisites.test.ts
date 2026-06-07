@@ -93,4 +93,16 @@ describe('Prerequisites', () => {
     const node = results.find(r => r.name === 'node')!;
     expect(node.ok).toBe(true);
   });
+
+  it('node check fails when version < 22', async () => {
+    const prev = process.version;
+    Object.defineProperty(process, 'version', { value: 'v20.0.0', configurable: true });
+    try {
+      const results = await Prerequisites.check();
+      const node = results.find(r => r.name === 'node')!;
+      expect(node.ok).toBe(false);
+    } finally {
+      Object.defineProperty(process, 'version', { value: prev, configurable: true });
+    }
+  });
 });
