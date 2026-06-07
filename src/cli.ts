@@ -91,7 +91,7 @@ if (failed.length > 0) {
   // pi/API key missing — warn but continue (user might have custom benchmark)
 }
 
-const spawner = new PiSpawner({ model: values.model || undefined });
+const spawner = new PiSpawner(values.model ? { model: values.model } : {});
 
 if (values.stop) {
   const { writeFileSync } = await import('node:fs');
