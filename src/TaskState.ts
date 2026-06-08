@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, renameSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, renameSync, readdirSync, cpSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { resolve, basename, join, dirname } from 'node:path';
 import {
@@ -96,19 +96,27 @@ export class TaskState {
   set status(v: Status | string) {
     // Cache stores the base status (PENDING/FAILED/BLOCKED/CONVERGED)
     const cacheBase = isInProgress(v) ? Status.PENDING : (v as Status);
-    // Atomic write: temp → rename (survives crash mid-write)
+    // Write the status file FIRST — ensures the status is always recorded
+    // even if the subsequent shard rename fails.
     const tmp = join(this.#dir, F_STATUS + '.tmp');
     writeFileSync(tmp, `${v}\n`);
     renameSync(tmp, join(this.#dir, F_STATUS));
-    TaskState.#cache.set(String(this.taskNumber), cacheBase as Status);
-    // Migrate to correct shard using the actual status, not cacheBase
+    // Then migrate to the correct shard (best-effort).
+    // If the rename fails, the task stays in the old shard with the
+    // correct status — pick() still works because it reads the status file.
     const target = statusToShard(v);
     if (target !== basename(dirname(this.#dir))) {
       const root = dirname(dirname(this.#dir));
       const dest = resolve(root, target, basename(this.#dir));
       mkdirSync(dirname(dest), { recursive: true });
-      try { renameSync(this.#dir, dest); this.#dir = dest; } catch { /* best-effort */ }
+      try { renameSync(this.#dir, dest); this.#dir = dest; } catch {
+        // If rename fails (e.g., cross-device), fall back to copy + delete
+        cpSync(this.#dir, dest, { recursive: true });
+        rmSync(this.#dir, { recursive: true, force: true });
+        this.#dir = dest;
+      }
     }
+    TaskState.#cache.set(String(this.taskNumber), cacheBase as Status);
   }
 
   get isPending(): boolean    { return this.status === Status.PENDING; }
