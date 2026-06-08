@@ -131,13 +131,14 @@ export class Engine {
       }
       const ac = new AbortController();
       try {
-        /* c8 ignore next 7 */
+        /* c8 ignore start */
         const hb = setInterval(() => {
           task.heartbeat();
           if (existsSync(this.#stopFile)) {
             ac.abort();
           }
         }, 30_000);
+        /* c8 ignore stop */
         await this.#spawn(task, wt?.path, ac.signal);
         clearInterval(hb);
         metric = await this.#run(task, wt?.path);

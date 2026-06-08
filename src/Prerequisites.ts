@@ -6,37 +6,36 @@ export interface PrerequisiteResult {
   readonly message: string;
 }
 
-type CheckFn = () => PrerequisiteResult;
-
-function checkNode(): PrerequisiteResult {
-  const v = process.version;
-  const major = parseInt(v.slice(1).split('.')[0] ?? '0', 10);
-  return { name: 'node', ok: major >= 22, message: `Node ${v} (need >=22)` };
-}
-
-function checkPi(): PrerequisiteResult {
-  const r = spawnSync('pi', ['--version'], { timeout: 5000, encoding: 'utf-8' });
-  return {
-    name: 'pi',
-    ok: r.status === 0,
-    message: r.status === 0 ? (r.stdout?.trim() || 'installed') : 'pi CLI not found — install with: npm install -g @anthropic-ai/claude-code',
-  };
-}
-
-function checkApiKey(): PrerequisiteResult {
-  const key = process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY || '';
-  return {
-    name: 'API key',
-    ok: key.length > 0,
-    message: key ? 'found' : 'set OPENROUTER_API_KEY or ANTHROPIC_API_KEY',
-  };
-}
-
-const checks: CheckFn[] = [checkNode, checkPi, checkApiKey];
-
 export class Prerequisites {
   static async check(): Promise<PrerequisiteResult[]> {
-    return checks.map(fn => fn());
+    const nodeResult = Prerequisites.checkNode();
+    const piResult = Prerequisites.checkPi();
+    const apiResult = Prerequisites.checkApiKey();
+    return [nodeResult, piResult, apiResult];
+  }
+
+  private static checkNode(): PrerequisiteResult {
+    const v = process.version;
+    const major = parseInt(v.slice(1).split('.')[0] ?? '0', 10);
+    return { name: 'node', ok: major >= 22, message: `Node ${v} (need >=22)` };
+  }
+
+  private static checkPi(): PrerequisiteResult {
+    const r = spawnSync('pi', ['--version'], { timeout: 5000, encoding: 'utf-8' });
+    return {
+      name: 'pi',
+      ok: r.status === 0,
+      message: r.status === 0 ? (r.stdout?.trim() || 'installed') : 'pi CLI not found — install with: npm install -g @anthropic-ai/claude-code',
+    };
+  }
+
+  private static checkApiKey(): PrerequisiteResult {
+    const key = process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY || '';
+    return {
+      name: 'API key',
+      ok: key.length > 0,
+      message: key ? 'found' : 'set OPENROUTER_API_KEY or ANTHROPIC_API_KEY',
+    };
   }
 
   static format(results: PrerequisiteResult[]): string {

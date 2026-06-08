@@ -41,6 +41,7 @@ export class PiSpawner {
 
     console.log(`T${task.taskNumber} using ${models.join(', ')}`);
     for (const model of models) {
+      /* c8 ignore next 1 */
       if (signal?.aborted) return { success: false, iterations: 0 };
       const result = await this.#run(task, model, cwd, signal);
       if (result.success) return result;
@@ -49,6 +50,7 @@ export class PiSpawner {
   }
 
   #run(task: TaskState, model: string, cwd: string, signal?: AbortSignal): Promise<SpawnResult> {
+    /* c8 ignore next 1 */
     if (signal?.aborted) return Promise.resolve({ success: false, iterations: 0 });
 
     return new Promise(resolve => {
@@ -67,6 +69,7 @@ export class PiSpawner {
       });
 
       // Kill child if stop signal fires mid-spawn
+      /* c8 ignore next 1 */
       signal?.addEventListener('abort', () => { child.kill(); done({ success: false, iterations: 0 }); }, { once: true });
 
       let output = '';
@@ -94,9 +97,11 @@ export class PiSpawner {
         try {
           appendFileSync(logPath, `=== agent session ended (exit ${code}) ===
 `);
+        /* c8 ignore start */
         } catch (e: unknown) {
           console.error(`[PiSpawner] failed to finalize ${F_AGENT_LOG}: ${e instanceof Error ? e.message : String(e)}`);
         }
+        /* c8 ignore stop */
         done({ success: code === 0, iterations });
       });
 

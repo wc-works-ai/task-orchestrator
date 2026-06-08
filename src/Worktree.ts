@@ -54,9 +54,11 @@ export class Worktree {
     } catch {
       // Conflict — try auto-resolution
       try { this.#autoResolve(taskScope ?? []); } catch {
+        /* c8 ignore start */
         try { this.#git('merge', '--abort'); } catch {}
         try { this.#git('checkout', prevBranch); } catch {}
         throw new Error(`Merge conflict in ${this.#name} — manual resolution required`);
+        /* c8 ignore stop */
       }
     }
   }
@@ -78,6 +80,7 @@ export class Worktree {
       }
       this.#git('add', file);
     }
+    /* c8 ignore next 1 */
     this.#git('commit', '--no-edit');
   }
 

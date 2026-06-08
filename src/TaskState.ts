@@ -59,17 +59,27 @@ export class TaskState {
     this.#dir = resolve(dir);
   }
 
-  get directory(): string { return this.#dir; }
+  get directory(): string {
+    return this.#dir;
+  }
 
   // ── Identity ────────────────────────────────────────────────────────
   get taskNumber(): number {
     return parseInt(basename(this.#dir).match(/^T(\d+)-/)?.[1] ?? '', 10) || 0;
   }
-  get taskName(): string { return basename(this.#dir); }
+  get taskName(): string {
+    return basename(this.#dir);
+  }
 
-  get info(): TaskInfo { return this; }
-  get number(): number { return this.taskNumber; }
-  get name(): string { return this.taskName; }
+  get info(): TaskInfo {
+    return this;
+  }
+  get number(): number {
+    return this.taskNumber;
+  }
+  get name(): string {
+    return this.taskName;
+  }
 
   // ── Status ──────────────────────────────────────────────────────────
   get status(): Status {
