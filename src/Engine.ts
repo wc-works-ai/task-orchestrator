@@ -70,20 +70,22 @@ export class Engine {
     const task = await TaskState.pick(this.#dir, this.#id);
     if (!task) {
       // Diagnostic: show why nothing was picked
-      for (const shard of ['pending', 'in_progress', 'failed'] as const) {
+      for (const shard of ['pending', 'in_progress', 'failed', 'blocked'] as const) {
         let entries: string[];
         try { entries = readdirSync(resolve(this.#dir, shard)); } catch { continue; }
         for (const e of entries) {
           if (!e.startsWith('T')) continue;
           const t = new TaskState(resolve(this.#dir, shard, e));
           const tn = `T${t.taskNumber}`;
-          if (t.isConverged || t.isBlocked) continue;
+          if (t.isConverged) continue;
+          if (t.isBlocked) {
+            this.#log(`${tn}: skipped — blocked (${t.failureCount} failures)`);
+            continue;
+          }
           if (t.isInProgress && t.isClaimed) {
             const owner = t.claimOwnerId;
             const byUs = owner === this.#id;
             this.#log(`${tn}: skipped — ${byUs ? 'our claim (convergence check)' : `claim held by ${owner.slice(0, 12)}...`}`);
-          } else if (t.isFailed && t.failureCount >= 5) {
-            this.#log(`${tn}: skipped — blocked (${t.failureCount} failures)`);
           } else if (!t.dependenciesMet(this.#dir)) {
             this.#log(`${tn}: skipped — unmet deps [${t.dependencies.join(',')}]`);
           }

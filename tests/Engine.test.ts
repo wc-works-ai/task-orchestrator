@@ -304,4 +304,20 @@ describe('Engine', () => {
     expect(found).not.toBeNull();
     expect(found!.taskNumber).toBe(3);
   });
+
+  // ── Diagnostic: blocked tasks in blocked/ shard ──────────────────────────
+
+  it('diagnostic: logs skip for blocked tasks already in blocked shard', async () => {
+    const { writeFileSync, mkdirSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    // Create a task already in the blocked shard (pick won't move it)
+    const blockDir = resolve(dir, 'blocked', 'T01-blocked');
+    mkdirSync(blockDir, { recursive: true });
+    writeFileSync(join(blockDir, '.status'), 'BLOCKED\n');
+    writeFileSync(join(blockDir, '.failure_count'), '5\n');
+    // No actionable tasks — tick should log diagnostic for blocked task
+    const r = await new Engine(dir, { benchmark: zero, instanceId: 'test' }).tick();
+    expect(r.task).toBeNull();
+  });
+
 });

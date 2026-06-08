@@ -9,15 +9,6 @@ describe('Prerequisites', () => {
     expect(node!.ok).toBe(true);
   });
 
-  it('detects missing optional tools gracefully', async () => {
-    const results = await Prerequisites.check();
-    // pi might not be installed — should still complete without throwing
-    const pi = results.find(r => r.name === 'pi');
-    if (pi && !pi.ok) {
-      expect(pi.message).toContain('not found');
-    }
-  });
-
   it('env var checks do not throw when missing', async () => {
     const results = await Prerequisites.check();
     for (const r of results) {

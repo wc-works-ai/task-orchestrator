@@ -133,6 +133,13 @@ describe('Worktree', () => {
     expect(existsSync(join(wt.path, '.git'))).toBe(false);
   });
 
+  it('exposes branch and path getters', async () => {
+    const wt = new Worktree(repo, { name: 'T01-test' });
+    await wt.create();
+    expect(wt.path).toContain('T01-test');
+    expect(wt.branch).toBe('orchestrator/T01-test');
+  });
+
   it('uses fallback when git config is unset', async () => {
     // Create a fresh repo without git user config
     const { mkdtempSync } = await import('node:fs');

@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { TaskState } from './TaskState.js';
 import type { SpawnResult } from './Engine.js';
@@ -39,6 +39,7 @@ export class PiSpawner {
     const models = [this.modelFor(task), this.#fallback]
       .filter((m, i, arr) => m && arr.indexOf(m) === i);
 
+    console.log(`T${task.taskNumber} using ${models.join(', ')}`);
     for (const model of models) {
       const result = await this.#run(task, model, cwd);
       if (result.success) return result;
@@ -64,21 +65,31 @@ export class PiSpawner {
 
       let output = '';
 
+      const logPath = join(task.directory, F_AGENT_LOG);
+      // Write header so a partial file is recognizable
+      try { writeFileSync(logPath, `=== agent session started at ${new Date().toISOString()} ===
+`); } catch {}
+
       child.stdout?.on('data', (d: Buffer) => {
-        output += d.toString();
+        const txt = d.toString();
+        output += txt;
+        try { appendFileSync(logPath, txt); } catch {}
       });
 
       child.stderr?.on('data', (d: Buffer) => {
-        output += d.toString();
+        const txt = d.toString();
+        output += txt;
+        try { appendFileSync(logPath, txt); } catch {}
       });
 
       child.on('close', (code: number | null) => {
         const iterations = (output.match(/log_experiment/g) || []).length;
-        // Persist agent log to task directory
+        // Append footer and close — previous chunks already streamed
         try {
-          writeFileSync(join(task.directory, F_AGENT_LOG), output);
+          appendFileSync(logPath, `=== agent session ended (exit ${code}) ===
+`);
         } catch (e: unknown) {
-          console.error(`[PiSpawner] failed to write ${F_AGENT_LOG}: ${e instanceof Error ? e.message : String(e)}`);
+          console.error(`[PiSpawner] failed to finalize ${F_AGENT_LOG}: ${e instanceof Error ? e.message : String(e)}`);
         }
         done({ success: code === 0, iterations });
       });

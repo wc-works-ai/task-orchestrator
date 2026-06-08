@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { rm } from 'node:fs/promises';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { resolve, join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
 import { TaskState, Status } from '../src/TaskState.js';
@@ -81,6 +81,24 @@ describe('PiSpawner', () => {
     const p = new PiSpawner().spawn(make(dir, 1, 'a'));
     setTimeout(() => mock.emit('close', 1), 5);
     expect((await p).success).toBe(false);
+  });
+
+  it('captures stderr output', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiSpawner().spawn(t, dir);
+    setTimeout(() => {
+      mock.stderr!.emit('data', Buffer.from('warning: something bad\n'));
+      mock.emit('close', 0);
+    }, 5);
+    const r = await p;
+    expect(r.success).toBe(true);
+    // Agent log should contain stderr output
+    const log = readFileSync(join(t.directory, 'agent.log'), 'utf-8');
+    expect(log).toContain('warning: something bad');
   });
 
   it('captures stdout and counts iterations', async () => {
