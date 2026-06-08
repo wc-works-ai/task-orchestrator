@@ -193,11 +193,13 @@ if (values.loop) {
       if (r.task) console.log(`  ${r.converged ? '✅' : '⏳'} T${r.task.number}: ${r.task.goal.slice(0, 60)}`);
     },
   });
-  console.log(`\n🎉 ${n} ticks\n`);
+  console.log(`\n🎉 ${n} ticks — all done\n`);
 } else {
   const r = await engine.tick();
   if (r.task) {
     const icon = r.converged ? '✅' : r.metric === 0 ? '⏳' : '❌';
     console.log(`${icon} T${r.task.number}: metric=${r.metric}`);
+  } else {
+    console.log('Nothing actionable.');
   }
 }
