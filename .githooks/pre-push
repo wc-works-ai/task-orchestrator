@@ -10,8 +10,8 @@ unset GIT_OBJECT_DIRECTORY
 
 echo "🔍 Running pre-push checks..."
 
-# Run full pipeline
-npm run all
+# Full pipeline + coverage
+npm run c && npm run tc && npm run b
 
 # Check for unstaged changes (test files updated but not staged)
 if ! git diff --quiet -- tests/; then

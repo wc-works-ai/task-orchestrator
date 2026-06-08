@@ -119,6 +119,27 @@ describe('Prerequisites', () => {
     }
   });
 
+  it('gh check fails when no API keys and gh is not in PATH', async () => {
+    const prevPath = process.env.PATH;
+    const prevO = process.env.OPENROUTER_API_KEY;
+    const prevA = process.env.ANTHROPIC_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    process.env.PATH = '/usr/bin:/bin';
+    try {
+      const results = await Prerequisites.check();
+      const auth = results.find(r => r.name === 'auth')!;
+      expect(auth.ok).toBe(false);
+      expect(auth.message).toBe('set OPENROUTER_API_KEY or ANTHROPIC_API_KEY, or auth with gh');
+    } finally {
+      process.env.PATH = prevPath;
+      if (prevO) process.env.OPENROUTER_API_KEY = prevO;
+      else delete process.env.OPENROUTER_API_KEY;
+      if (prevA) process.env.ANTHROPIC_API_KEY = prevA;
+      else delete process.env.ANTHROPIC_API_KEY;
+    }
+  });
+
   it('pi check fails when pi is not in PATH', async () => {
     const prevPath = process.env.PATH;
     process.env.PATH = '/usr/bin:/bin';
