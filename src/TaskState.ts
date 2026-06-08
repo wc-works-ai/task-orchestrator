@@ -68,7 +68,7 @@ export class TaskState {
     const m = basename(this.#dir).match(/^T(\d+)-/);
     /* v8 ignore next 2 */
     if (!m) return 0;
-    return parseInt(m[1], 10);
+    return parseInt(m[1]!, 10);
   }
   get taskName(): string {
     return basename(this.#dir);
@@ -269,7 +269,7 @@ export class TaskState {
     try {
       const modelMatch = readFileSync(join(this.#dir, 'autoresearch.md'), 'utf-8')
         .match(/\*\*Model:\*\*\s*(.+)/);
-      return modelMatch ? modelMatch[1].trim() : '';
+      return modelMatch?.[1]?.trim() ?? '';
     } catch { return ''; }
   }
 

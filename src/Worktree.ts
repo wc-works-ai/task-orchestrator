@@ -31,7 +31,8 @@ export class Worktree {
     return this.#branch;
   }
   get exists(): boolean {
-    return existsSync(join(this.#path, '.git'));
+    const gitFile = join(this.#path, '.git');
+    return existsSync(gitFile);
   }
   /* v8 ignore stop */
 

@@ -213,13 +213,12 @@ describe('TaskState', () => {
 
   it('dependenciesMet handles missing shard directory', async () => {
     const { rmSync } = await import('node:fs');
-    // Remove the converged shard to trigger the readdirSync catch in #findByNumber
+    make(dir, 2, 'b', { status: Status.CONVERGED }); // moves to converged shard
+    // Remove the converged shard including task 2
     rmSync(resolve(dir, 'converged'), { recursive: true, force: true });
-    make(dir, 2, 'b', { status: Status.CONVERGED }); // would be in converged shard
     const t = make(dir, 1, 'a');
     t.dependencies = [2];
-    // dependenciesMet should still find the dep or fail gracefully
-    // Since shard is missing, #findByNumber skips it and won't find task 2
+    // dependenciesMet: #findByNumber can't find task 2 (shard deleted) → returns null → false
     expect(t.dependenciesMet(dir)).toBe(false);
   });
 
@@ -404,6 +403,21 @@ describe('TaskState', () => {
     const t = make(dir, 1, 'a');
     t.claim('test');
     expect(() => t.heartbeat()).not.toThrow();
+  });
+
+  it('status setter handles empty file content', () => {
+    const t = make(dir, 1, 'a');
+    // Write empty status file to trigger the `if (raw)` falsy branch
+    writeFileSync(resolve(t.directory, '.status'), '   \n');
+    const fresh = new TaskState(t.directory);
+    expect(fresh.status).toBe(Status.PENDING);
+  });
+
+  it('status setter migrates to same shard (no-op)', () => {
+    const t = make(dir, 1, 'a');
+    // Setting PENDING when already in pending shard → target === dirname → no migration
+    t.status = Status.PENDING;
+    expect(t.directory).toContain('/pending/');
   });
 
   it('statusCache returns the internal cache', () => {
