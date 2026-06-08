@@ -178,6 +178,9 @@ export class PiSpawner {
       `Use init_experiment, run_experiment (with ${arPath}/autoresearch.sh),`,
       `and log_experiment. Edit only files listed in the task's scope.`,
       'Iterate until metric=0 for 3 consecutive keep runs.',
+      '',
+      'NOTE: autoresearch.sh must NOT cd to another directory — it runs from the worktree',
+      'root where node_modules and all source files are available.',
     ].join('\n');
   }
 }
