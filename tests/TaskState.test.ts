@@ -449,6 +449,15 @@ describe('TaskState', () => {
     expect(t.isPending).toBe(true);
   });
 
+  it('taskNumber returns 0 for non-matching directory name', () => {
+    // Cover the regex match failure fallback: `|| 0` in taskNumber()
+    const d = resolve(dir, 'pending', 'non-standard-dir-name');
+    mkdirSync(d, { recursive: true });
+    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+    const t = new TaskState(d);
+    expect(t.taskNumber).toBe(0);
+  });
+
   // ── Status utilities ───────────────────────────────────────────────
 
   it('statusToShard maps all Status values', () => {

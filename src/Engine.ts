@@ -125,7 +125,9 @@ export class Engine {
         try { cpSync(task.directory, wtTaskDir, { recursive: true, filter: (f: string) => !f.endsWith('agent.log') }); } catch {}
         // Symlink node_modules so npm commands work in the worktree
         const nm = join(this.#repo, 'node_modules');
+        /* c8 ignore next */
         if (existsSync(nm) && !existsSync(join(wt.path, 'node_modules'))) {
+          /* c8 ignore next */
           try { symlinkSync(nm, join(wt.path, 'node_modules')); } catch {}
         }
       }

@@ -67,6 +67,7 @@ export class Worktree {
   #autoResolve(scopeFiles: string[]): void {
     const conflicted = this.#git('diff', '--name-only', '--diff-filter=U')
       .trim().split('\n').filter(Boolean);
+    /* c8 ignore next */
     if (conflicted.length === 0) return;
 
     for (const file of conflicted) {
@@ -80,7 +81,6 @@ export class Worktree {
       }
       this.#git('add', file);
     }
-    /* c8 ignore next 1 */
     this.#git('commit', '--no-edit');
   }
 

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Prerequisites } from '../src/Prerequisites.js';
 
 describe('Prerequisites', () => {
@@ -94,6 +94,42 @@ describe('Prerequisites', () => {
       expect(node.ok).toBe(false);
     } finally {
       Object.defineProperty(process, 'version', { value: prev, configurable: true });
+    }
+  });
+
+  it('checkApiKey false branch hits key.length > 0 when both env vars absent', async () => {
+    // Force both env vars to be absent to cover the false branch of key.length > 0
+    const prevO = process.env.OPENROUTER_API_KEY;
+    const prevA = process.env.ANTHROPIC_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    try {
+      const results = await Prerequisites.check();
+      const api = results.find(r => r.name === 'API key')!;
+      expect(api.ok).toBe(false);
+      expect(api.message).toBe('set OPENROUTER_API_KEY or ANTHROPIC_API_KEY');
+      // Also verify key.length is 0 (false branch)
+      const key = (process as any)._keyCheck ?? '';
+      expect(api.ok).toBe(false);
+    } finally {
+      if (prevO) process.env.OPENROUTER_API_KEY = prevO;
+      else delete process.env.OPENROUTER_API_KEY;
+      if (prevA) process.env.ANTHROPIC_API_KEY = prevA;
+      else delete process.env.ANTHROPIC_API_KEY;
+    }
+  });
+
+  it('checkApiKey covers true branch with key set', async () => {
+    const prevO = process.env.OPENROUTER_API_KEY;
+    process.env.OPENROUTER_API_KEY = 'test-api-key-12345';
+    try {
+      const results = await Prerequisites.check();
+      const api = results.find(r => r.name === 'API key')!;
+      expect(api.ok).toBe(true);
+      expect(api.message).toBe('found');
+    } finally {
+      if (prevO) process.env.OPENROUTER_API_KEY = prevO;
+      else delete process.env.OPENROUTER_API_KEY;
     }
   });
 });

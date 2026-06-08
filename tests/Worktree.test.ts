@@ -68,16 +68,17 @@ describe('Worktree', () => {
   });
 
   it('auto-resolves conflict: worktree wins for scoped files', async () => {
-    const { writeFileSync, mkdirSync } = await import('node:fs');
-    mkdirSync(join(repo, 'docs'), { recursive: true });
-    writeFileSync(join(repo, 'docs/contract.md'), 'main');
-    execSync('git add docs/contract.md && git commit -m main', { cwd: repo });
+    const { writeFileSync } = await import('node:fs');
     const wt = new Worktree(repo, { name: 'T01-test' });
     await wt.create();
-    writeFileSync(join(wt.path, 'docs/contract.md'), 'worktree');
-    execSync('git add docs/contract.md && git commit -m wt', { cwd: wt.path });
-    await wt.merge(['docs/contract.md']);
-    expect(readFileSync(join(repo, 'docs/contract.md'), 'utf-8')).toBe('worktree');
+    // Main creates file AFTER worktree → triggers conflict on merge
+    writeFileSync(join(repo, 'scoped.txt'), 'main version');
+    execSync('git add scoped.txt && git commit -m "main"', { cwd: repo });
+    // Worktree creates same file differently → both sides modify = conflict
+    writeFileSync(join(wt.path, 'scoped.txt'), 'worktree version');
+    execSync('git add scoped.txt && git commit -m "wt"', { cwd: wt.path });
+    await wt.merge(['scoped.txt']);
+    expect(readFileSync(join(repo, 'scoped.txt'), 'utf-8')).toBe('worktree version');
   });
 
   it('remove deletes worktree and branch', async () => {
