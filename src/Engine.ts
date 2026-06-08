@@ -2,8 +2,9 @@ import { statSync, readFileSync, readdirSync, existsSync, rmSync, appendFileSync
 import { resolve, join, dirname } from 'node:path';
 import { TaskState, Status, type BenchmarkFn, type TickResult, type TickNull } from './TaskState.js';
 import { Worktree } from './Worktree.js';
+import { env } from './env.js';
 
-const HEARTBEAT_MAX_MS = parseInt(process.env.ORCH_HEARTBEAT_MS ?? '300000', 10);
+const HEARTBEAT_MAX_MS = env.heartbeatMs;
 
 export interface SpawnResult {
   readonly success: boolean;
@@ -34,7 +35,7 @@ export class Engine {
   constructor(tasksDir: string, opts: EngineOptions = {}) {
     this.#dir = tasksDir;
     this.#repo = opts.repoDir ?? dirname(tasksDir);
-    this.#worktreesDir = opts.worktreesDir ?? process.env.ORCH_WORKTREES;
+    this.#worktreesDir = opts.worktreesDir ?? env.worktreesDir;
     this.#bench = opts.benchmark ?? (() => 1);
     this.#spawn = opts.spawn ?? null;
     this.#id = opts.instanceId ?? `${process.pid}_${Date.now()}`;

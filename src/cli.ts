@@ -8,9 +8,10 @@ import { Engine } from './Engine.js';
 import { TaskState, type TaskInfo } from './TaskState.js';
 import { PiSpawner } from './PiSpawner.js';
 import { Prerequisites } from './Prerequisites.js';
+import { env } from './env.js';
 
-const tasksDir = resolve(process.env.ORCH_TASKS ?? './tasks');
-const repoDir = resolve(process.env.ORCH_REPO ?? findRepoRoot(tasksDir));
+const tasksDir = resolve(env.tasksDir);
+const repoDir = resolve(env.repoDir || findRepoRoot(tasksDir));
 
 function findRepoRoot(start: string): string {
   let dir = resolve(start);

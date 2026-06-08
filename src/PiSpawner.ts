@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { writeFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { TaskState } from './TaskState.js';
+import { env } from './env.js';
 import type { SpawnResult } from './Engine.js';
 
 // ── File names ──────────────────────────────────────────────────────────────
@@ -23,8 +24,7 @@ export class PiSpawner {
 
   constructor(opts: PiSpawnerOptions = {}) {
     this.#model = opts.model
-      ?? process.env.ORCH_MODEL
-      ?? 'openrouter/owl-alpha';
+      ?? env.model;
     this.#fallback = opts.fallbackModel ?? 'openrouter/owl-alpha';
     this.#workDir = opts.workDir ?? process.cwd();
   }
