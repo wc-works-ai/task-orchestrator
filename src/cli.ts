@@ -163,6 +163,13 @@ if (!existsSync(dir)) {
   process.exit(1);
 }
 
+// Resolve the effective worktrees directory for robust benchmark cwd detection.
+// Use a path-prefix check instead of fragile substring matching to avoid
+// false positives when the repo path itself contains '.worktrees/'.
+const effectiveWorktreesDir = values.worktrees
+  ? resolve(values.worktrees)
+  : resolve(repo, '.worktrees');
+
 const engine = new Engine(dir, {
   repoDir: repo,
   ...(values.worktrees ? { worktreesDir: values.worktrees } : {}),
@@ -171,7 +178,7 @@ const engine = new Engine(dir, {
     try {
       const out = execSync(`node ${t.directory}/benchmark.js`, {
         timeout: 30_000, encoding: 'utf-8',
-        cwd: t.directory.includes('.worktrees/') ? t.cwd : repo,
+        cwd: (t.directory + '/').startsWith(effectiveWorktreesDir + '/') ? t.cwd : repo,
       });
       return parseInt(out.match(/METRIC\s+\w+=(\d+)/)?.[1] ?? '1', 10);
     } catch { return 1; }
