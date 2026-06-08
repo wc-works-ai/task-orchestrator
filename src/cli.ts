@@ -35,6 +35,7 @@ const { values, positionals } = await parseArgs({
     metric: { type: 'string', default: '' },
     scope:  { type: 'string', default: '' },
     once:   { type: 'boolean', default: false },
+    worktrees: { type: 'string', default: '' },
     help:   { type: 'boolean', short: 'h', default: false },
   },
 });
@@ -52,6 +53,7 @@ Task Orchestrator — autonomous task execution
   orchestrator --check          check prerequisites
   orchestrator --stop           signal all instances to stop
   orchestrator --task <n>       force-pick specific task
+  orchestrator --worktrees <dir> worktree directory (default: <repo>/.worktrees)
   orchestrator add <name>       scaffold a new task (AI fills details)
   orchestrator add <name> --goal "..." --metric x --scope "a b"
 
@@ -156,6 +158,7 @@ if (!existsSync(dir)) {
 
 const engine = new Engine(dir, {
   repoDir: repo,
+  ...(values.worktrees ? { worktreesDir: values.worktrees } : {}),
   spawn: (task, worktreePath, signal) => spawner.spawn(task, worktreePath, signal),
   benchmark: async (t: TaskInfo) => {
     try {

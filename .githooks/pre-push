@@ -1,0 +1,16 @@
+#!/bin/sh
+# Pre-push hook: run full pipeline, reject push on failure
+set -e
+
+echo "🔍 Running pre-push checks..."
+
+# Run full pipeline
+npm run all
+
+# Check for unstaged changes (test files updated but not staged)
+if ! git diff --quiet -- tests/; then
+  echo "⚠️  Unstaged changes in tests/ — stage them or stash before pushing"
+  exit 1
+fi
+
+echo "✅ All checks passed"
