@@ -1,8 +1,8 @@
 # AGENTS.md
 
 > **⚠️ REQUIRED READING BEFORE ANY CODE CHANGE**
-> 1. **`DEVELOP.md`** — TDD + SOLID workflow, branch mapping, code review checklist
-> 2. **`TESTING.md`** — test conventions, mock rules, coverage targets
+> 1. **`docs/DEVELOP.md`** — TDD + SOLID, branch mapping, code review checklist
+> 2. **`docs/TESTING.md`** — test conventions, mock rules, coverage targets
 >
 > Run `npm run c && npm run t` before every commit. Violating DEVELOP.md or TESTING.md is a defect.
 
