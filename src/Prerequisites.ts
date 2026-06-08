@@ -16,6 +16,7 @@ export class Prerequisites {
 
   private static checkNode(): PrerequisiteResult {
     const v = process.version;
+    /* v8 ignore next: ?? fallback for undefined array index */
     const major = parseInt(v.slice(1).split('.')[0] ?? '0', 10);
     return { name: 'node', ok: major >= 22, message: `Node ${v} (need >=22)` };
   }

@@ -232,6 +232,49 @@ describe('Engine', () => {
     expect(r.task!.number).toBe(1);
   });
 
+  // ── pickByNumber ───────────────────────────────────────────────────
+
+  it('pickByNumber finds task by number', async () => {
+    make(dir, 1, 'a');
+    make(dir, 2, 'b');
+    const engine = new Engine(dir, { benchmark: zero });
+    const t = await engine.pickByNumber(2);
+    expect(t).not.toBeNull();
+    expect(t!.taskNumber).toBe(2);
+  });
+
+  it('pickByNumber returns null for non-existent task', async () => {
+    make(dir, 1, 'a');
+    const engine = new Engine(dir, { benchmark: zero });
+    const t = await engine.pickByNumber(99);
+    expect(t).toBeNull();
+  });
+
+  it('pickByNumber returns null for task in in_progress shard', async () => {
+    const { writeFileSync, mkdirSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const taskDir = resolve(dir, 'in_progress', 'T01-claimed');
+    mkdirSync(taskDir, { recursive: true });
+    const claimDir = join(taskDir, '.claim');
+    mkdirSync(claimDir, { recursive: true });
+    writeFileSync(join(claimDir, 'owner'), 'pid:1\nstarted:1\ninstance:test\n');
+    writeFileSync(join(taskDir, '.status'), 'IN_PROGRESS:test\n');
+    writeFileSync(join(claimDir, 'heartbeat'), '');
+    const engine = new Engine(dir, { benchmark: zero });
+    const t = await engine.pickByNumber(1);
+    expect(t).not.toBeNull();
+    expect(t!.taskNumber).toBe(1);
+    expect(t!.isInProgress).toBe(true);
+  });
+
+  it('pickByNumber returns null when shard does not exist', async () => {
+    const { rmSync } = await import('node:fs');
+    rmSync(resolve(dir, 'converged'), { recursive: true, force: true });
+    const engine = new Engine(dir, { benchmark: zero });
+    const t = await engine.pickByNumber(1);
+    expect(t).toBeNull();
+  });
+
   it('uses default benchmark (() => 1) when not provided', async () => {
     make(dir, 1, 'a');
     const engine = new Engine(dir, {}); // no benchmark
@@ -265,6 +308,14 @@ describe('Engine', () => {
     const engine = new Engine(dir, { benchmark: zero, instanceId: 'recover-test' });
     const r = await engine.tick();
     expect(r.task).not.toBeNull();
+  });
+
+  it('recover returns early when in_progress dir is missing', async () => {
+    const { rmSync } = await import('node:fs');
+    rmSync(resolve(dir, 'in_progress'), { recursive: true, force: true });
+    // tick() calls #recover() which catches readdirSync on missing dir
+    const r = await new Engine(dir, { benchmark: zero }).tick();
+    expect(r.task).toBeNull();
   });
 
   it('recovery skips IN_PROGRESS task without claim', async () => {

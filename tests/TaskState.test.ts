@@ -74,6 +74,17 @@ describe('TaskState', () => {
     expect(t.hasConverged).toBe(true);
   });
 
+  it('failureCount reads from existing file', async () => {
+    const t = make(dir, 1, 'a');
+    // Write a non-numeric failure count to trigger || 0 fallback
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(t.directory + '/.failure_count', 'not-a-number\n');
+    expect(t.failureCount).toBe(0);
+    // Write a valid number
+    writeFileSync(t.directory + '/.failure_count', '3\n');
+    expect(t.failureCount).toBe(3);
+  });
+
   it('failureCount increments', () => {
     const t = make(dir, 1, 'a');
     expect(t.failureCount).toBe(0);
@@ -219,6 +230,17 @@ describe('TaskState', () => {
     expect(picked!.taskNumber).toBe(2);
   });
 
+  it('dependenciesMet handles missing shard directory', async () => {
+    const { rmSync } = await import('node:fs');
+    make(dir, 2, 'b', { status: Status.CONVERGED }); // moves to converged shard
+    // Remove the converged shard including task 2
+    rmSync(resolve(dir, 'converged'), { recursive: true, force: true });
+    const t = make(dir, 1, 'a');
+    t.dependencies = [2];
+    // dependenciesMet: #findByNumber can't find task 2 (shard deleted) → returns null → false
+    expect(t.dependenciesMet(dir)).toBe(false);
+  });
+
   it('dependenciesMet handles missing dep task', async () => {
     const t = make(dir, 1, 'a');
     t.dependencies = [99]; // non-existent task
@@ -241,8 +263,9 @@ describe('TaskState', () => {
 
   it('scan skips entries that are not directories', async () => {
     const { writeFileSync } = await import('node:fs');
-    // Create a file in the pending shard — should be skipped
-    writeFileSync(resolve(dir, 'pending', 'not-a-dir'), '');
+    // Create a file that matches T-pattern but is not a directory
+    // to exercise the inner 'catch { continue; }' in scan()
+    writeFileSync(resolve(dir, 'pending', 'T01-not-a-dir'), '');
     const all = await TaskState.scan(dir);
     // The file entry should be skipped, scan completes without error
     expect(all).toBeInstanceOf(Map);
@@ -273,6 +296,13 @@ describe('TaskState', () => {
     expect(fresh.scope).toEqual([]);
   });
 
+  it('scope returns [] when no ## Scope header in file', () => {
+    const t = make(dir, 1, 'a', { status: Status.PENDING });
+    writeFileSync(t.directory + '/autoresearch.md', '## Goal\nsome goal\n## Other\ndata');
+    const fresh = new TaskState(t.directory);
+    expect(fresh.scope).toEqual([]);
+  });
+
   it('model returns empty when no model in metadata', () => {
     const t = make(dir, 1, 'a', { status: Status.PENDING });
     writeFileSync(t.directory + '/autoresearch.md', '## Goal\njust test');
@@ -287,6 +317,20 @@ describe('TaskState', () => {
     const picked = await TaskState.pick(dir, 'test');
     expect(picked).not.toBeNull();
     expect(picked!.taskNumber).toBe(1);
+  });
+
+  it('pick skips converged tasks in pending shard', async () => {
+    // Put a converged task directly in pending shard to exercise the
+    // 'if (t.isConverged || t.isBlocked) continue' path in pick()
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    const tdir = resolve(dir, 'pending', 'T01-converged-but-in-pending');
+    mkdirSync(tdir, { recursive: true });
+    writeFileSync(tdir + '/.status', 'CONVERGED\n');
+    make(dir, 2, 'b');
+    await TaskState.scan(dir);
+    const picked = await TaskState.pick(dir, 'test');
+    expect(picked).not.toBeNull();
+    expect(picked!.taskNumber).toBe(2);
   });
 
   it('pick skips converged tasks', async () => {
@@ -378,6 +422,21 @@ describe('TaskState', () => {
     const t = make(dir, 1, 'a');
     t.claim('test');
     expect(() => t.heartbeat()).not.toThrow();
+  });
+
+  it('status setter handles empty file content', () => {
+    const t = make(dir, 1, 'a');
+    // Write empty status file to trigger the `if (raw)` falsy branch
+    writeFileSync(resolve(t.directory, '.status'), '   \n');
+    const fresh = new TaskState(t.directory);
+    expect(fresh.status).toBe(Status.PENDING);
+  });
+
+  it('status setter migrates to same shard (no-op)', () => {
+    const t = make(dir, 1, 'a');
+    // Setting PENDING when already in pending shard → target === dirname → no migration
+    t.status = Status.PENDING;
+    expect(t.directory).toContain('/pending/');
   });
 
   it('statusCache returns the internal cache', () => {
