@@ -449,6 +449,12 @@ describe('TaskState', () => {
     expect(t.isPending).toBe(true);
   });
 
+  it('cwd returns the directory path', () => {
+    const t = make(dir, 1, 'a');
+    expect(t.cwd).toBe(t.directory);
+    expect(t.info.cwd).toBe(t.directory);
+  });
+
   it('taskNumber returns 0 for non-matching directory name', () => {
     // Cover the regex match failure fallback: `|| 0` in taskNumber()
     const d = resolve(dir, 'pending', 'non-standard-dir-name');
