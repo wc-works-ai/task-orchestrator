@@ -106,6 +106,7 @@ export class Engine {
     }
 
     task.release(Status.FAILED);
+    this.#log(`T${task.taskNumber} FAILED (metric=${metric})`);
     return { task: task.info, metric, converged: false };
   }
 
@@ -128,6 +129,7 @@ export class Engine {
     task.incrementConvergence();
     if (task.hasConverged) {
       task.status = Status.CONVERGED;
+      this.#log(`T${task.taskNumber} CONVERGED`);
       // Use passed worktree or look up from map (for subsequent ticks after spawn)
       const tree = wt ?? this.#worktrees.get(task.taskNumber) ?? null;
       if (tree) { this.#mergeAndRemove(task.taskNumber, tree, task.scope); }
@@ -166,6 +168,7 @@ export class Engine {
       if (pid !== null && this.#alive(pid)) continue;
       task.release(Status.FAILED);
       task.resetConvergence();
+      this.#log(`STALE: ${task.taskName} claim released`);
     }
   }
 
