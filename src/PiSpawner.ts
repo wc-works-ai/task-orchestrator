@@ -69,8 +69,10 @@ export class PiSpawner {
       });
 
       // Kill child if stop signal fires mid-spawn
+      // Call done() BEFORE child.kill() to prevent a race on platforms where
+      // kill() synchronously emits 'close' (which also calls done()).
       /* c8 ignore next 1 */
-      signal?.addEventListener('abort', () => { child.kill(); done({ success: false, iterations: 0 }); }, { once: true });
+      signal?.addEventListener('abort', () => { done({ success: false, iterations: 0 }); child.kill(); }, { once: true });
 
       let output = '';
       let lineBuf = '';
