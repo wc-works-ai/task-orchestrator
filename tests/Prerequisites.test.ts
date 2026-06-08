@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { Prerequisites } from '../src/Prerequisites.js';
 
 describe('Prerequisites', () => {
@@ -108,9 +108,6 @@ describe('Prerequisites', () => {
       const api = results.find(r => r.name === 'API key')!;
       expect(api.ok).toBe(false);
       expect(api.message).toBe('set OPENROUTER_API_KEY or ANTHROPIC_API_KEY');
-      // Also verify key.length is 0 (false branch)
-      const key = (process as any)._keyCheck ?? '';
-      expect(api.ok).toBe(false);
     } finally {
       if (prevO) process.env.OPENROUTER_API_KEY = prevO;
       else delete process.env.OPENROUTER_API_KEY;
