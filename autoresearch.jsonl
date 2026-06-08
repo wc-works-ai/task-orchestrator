@@ -61,3 +61,4 @@
 {"run":39,"commit":"8c40166","metric":0,"metrics":{},"status":"keep","description":"Run 2: PiSpawner.ts still at 100% branch coverage (branch_gap=0). Confirming stable baseline.","timestamp":1780895424632,"segment":21,"confidence":null}
 {"run":40,"commit":"64c6a38","metric":0,"metrics":{},"status":"keep","description":"Run 3: PiSpawner.ts at 100% branch coverage (branch_gap=0). 3 consecutive keep runs achieved — target met.","timestamp":1780895431731,"segment":21,"confidence":null}
 {"type":"config","name":"PiSpawner.ts 100% branch coverage","metricName":"branch_gap","metricUnit":"","bestDirection":"lower"}
+{"run":41,"commit":"db938eb","metric":0,"metrics":{},"status":"keep","description":"PiSpawner.ts baseline — branch_gap=0, already at 100% branch coverage","timestamp":1780895684518,"segment":22,"confidence":null}
