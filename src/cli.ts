@@ -115,19 +115,25 @@ if (values.check) {
 
 if (values.status) {
   const all = await TaskState.scan(dir);
-  const c = { p: 0, ip: 0, cv: 0, f: 0, b: 0 };
-  for (const [, t] of all) {
-    if (t.isPending) c.p++;
-    else if (t.isInProgress) c.ip++;
-    else if (t.isConverged) c.cv++;
-    else if (t.isFailed) c.f++;
-    else if (t.isBlocked) c.b++;
+  const nums = [...all.keys()].map(Number).sort((a, b) => a - b);
+  console.log('');
+  for (const k of nums) {
+    const t = all.get(String(k));
+    if (!t) continue;
+    let icon = '❓';
+    if (t.isConverged) icon = '✅';
+    else if (t.isFailed) icon = '❌';
+    else if (t.isBlocked) icon = '🚫';
+    else if (t.isPending) icon = '⬜';
+    else if (t.isInProgress) icon = '🔄';
+    const deps = t.dependencies.length > 0 ? `  ← depends: ${t.dependencies.join(', ')}` : '';
+    const goal = t.goal.length > 55 ? t.goal.slice(0, 52) + '...' : t.goal;
+    console.log(`  ${icon} T${k} ${goal}${deps}`);
+    if (t.isBlocked) {
+      console.log(`       blocked after ${t.failureCount} failures`);
+    }
   }
-  console.log(`\n  ✅ ${c.cv}/${all.size} converged`);
-  if (c.p)  console.log(`  ⬜ ${c.p} pending`);
-  if (c.f)  console.log(`  ❌ ${c.f} failed`);
-  if (c.ip) console.log(`  🔄 ${c.ip} active`);
-  if (c.b)  console.log(`  🚫 ${c.b} blocked\n`);
+  console.log(`  ─ ${all.size} total\n`);
   process.exit(0);
 }
 
