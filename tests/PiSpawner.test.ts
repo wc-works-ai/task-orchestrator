@@ -171,4 +171,199 @@ describe('PiSpawner', () => {
     const r = await p;
     expect(r.success).toBe(true);
   });
+
+  // ── #printEvent branch coverage ──────────────────────────────────────────
+
+  it('prints tool_execution_start with path arg', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiSpawner().spawn(t, dir);
+    setTimeout(() => {
+      var ev = JSON.stringify({ type: 'tool_execution_start', toolName: 'read', arguments: { path: '/foo.ts' } });
+      mock.stdout!.emit('data', Buffer.from(ev + '\n'));
+      mock.emit('close', 0);
+    }, 5);
+    var r = await p;
+    expect(r.success).toBe(true);
+  });
+
+  it('prints tool_execution_start with command arg', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiSpawner().spawn(t, dir);
+    setTimeout(() => {
+      var ev = JSON.stringify({ type: 'tool_execution_start', toolName: 'bash', arguments: { command: 'npm test' } });
+      mock.stdout!.emit('data', Buffer.from(ev + '\n'));
+      mock.emit('close', 0);
+    }, 5);
+    var r = await p;
+    expect(r.success).toBe(true);
+  });
+
+  it('prints tool_execution_start with no path or command', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiSpawner().spawn(t, dir);
+    setTimeout(() => {
+      var ev = JSON.stringify({ type: 'tool_execution_start', toolName: 'init_experiment', arguments: {} });
+      mock.stdout!.emit('data', Buffer.from(ev + '\n'));
+      mock.emit('close', 0);
+    }, 5);
+    var r = await p;
+    expect(r.success).toBe(true);
+  });
+
+  it('prints tool_execution_end with METRIC line', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiSpawner().spawn(t, dir);
+    setTimeout(() => {
+      var ev = JSON.stringify({ type: 'tool_execution_end', toolName: 'run_experiment', result: { content: [{ type: 'text', text: 'METRIC branch_gap=42.5\nsome output' }] } });
+      mock.stdout!.emit('data', Buffer.from(ev + '\n'));
+      mock.emit('close', 0);
+    }, 5);
+    var r = await p;
+    expect(r.success).toBe(true);
+  });
+
+  it('prints tool_execution_end with log_experiment keep', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiSpawner().spawn(t, dir);
+    setTimeout(() => {
+      var ev = JSON.stringify({ type: 'tool_execution_end', toolName: 'log_experiment', result: { content: [{ type: 'text', text: 'Logged #1: keep — description here\nmore' }] } });
+      mock.stdout!.emit('data', Buffer.from(ev + '\n'));
+      mock.emit('close', 0);
+    }, 5);
+    var r = await p;
+    expect(r.success).toBe(true);
+  });
+
+  it('prints tool_execution_end with log_experiment crash', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiSpawner().spawn(t, dir);
+    setTimeout(() => {
+      var ev = JSON.stringify({ type: 'tool_execution_end', toolName: 'log_experiment', result: { content: [{ type: 'text', text: 'crash detected\nmore' }] } });
+      mock.stdout!.emit('data', Buffer.from(ev + '\n'));
+      mock.emit('close', 0);
+    }, 5);
+    var r = await p;
+    expect(r.success).toBe(true);
+  });
+
+  it('prints tool_execution_end with log_experiment discard (no keep/crash)', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiSpawner().spawn(t, dir);
+    setTimeout(() => {
+      var ev = JSON.stringify({ type: 'tool_execution_end', toolName: 'log_experiment', result: { content: [{ type: 'text', text: 'discarded run\nmore' }] } });
+      mock.stdout!.emit('data', Buffer.from(ev + '\n'));
+      mock.emit('close', 0);
+    }, 5);
+    var r = await p;
+    expect(r.success).toBe(true);
+  });
+
+  it('prints tool_execution_end with isError', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiSpawner().spawn(t, dir);
+    setTimeout(() => {
+      var ev = JSON.stringify({ type: 'tool_execution_end', toolName: 'read', isError: true, result: { content: [{ type: 'text', text: 'error output' }] } });
+      mock.stdout!.emit('data', Buffer.from(ev + '\n'));
+      mock.emit('close', 0);
+    }, 5);
+    var r = await p;
+    expect(r.success).toBe(true);
+  });
+
+  it('handles tool_execution_end with non-text content', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiSpawner().spawn(t, dir);
+    setTimeout(() => {
+      var ev = JSON.stringify({ type: 'tool_execution_end', toolName: 'read', result: { content: [{ type: 'image', data: 'abc' }] } });
+      mock.stdout!.emit('data', Buffer.from(ev + '\n'));
+      mock.emit('close', 0);
+    }, 5);
+    var r = await p;
+    expect(r.success).toBe(true);
+  });
+
+  it('handles tool_execution_end with no content array', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiSpawner().spawn(t, dir);
+    setTimeout(() => {
+      var ev = JSON.stringify({ type: 'tool_execution_end', toolName: 'read', result: {} });
+      mock.stdout!.emit('data', Buffer.from(ev + '\n'));
+      mock.emit('close', 0);
+    }, 5);
+    var r = await p;
+    expect(r.success).toBe(true);
+  });
+
+  it('handles unknown event type', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiSpawner().spawn(t, dir);
+    setTimeout(() => {
+      var ev = JSON.stringify({ type: 'message_start', message: { role: 'user' } });
+      mock.stdout!.emit('data', Buffer.from(ev + '\n'));
+      mock.emit('close', 0);
+    }, 5);
+    var r = await p;
+    expect(r.success).toBe(true);
+  });
+
+  it('handles tool_execution_start with name fallback', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiSpawner().spawn(t, dir);
+    setTimeout(() => {
+      // No toolName, only name — tests the fallback: obj.toolName ?? obj.name
+      var ev = JSON.stringify({ type: 'tool_execution_start', name: 'write', arguments: { path: '/bar.ts' } });
+      mock.stdout!.emit('data', Buffer.from(ev + '\n'));
+      mock.emit('close', 0);
+    }, 5);
+    var r = await p;
+    expect(r.success).toBe(true);
+  });
 });
