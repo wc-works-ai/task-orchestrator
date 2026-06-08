@@ -23,9 +23,15 @@ export class Worktree {
     this.#base = opts.baseBranch ?? 'master';
   }
 
-  get path(): string { return this.#path; }
-  get branch(): string { return this.#branch; }
-  get exists(): boolean { return existsSync(join(this.#path, '.git')); }
+  get path(): string {
+    return this.#path;
+  }
+  get branch(): string {
+    return this.#branch;
+  }
+  get exists(): boolean {
+    return existsSync(join(this.#path, '.git'));
+  }
 
   async create(): Promise<string> {
     if (this.exists) return this.#path;

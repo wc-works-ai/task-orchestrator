@@ -12,12 +12,10 @@ const checks: CheckFn[] = [
   () => {
     const v = process.version;
     const major = parseInt(v.slice(1).split('.')[0] ?? '0', 10);
-    /* istanbul ignore next: node version branch depends on runtime */
     return { name: 'node', ok: major >= 22, message: `Node ${v} (need >=22)` };
   },
   () => {
     const r = spawnSync('pi', ['--version'], { timeout: 5000, encoding: 'utf-8' });
-    /* istanbul ignore next: pi installation depends on runtime */
     return {
       name: 'pi',
       ok: r.status === 0,

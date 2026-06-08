@@ -1,4 +1,4 @@
-import { statSync, readFileSync, readdirSync, existsSync, rmSync } from 'node:fs';
+import { statSync, readFileSync, readdirSync, existsSync, rmSync, appendFileSync } from 'node:fs';
 import { resolve, join, dirname } from 'node:path';
 import { TaskState, Status, type BenchmarkFn, type TickResult, type TickNull } from './TaskState.js';
 import { Worktree } from './Worktree.js';
@@ -38,6 +38,10 @@ export class Engine {
   }
 
   get instanceId(): string { return this.#id; }
+
+  #log(msg: string): void {
+    try { appendFileSync(resolve(this.#dir, 'orchestrator.log'), `[${new Date().toISOString()}] ${msg}\n`); } catch {}
+  }
 
   get #stopFile(): string { return resolve(this.#dir, '.stop'); }
 
