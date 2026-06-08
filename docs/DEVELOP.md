@@ -2,6 +2,8 @@
 
 TDD + SOLID. Read `TESTING.md` first for test conventions.
 
+**First-time setup:** `git config core.hooksPath .githooks` (enables pre-commit + pre-push hooks)
+
 **TypeScript strict** — `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noUnusedLocals`
 - **Private fields** — `#name`, never `private name`
 - **Imports** — `import type` for type-only, `verbatimModuleSyntax`

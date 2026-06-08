@@ -3,11 +3,10 @@ dist/
 .DS_Store
 *.tsbuildinfo
 
-# Task orchestration runtime directories
-tasks/*
+# Task orchestration runtime
+tasks/
 !tasks/.gitkeep
 .worktrees/
 coverage/
-tasks/
 *.cov_*
 autoresearch.*
