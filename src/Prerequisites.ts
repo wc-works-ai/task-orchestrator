@@ -10,7 +10,7 @@ export class Prerequisites {
   static async check(): Promise<PrerequisiteResult[]> {
     const nodeResult = Prerequisites.checkNode();
     const piResult = Prerequisites.checkPi();
-    const apiResult = Prerequisites.checkApiKey();
+    const apiResult = Prerequisites.checkAuth();
     return [nodeResult, piResult, apiResult];
   }
 
@@ -30,13 +30,16 @@ export class Prerequisites {
     };
   }
 
-  private static checkApiKey(): PrerequisiteResult {
+  private static checkAuth(): PrerequisiteResult {
     const key = process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY || '';
-    const ok = key.length > 0;
+    if (key.length > 0) return { name: 'auth', ok: true, message: 'API key found' };
+    // Check GitHub Copilot auth via gh CLI
+    const r = spawnSync('gh', ['auth', 'status'], { timeout: 5000, encoding: 'utf-8', stdio: 'pipe' });
+    if (r.status === 0) return { name: 'auth', ok: true, message: 'GitHub Copilot authenticated' };
     return {
-      name: 'API key',
-      ok,
-      message: key ? 'found' : 'set OPENROUTER_API_KEY or ANTHROPIC_API_KEY',
+      name: 'auth',
+      ok: false,
+      message: 'set OPENROUTER_API_KEY or ANTHROPIC_API_KEY, or auth with gh',
     };
   }
 
