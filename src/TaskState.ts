@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, renameSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, renameSync, readdirSync, cpSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { resolve, basename, join, dirname } from 'node:path';
 import {
@@ -109,7 +109,12 @@ export class TaskState {
       const root = dirname(dirname(this.#dir));
       const dest = resolve(root, target, basename(this.#dir));
       mkdirSync(dirname(dest), { recursive: true });
-      try { renameSync(this.#dir, dest); this.#dir = dest; } catch { /* best-effort */ }
+      try { renameSync(this.#dir, dest); this.#dir = dest; } catch {
+        // If rename fails (e.g., cross-device), fall back to copy + delete
+        cpSync(this.#dir, dest, { recursive: true });
+        rmSync(this.#dir, { recursive: true, force: true });
+        this.#dir = dest;
+      }
     }
     TaskState.#cache.set(String(this.taskNumber), cacheBase as Status);
   }
