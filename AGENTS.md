@@ -107,6 +107,7 @@ orchestrator.mjs  CLI entry point
 ```
 
 ### Before committing
-1. `npm run c` — zero type errors
-2. `npm run t` — all tests pass
-3. `npm run all` — full pipeline green
+1. `npm run c` — zero type errors (fast: ~2s)
+2. `npm run t` — all tests pass (fast: ~3s)
+3. `npm run all` — full pipeline (pre-push hook enforces this)
+   Dev cycle: `c + t` for quick feedback; `all` only on push
