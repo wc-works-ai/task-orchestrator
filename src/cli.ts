@@ -34,6 +34,7 @@ const { values, positionals } = await parseArgs({
     goal:   { type: 'string', default: '' },
     metric: { type: 'string', default: '' },
     scope:  { type: 'string', default: '' },
+    once:   { type: 'boolean', default: false },
     help:   { type: 'boolean', short: 'h', default: false },
   },
 });
@@ -45,8 +46,8 @@ if (values.help) {
   console.log(`
 Task Orchestrator — autonomous task execution
 
-  orchestrator                  process one task
-  orchestrator --loop           run until all done
+  orchestrator                  run until all tasks complete (loop)
+  orchestrator --once           process one tick and exit
   orchestrator --status         show dashboard
   orchestrator --check          check prerequisites
   orchestrator --stop           signal all instances to stop
@@ -186,15 +187,7 @@ if (values.task) {
   process.exit(0);
 }
 
-if (values.loop) {
-  console.log(`Looping (${dir}, repo: ${repo})`);
-  const n = await engine.loop({
-    onTick: (r) => {
-      if (r.task) console.log(`  ${r.converged ? '✅' : '⏳'} T${r.task.number}: ${r.task.goal.slice(0, 60)}`);
-    },
-  });
-  console.log(`\n🎉 ${n} ticks — all done\n`);
-} else {
+if (values.once) {
   const r = await engine.tick();
   if (r.task) {
     const icon = r.converged ? '✅' : r.metric === 0 ? '⏳' : '❌';
@@ -202,4 +195,12 @@ if (values.loop) {
   } else {
     console.log('Nothing actionable.');
   }
+} else {
+  console.log(`Running until tasks complete (${dir}, repo: ${repo})`);
+  const n = await engine.loop({
+    onTick: (r) => {
+      if (r.task) console.log(`  ${r.converged ? '✅' : '⏳'} T${r.task.number}: ${r.task.goal.slice(0, 60)}`);
+    },
+  });
+  console.log(`\n🎉 ${n} ticks — all done\n`);
 }
