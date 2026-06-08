@@ -96,19 +96,21 @@ export class TaskState {
   set status(v: Status | string) {
     // Cache stores the base status (PENDING/FAILED/BLOCKED/CONVERGED)
     const cacheBase = isInProgress(v) ? Status.PENDING : (v as Status);
-    // Atomic write: temp → rename (survives crash mid-write)
-    const tmp = join(this.#dir, F_STATUS + '.tmp');
-    writeFileSync(tmp, `${v}\n`);
-    renameSync(tmp, join(this.#dir, F_STATUS));
-    TaskState.#cache.set(String(this.taskNumber), cacheBase as Status);
-    // Migrate to correct shard using the actual status, not cacheBase
+    // Migrate to correct shard FIRST, then update the status file.
+    // This ensures shard and status are never inconsistent — if the
+    // rename fails, we don't touch the status file at all.
     const target = statusToShard(v);
     if (target !== basename(dirname(this.#dir))) {
       const root = dirname(dirname(this.#dir));
       const dest = resolve(root, target, basename(this.#dir));
       mkdirSync(dirname(dest), { recursive: true });
-      try { renameSync(this.#dir, dest); this.#dir = dest; } catch { /* best-effort */ }
+      try { renameSync(this.#dir, dest); this.#dir = dest; } catch { return; }
     }
+    // Atomic write: temp → rename (survives crash mid-write)
+    const tmp = join(this.#dir, F_STATUS + '.tmp');
+    writeFileSync(tmp, `${v}\n`);
+    renameSync(tmp, join(this.#dir, F_STATUS));
+    TaskState.#cache.set(String(this.taskNumber), cacheBase as Status);
   }
 
   get isPending(): boolean    { return this.status === Status.PENDING; }
