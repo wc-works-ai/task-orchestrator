@@ -5,6 +5,8 @@ import { TaskState } from './TaskState.js';
 import { env } from './env.js';
 import type { SpawnResult } from './Engine.js';
 
+
+
 // ── File names ──────────────────────────────────────────────────────────────
 const F_AGENT_LOG = 'agent.log';
 
@@ -15,18 +17,26 @@ export interface PiSpawnerOptions {
   readonly fallbackModel?: string;
   /** Working directory for the agent */
   readonly workDir?: string;
+  /** Max ms with no output before killing the agent (default: 120_000 / 2 min) */
+  readonly progressTimeout?: number;
+  /** Interval (ms) for progress checks (default: 10_000). Only overridden in tests. */
+  readonly progressCheckInterval?: number;
 }
 
 export class PiSpawner {
   readonly #model: string;
   readonly #fallback: string;
   readonly #workDir: string;
+  readonly #progressTimeout: number;
+  readonly #progressCheckInterval: number;
 
   constructor(opts: PiSpawnerOptions = {}) {
     this.#model = opts.model
       ?? env.model;
     this.#fallback = opts.fallbackModel ?? 'openrouter/owl-alpha';
     this.#workDir = opts.workDir ?? process.cwd();
+    this.#progressTimeout = opts.progressTimeout ?? env.progressTimeoutMs;
+    this.#progressCheckInterval = opts.progressCheckInterval ?? 10_000;
   }
 
   /** Resolve the model for a task: metadata → constructor → env → default */
@@ -74,6 +84,7 @@ export class PiSpawner {
 
       let output = '';
       let lineBuf = '';
+      let lastProgress = Date.now();
 
       const logPath = join(task.directory, F_AGENT_LOG);
       // Append header with separator (don't truncate — preserve history across spawns)
@@ -108,10 +119,21 @@ export class PiSpawner {
         }
       };
 
-      child.stdout?.on('data', (d: Buffer) => handleData(d.toString()));
-      child.stderr?.on('data', (d: Buffer) => handleData(d.toString()));
+      child.stdout?.on('data', (d: Buffer) => { lastProgress = Date.now(); handleData(d.toString()); });
+      child.stderr?.on('data', (d: Buffer) => { lastProgress = Date.now(); handleData(d.toString()); });
+
+      // Progress check: kill child if no output for progressTimeout ms
+      let progressStale = false;
+      const progressTimer = setInterval(() => {
+        if (progressStale) return;
+        if (Date.now() - lastProgress < this.#progressTimeout) return;
+        progressStale = true;
+        child.kill();
+        done({ success: false, iterations: 0 });
+      }, this.#progressCheckInterval);
 
       child.on('close', (code: number | null) => {
+        clearInterval(progressTimer);
         const iterations = (output.match(/log_experiment/g) || []).length;
         // Append footer and close — previous chunks already streamed
         try {
@@ -126,6 +148,7 @@ export class PiSpawner {
       });
 
       child.on('error', () => {
+        clearInterval(progressTimer);
         done({ success: false, iterations: 0 });
       });
     });
