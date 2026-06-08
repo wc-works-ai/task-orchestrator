@@ -69,10 +69,12 @@ export class PiSpawner {
       });
 
       // Kill child if stop signal fires mid-spawn
-      // Call done() BEFORE child.kill() to prevent a race on platforms where
-      // kill() synchronously emits 'close' (which also calls done()).
+      // Use an aborted flag instead of calling done() from both abort and close
+      // handlers to eliminate the race on platforms where kill() synchronously
+      // emits 'close' (which previously called done() after done()).
+      let aborted = false;
       /* c8 ignore next 1 */
-      signal?.addEventListener('abort', () => { done({ success: false, iterations: 0 }); child.kill(); }, { once: true });
+      signal?.addEventListener('abort', () => { aborted = true; child.kill(); }, { once: true });
 
       let output = '';
       let lineBuf = '';
@@ -124,7 +126,9 @@ export class PiSpawner {
           console.error(`[PiSpawner] failed to finalize ${F_AGENT_LOG}: ${e instanceof Error ? e.message : String(e)}`);
         }
         /* c8 ignore stop */
-        done({ success: code === 0, iterations });
+        // If the signal was aborted, the kill may have triggered this close;
+        // report as a failure regardless of exit code.
+        done({ success: !aborted && code === 0, iterations });
       });
 
       child.on('error', () => {
