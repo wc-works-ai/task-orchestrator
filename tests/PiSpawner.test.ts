@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { rm } from 'node:fs/promises';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
@@ -138,6 +138,23 @@ describe('PiSpawner', () => {
       mock.emit('close', 0); // should be ignored — already settled
     }, 5);
     expect((await p).success).toBe(false);
+  });
+
+  it('catches appendFileSync failure on close handler', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiSpawner().spawn(t, dir);
+    // Delete task directory before close fires so appendFileSync throws
+    setTimeout(() => {
+      rmSync(t.directory, { recursive: true, force: true });
+      mock.emit('close', 0);
+    }, 5);
+    const r = await p;
+    // Should still succeed — catch handles appendFileSync error silently
+    expect(r.success).toBe(true);
   });
 
   it('uses relative path when task is under worktree', async () => {

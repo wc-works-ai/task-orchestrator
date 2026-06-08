@@ -294,6 +294,16 @@ describe('Engine', () => {
     expect(t).toBeNull();
   });
 
+  it('pickByNumber handles missing shard directories', async () => {
+    const { rmSync } = await import('node:fs');
+    // Remove a shard to trigger the catch in pickByNumber
+    rmSync(resolve(dir, 'converged'), { recursive: true, force: true });
+    const engine = new Engine(dir, { benchmark: zero });
+    // Should not throw — catch handles missing shard
+    const t = await engine.pickByNumber(1);
+    expect(t).toBeNull();
+  });
+
   it('pickByNumber finds task in non-pending shard', async () => {
     const t = make(dir, 3, 'c');
     t.status = Status.CONVERGED;

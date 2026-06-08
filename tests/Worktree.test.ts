@@ -155,4 +155,36 @@ describe('Worktree', () => {
       await rm(unsetRepo, { recursive: true, force: true });
     }
   });
+
+  it('remove is best-effort with non-existent worktree', async () => {
+    const wt = new Worktree(repo, { name: 'T99-nonexistent' });
+    // Should not throw
+    await expect(wt.remove()).resolves.toBeUndefined();
+  });
+
+  it('gitConfig returns empty for unset config', async () => {
+    const { mkdtempSync } = await import('node:fs');
+    const bareRepo = mkdtempSync(resolve('/tmp', 'wt-bare-'));
+    try {
+      execSync('git init && git commit --allow-empty -m init', { cwd: bareRepo });
+      // Create a worktree which calls #gitConfig for user.name/user.email
+      const wt = new Worktree(bareRepo, { name: 'T01-test' });
+      // Temporarily unset global user config for this test
+      const origUser = execSync('git config --global user.name 2>/dev/null || true', { cwd: bareRepo, encoding: 'utf-8' }).trim();
+      const origEmail = execSync('git config --global user.email 2>/dev/null || true', { cwd: bareRepo, encoding: 'utf-8' }).trim();
+      try {
+        if (origUser) execSync('git config --global --unset user.name', { cwd: bareRepo });
+        if (origEmail) execSync('git config --global --unset user.email', { cwd: bareRepo });
+        // Now create — should not throw even without user config
+        await wt.create();
+        expect(existsSync(join(wt.path, '.git'))).toBe(true);
+      } finally {
+        if (origUser) execSync(`git config --global user.name "${origUser}"`, { cwd: bareRepo });
+        if (origEmail) execSync(`git config --global user.email "${origEmail}"`, { cwd: bareRepo });
+      }
+      await wt.remove();
+    } finally {
+      await rm(bareRepo, { recursive: true, force: true });
+    }
+  });
 });

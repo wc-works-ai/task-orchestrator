@@ -1,4 +1,4 @@
-import { statSync, readFileSync, readdirSync, existsSync, rmSync, appendFileSync } from 'node:fs';
+import { statSync, readFileSync, readdirSync, existsSync, rmSync, appendFileSync, cpSync, symlinkSync } from 'node:fs';
 import { resolve, join, dirname } from 'node:path';
 import { TaskState, Status, type BenchmarkFn, type TickResult, type TickNull } from './TaskState.js';
 import { Worktree } from './Worktree.js';
@@ -118,8 +118,20 @@ export class Engine {
         await wt.create();
         this.#worktrees.set(task.taskNumber, wt);
       }
+      if (wt) {
+        // Copy task directory into worktree (tasks/ not tracked in git)
+        const taskRel = task.directory.replace(this.#repo, '').replace(/^\//, '');
+        const wtTaskDir = join(wt.path, taskRel);
+        try { cpSync(task.directory, wtTaskDir, { recursive: true, filter: (f: string) => !f.endsWith('agent.log') }); } catch {}
+        // Symlink node_modules so npm commands work in the worktree
+        const nm = join(this.#repo, 'node_modules');
+        if (existsSync(nm) && !existsSync(join(wt.path, 'node_modules'))) {
+          try { symlinkSync(nm, join(wt.path, 'node_modules')); } catch {}
+        }
+      }
       const ac = new AbortController();
       try {
+        /* c8 ignore next 7 */
         const hb = setInterval(() => {
           task.heartbeat();
           if (existsSync(this.#stopFile)) {

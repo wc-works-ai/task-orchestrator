@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach, expect } from 'vitest';
 import { rm } from 'node:fs/promises';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { resolve, join } from 'node:path';
 import { TaskState, Status, CONVERGENCE_THRESHOLD, inProgress } from '../src/TaskState.js';
 import { MAX_FAILURES } from '../src/Status.js';
 import { statusToShard } from '../src/Status.js';
@@ -79,6 +79,19 @@ describe('TaskState', () => {
     expect(t.failureCount).toBe(0);
     expect(t.incrementFailures()).toBe(1);
     expect(t.incrementFailures()).toBe(2);
+  });
+
+  it('failureCount returns 0 for NaN content', () => {
+    const t = make(dir, 1, 'a');
+    writeFileSync(join(t.directory, '.failure_count'), 'not-a-number\n');
+    // parseInt('not-a-number') returns NaN, NaN || 0 = 0
+    expect(t.failureCount).toBe(0);
+  });
+
+  it('convergenceCount returns 0 for NaN content', () => {
+    const t = make(dir, 1, 'a');
+    writeFileSync(join(t.directory, '.convergence_count'), 'invalid\n');
+    expect(t.convergenceCount).toBe(0);
   });
 
   it('dependencies read/write round-trip', () => {
