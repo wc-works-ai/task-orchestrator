@@ -1,5 +1,12 @@
 # AGENTS.md
 
+> **⚠️ REQUIRED READING BEFORE ANY CODE CHANGE**
+> 1. **`DEVELOP.md`** — TDD + SOLID workflow, branch mapping, code review checklist
+> 2. **`TESTING.md`** — test conventions, mock rules, coverage targets
+> 3. **`AGENTS.md`** — behavioral guidelines (this file)
+>
+> Run `npm run c && npm run t` before every commit. Violating DEVELOP.md or TESTING.md is a defect.
+
 Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
 
 **Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
