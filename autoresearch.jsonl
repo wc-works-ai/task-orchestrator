@@ -63,3 +63,4 @@
 {"type":"config","name":"PiSpawner.ts 100% branch coverage","metricName":"branch_gap","metricUnit":"","bestDirection":"lower"}
 {"run":41,"commit":"db938eb","metric":0,"metrics":{},"status":"keep","description":"PiSpawner.ts baseline — branch_gap=0, already at 100% branch coverage","timestamp":1780895684518,"segment":22,"confidence":null}
 {"run":42,"commit":"334a790","metric":0,"metrics":{},"status":"keep","description":"Run 2 of 3 — PiSpawner.ts branch_gap=0, confirming stability","timestamp":1780895688558,"segment":22,"confidence":null}
+{"type":"config","name":"Achieving 100% coverage across all metrics for every source file","metricName":"coverage_gap","metricUnit":"","bestDirection":"lower"}
