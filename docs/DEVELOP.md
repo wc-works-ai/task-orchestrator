@@ -13,6 +13,19 @@ TDD + SOLID. Read `TESTING.md` first for test conventions.
 2. `npm run t` — all tests pass (~3s, pre-commit hook enforces)
 3. `npm run all` — full pipeline (pre-push hook enforces)
 
+### Environment variables
+| Variable | Default | What it controls |
+|---|---|---|
+| `ORCH_TASKS` | `./tasks` | Task directory |
+| `ORCH_REPO` | auto-detect | Git repo root |
+| `ORCH_MODEL` | `openrouter/owl-alpha` | Default AI model |
+| `ORCH_CONVERGE` | `3` | Zero-runs to converge |
+| `ORCH_MAX_FAILURES` | `5` | Failures before BLOCKED |
+| `ORCH_WORKTREES` | `<repo>/.worktrees` | Worktree directory |
+| `ORCH_HEARTBEAT_MS` | `300000` | Stale claim timeout |
+
+CLI flags override env vars. See `orchestrator --help`.
+
 ---
 
 ## TDD: Red → Green → Refactor
