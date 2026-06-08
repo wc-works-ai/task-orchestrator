@@ -1,8 +1,8 @@
 #!/bin/sh
-# Pre-commit hook: type-check + tests, block commit on failure
+# Pre-commit hook: type-check always, tests always, coverage only in worktrees
 set -e
 
-# Git hooks inherit GIT_INDEX_FILE which breaks worktree test temp repos
+# Git hooks inherit env vars that break git tests
 unset GIT_INDEX_FILE
 unset GIT_DIR
 unset GIT_WORK_TREE
@@ -15,9 +15,18 @@ if ! npm run c 2>/dev/null; then
   exit 1
 fi
 
-if ! npm run t 2>/dev/null; then
-  echo "❌ Tests failed — fix failures before committing"
-  exit 1
+# In worktrees (.git is a file, not a dir), also enforce coverage
+if [ -f .git ]; then
+  echo "   (worktree detected — enforcing coverage)"
+  if ! npm run tc 2>/dev/null; then
+    echo "❌ Coverage dropped below 100% — add tests for new code"
+    exit 1
+  fi
+else
+  if ! npm run t 2>/dev/null; then
+    echo "❌ Tests failed — fix failures before committing"
+    exit 1
+  fi
 fi
 
-echo "✅ Type-check and tests pass"
+echo "✅ Pre-commit checks passed"
