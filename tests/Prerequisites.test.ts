@@ -116,6 +116,19 @@ describe('Prerequisites', () => {
     }
   });
 
+  it('pi check fails when pi is not in PATH', async () => {
+    const prevPath = process.env.PATH;
+    process.env.PATH = '/usr/bin:/bin';
+    try {
+      const results = await Prerequisites.check();
+      const pi = results.find(r => r.name === 'pi')!;
+      expect(pi.ok).toBe(false);
+      expect(pi.message).toContain('not found');
+    } finally {
+      process.env.PATH = prevPath;
+    }
+  });
+
   it('checkApiKey covers true branch with key set', async () => {
     const prevO = process.env.OPENROUTER_API_KEY;
     process.env.OPENROUTER_API_KEY = 'test-api-key-12345';

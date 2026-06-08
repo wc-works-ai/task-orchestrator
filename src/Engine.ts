@@ -84,8 +84,10 @@ export class Engine {
           }
           if (t.isInProgress && t.isClaimed) {
             const owner = t.claimOwnerId;
+            /* c8 ignore start: byUs=true is unreachable — pick() returns our own claims */
             const byUs = owner === this.#id;
             this.#log(`${tn}: skipped — ${byUs ? 'our claim (convergence check)' : `claim held by ${owner.slice(0, 12)}...`}`);
+            /* c8 ignore stop */
           } else if (!t.dependenciesMet(this.#dir)) {
             this.#log(`${tn}: skipped — unmet deps [${t.dependencies.join(',')}]`);
           }

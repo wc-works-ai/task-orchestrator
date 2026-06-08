@@ -46,14 +46,14 @@ export class Worktree {
     return this.#path;
   }
 
-  async merge(taskScope?: string[]): Promise<void> {
+  async merge(taskScope: string[] = []): Promise<void> {
     const prevBranch = this.#git('rev-parse', '--abbrev-ref', 'HEAD').trim();
     try {
       this.#git('checkout', this.#base);
       this.#git('merge', '--no-ff', this.#branch, '-m', `Merge ${this.#branch}`);
     } catch {
       // Conflict — try auto-resolution
-      try { this.#autoResolve(taskScope ?? []); } catch {
+      try { this.#autoResolve(taskScope); } catch {
         /* c8 ignore start */
         try { this.#git('merge', '--abort'); } catch {}
         try { this.#git('checkout', prevBranch); } catch {}
