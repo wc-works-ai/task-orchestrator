@@ -61,6 +61,7 @@ Environment variables (CLI flags override):
   ORCH_MODEL=<model>       default AI model
   ORCH_CONVERGE=<n>        zero-runs to converge (default: 3)
   ORCH_MAX_FAILURES=<n>    failures before BLOCKED (default: 5)
+  ORCH_WORKTREES=<dir>    worktree directory (default: <repo>/.worktrees)
   ORCH_HEARTBEAT_MS=<ms>   stale claim timeout (default: 300000)
 `);
   process.exit(0);

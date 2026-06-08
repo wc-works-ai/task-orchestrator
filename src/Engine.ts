@@ -17,12 +17,14 @@ export interface EngineOptions {
   readonly spawn?: SpawnFn;
   readonly instanceId?: string;
   readonly repoDir?: string;     // for worktree creation
+  readonly worktreesDir?: string; // override default .worktrees/ location
   readonly onTick?: (result: TickResult | TickNull, total: number) => void | Promise<void>;
 }
 
 export class Engine {
   readonly #dir: string;
   readonly #repo: string;
+  readonly #worktreesDir: string | undefined;
   readonly #bench: BenchmarkFn;
   readonly #spawn: SpawnFn | null;
   readonly #id: string;
@@ -32,6 +34,7 @@ export class Engine {
   constructor(tasksDir: string, opts: EngineOptions = {}) {
     this.#dir = tasksDir;
     this.#repo = opts.repoDir ?? dirname(tasksDir);
+    this.#worktreesDir = opts.worktreesDir ?? process.env.ORCH_WORKTREES;
     this.#bench = opts.benchmark ?? (() => 1);
     this.#spawn = opts.spawn ?? null;
     this.#id = opts.instanceId ?? `${process.pid}_${Date.now()}`;
@@ -116,7 +119,7 @@ export class Engine {
     if (this.#spawn) {
       let wt = this.#worktrees.get(task.taskNumber) ?? null;
       if (!wt && existsSync(resolve(this.#repo, '.git'))) {
-        wt = new Worktree(this.#repo, { name: task.taskName });
+        wt = new Worktree(this.#repo, { name: task.taskName, ...(this.#worktreesDir ? { worktreesDir: this.#worktreesDir } : {}) });
         await wt.create();
         this.#worktrees.set(task.taskNumber, wt);
       }

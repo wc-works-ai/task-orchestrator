@@ -74,6 +74,7 @@ npm run stat  --status              show dashboard
 | `ORCH_MODEL` | `openrouter/owl-alpha` | Default AI model |
 | `ORCH_CONVERGE` | `3` | Zero-runs to converge |
 | `ORCH_MAX_FAILURES` | `5` | Failures before BLOCKED |
+| `ORCH_WORKTREES` | `<repo>/.worktrees` | Git worktrees location |
 | `ORCH_HEARTBEAT_MS` | `300000` | Stale claim timeout |
 ```
 
