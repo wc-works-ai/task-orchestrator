@@ -1,0 +1,23 @@
+#!/bin/sh
+# Pre-commit hook: type-check + tests, block commit on failure
+set -e
+
+# Git hooks inherit GIT_INDEX_FILE which breaks worktree test temp repos
+unset GIT_INDEX_FILE
+unset GIT_DIR
+unset GIT_WORK_TREE
+unset GIT_OBJECT_DIRECTORY
+
+echo "🔍 Running pre-commit checks..."
+
+if ! npm run c 2>/dev/null; then
+  echo "❌ Type-check failed — fix errors before committing"
+  exit 1
+fi
+
+if ! npm run t 2>/dev/null; then
+  echo "❌ Tests failed — fix failures before committing"
+  exit 1
+fi
+
+echo "✅ Type-check and tests pass"

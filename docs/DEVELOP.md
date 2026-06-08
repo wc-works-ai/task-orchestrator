@@ -9,8 +9,8 @@ TDD + SOLID. Read `TESTING.md` first for test conventions.
 - **Tests** — see `TESTING.md`
 
 ### Before committing
-1. `npm run c` — zero type errors (~2s)
-2. `npm run t` — all tests pass (~3s)
+1. `npm run c` — zero type errors (~2s, pre-commit hook enforces)
+2. `npm run t` — all tests pass (~3s, pre-commit hook enforces)
 3. `npm run all` — full pipeline (pre-push hook enforces)
 
 ---

@@ -2,6 +2,12 @@
 # Pre-push hook: run full pipeline, reject push on failure
 set -e
 
+# Git hooks inherit env vars that break git tests
+unset GIT_INDEX_FILE
+unset GIT_DIR
+unset GIT_WORK_TREE
+unset GIT_OBJECT_DIRECTORY
+
 echo "🔍 Running pre-push checks..."
 
 # Run full pipeline
