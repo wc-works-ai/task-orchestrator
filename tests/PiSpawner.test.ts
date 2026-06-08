@@ -14,6 +14,7 @@ const { spawn } = await vi.importMock<typeof import('node:child_process')>('node
 class MockChild extends EventEmitter {
   stdout = new EventEmitter();
   stderr = new EventEmitter();
+  kill = vi.fn();
 }
 
 function mockChild(): ChildProcess {
@@ -449,5 +450,53 @@ describe('PiSpawner', () => {
     }, 5);
     var r = await p;
     expect(r.success).toBe(true);
+  });
+
+  // ── Progress timeout ───────────────────────────────────────────────
+
+  it('progress timeout kills child when no output within timeout', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    // Use check interval > timeout so only ONE check fires past the timeout
+    // First check at ~100ms: diff=100ms >= 50ms → kill once, clearInterval, done
+    const p = new PiSpawner({ progressTimeout: 50, progressCheckInterval: 100 }).spawn(t, dir);
+
+    const result = await p;
+    expect(result.success).toBe(false);
+    expect(mock.kill).toHaveBeenCalled();
+  });
+
+  it('progress timeout does not kill when output continues', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    // Emit data before the first progress check fires to keep progress alive
+    const p = new PiSpawner({ progressTimeout: 500, progressCheckInterval: 50 }).spawn(t, dir);
+
+    // Emit data to keep progress alive
+    await new Promise(r => setTimeout(r, 30));
+    mock.stdout!.emit('data', Buffer.from('working...\n'));
+
+    // Wait past the first check (at 50ms), progress was updated at ~30ms, diff=50ms < 500
+    await new Promise(r => setTimeout(r, 100));
+    expect(mock.kill).not.toHaveBeenCalled();
+
+    // Close successfully
+    mock.emit('close', 0);
+    const result = await p;
+    expect(result.success).toBe(true);
+    expect(mock.kill).not.toHaveBeenCalled();
+  });
+
+  it('allows configuring progress timeout', async () => {
+    // Just verify we can construct with different values without error
+    expect(() => new PiSpawner({ progressTimeout: 5000 })).not.toThrow();
+    expect(() => new PiSpawner({ progressTimeout: 0 })).not.toThrow();
+    expect(() => new PiSpawner({})).not.toThrow();
   });
 });

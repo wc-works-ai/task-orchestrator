@@ -6,5 +6,6 @@ export const env = {
   get converge()     { return parseInt(process.env.ORCH_CONVERGE ?? '3', 10); },
   get maxFailures()  { return parseInt(process.env.ORCH_MAX_FAILURES ?? '5', 10); },
   get worktreesDir() { return process.env.ORCH_WORKTREES ?? ''; },
-  get heartbeatMs()  { return parseInt(process.env.ORCH_HEARTBEAT_MS ?? '300000', 10); },
+  get heartbeatMs()       { return parseInt(process.env.ORCH_HEARTBEAT_MS ?? '300000', 10); },
+  get progressTimeoutMs()  { return parseInt(process.env.ORCH_PROGRESS_TIMEOUT ?? '120000', 10); },
 } as const;
