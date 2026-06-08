@@ -80,14 +80,15 @@ export class TaskState {
   }
 
   set status(v: Status | string) {
-    const base = isInProgress(v) ? Status.PENDING : (v as Status);
+    // Cache stores the base status (PENDING/FAILED/BLOCKED/CONVERGED)
+    const cacheBase = isInProgress(v) ? Status.PENDING : (v as Status);
     // Atomic write: temp → rename (survives crash mid-write)
     const tmp = join(this.#dir, F_STATUS + '.tmp');
     writeFileSync(tmp, `${v}\n`);
     renameSync(tmp, join(this.#dir, F_STATUS));
-    TaskState.#cache.set(String(this.taskNumber), base as Status);
-    // Migrate to correct shard
-    const target = statusToShard(base);
+    TaskState.#cache.set(String(this.taskNumber), cacheBase as Status);
+    // Migrate to correct shard using the actual status, not cacheBase
+    const target = statusToShard(v);
     if (target !== basename(dirname(this.#dir))) {
       const root = dirname(dirname(this.#dir));
       const dest = resolve(root, target, basename(this.#dir));

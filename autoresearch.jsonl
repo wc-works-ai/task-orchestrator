@@ -6,3 +6,5 @@
 {"type":"config","name":"T01 — Coverage 100%","metricName":"total_pct","metricUnit":"","bestDirection":"lower"}
 {"run":3,"commit":"2fc822e","metric":14.66,"metrics":{},"status":"keep","description":"Baseline measurement — total_pct=14.66 gap across all coverage metrics","timestamp":1780877795474,"segment":3,"confidence":null,"asi":{"hypothesis":"Baseline run to establish starting point","next_action":"Analyze coverage report to find specific gaps"}}
 {"type":"config","name":"T01 — Achieve 100% unit test coverage","metricName":"total_pct","metricUnit":"","bestDirection":"lower"}
+{"run":4,"commit":"6ef76b0","metric":17.39,"metrics":{},"status":"keep","description":"Baseline: total_pct=17.39 gap across all coverage metrics","timestamp":1780877912502,"segment":4,"confidence":null}
+{"type":"config","name":"T01 — 100% coverage","metricName":"total_pct","metricUnit":"","bestDirection":"lower"}

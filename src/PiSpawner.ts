@@ -4,6 +4,9 @@ import { join } from 'node:path';
 import { TaskState } from './TaskState.js';
 import type { SpawnResult } from './Engine.js';
 
+// ── File names ──────────────────────────────────────────────────────────────
+const F_AGENT_LOG = 'agent.log';
+
 export interface PiSpawnerOptions {
   /** Default model when task doesn't specify one */
   readonly model?: string;
@@ -72,7 +75,11 @@ export class PiSpawner {
       child.on('close', (code: number | null) => {
         const iterations = (output.match(/log_experiment/g) || []).length;
         // Persist agent log to task directory
-        try { writeFileSync(join(task.directory, 'agent.log'), output); } catch {}
+        try {
+          writeFileSync(join(task.directory, F_AGENT_LOG), output);
+        } catch (e: unknown) {
+          console.error(`[PiSpawner] failed to write ${F_AGENT_LOG}: ${e instanceof Error ? e.message : String(e)}`);
+        }
         done({ success: code === 0, iterations });
       });
 

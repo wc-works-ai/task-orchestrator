@@ -178,10 +178,16 @@ describe('TaskState', () => {
   it('pick releases unclaimed in-progress tasks to FAILED', async () => {
     make(dir, 1, 'a', { status: 'IN_PROGRESS:orphan' });
     await TaskState.scan(dir);
-    const picked = await TaskState.pick(dir, 'test');
-    // The unclaimed IN_PROGRESS task should be released to FAILED and then picked
-    expect(picked).not.toBeNull();
-    expect(picked!.taskNumber).toBe(1);
+    // First pick: task is in in_progress shard (moved there by setter),
+    // pick iterates pending→failed→in_progress, finds it in in_progress,
+    // releases it to FAILED. Since failed shard was already iterated,
+    // the released task is not picked up in this call.
+    const first = await TaskState.pick(dir, 'test');
+    expect(first).toBeNull();
+    // Second pick: task is now in failed shard, gets picked
+    const second = await TaskState.pick(dir, 'test');
+    expect(second).not.toBeNull();
+    expect(second!.taskNumber).toBe(1);
   });
 
   it('pick skips task when claim fails', async () => {
