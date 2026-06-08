@@ -110,10 +110,12 @@ export class TaskState {
       const dest = resolve(root, target, basename(this.#dir));
       mkdirSync(dirname(dest), { recursive: true });
       try { renameSync(this.#dir, dest); this.#dir = dest; } catch {
+        /* v8 ignore start: cross-device rename fallback — requires different filesystem mounts */
         // If rename fails (e.g., cross-device), fall back to copy + delete
         cpSync(this.#dir, dest, { recursive: true });
         rmSync(this.#dir, { recursive: true, force: true });
         this.#dir = dest;
+        /* v8 ignore stop */
       }
     }
     TaskState.#cache.set(String(this.taskNumber), cacheBase as Status);

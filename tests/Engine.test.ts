@@ -454,4 +454,19 @@ describe('Engine', () => {
     expect(r.task).toBeNull();
   });
 
+  it('respects retry cooldown after failure', async () => {
+    make(dir, 1, 'cooldown');
+    const engine = new Engine(dir, {
+      benchmark: () => 1,
+      spawn: async () => ({ success: false, iterations: 0 }),
+      retryCooldownMs: 60000, // 60s cooldown
+    });
+    // First tick — picks task, fails, records cooldown
+    const r1 = await engine.tick();
+    expect(r1.task).not.toBeNull();
+    // Second tick — blocked by cooldown (no time elapsed)
+    const r2 = await engine.tick();
+    expect(r2.task).toBeNull();
+  });
+
 });
