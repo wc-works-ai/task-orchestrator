@@ -193,7 +193,7 @@ export class Engine {
   async #run(task: TaskState, worktreePath?: string): Promise<number> {
     try {
       const info = worktreePath
-        ? { ...task.info, directory: resolve(worktreePath, task.directory.replace(this.#repo, '')) }
+        ? { ...task.info, directory: resolve(worktreePath, task.directory.replace(this.#repo, '').replace(/^\//, '')) }
         : task.info;
       return await this.#bench(info);
     }
