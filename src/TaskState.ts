@@ -25,6 +25,8 @@ export interface TaskInfo {
   readonly goal: string;
   readonly model: string;
   readonly status: string;
+  /** Working directory for benchmarks (worktree root or repo root) */
+  readonly cwd: string;
 }
 
 export type BenchmarkFn = (task: TaskInfo) => Promise<number> | number;
@@ -74,6 +76,8 @@ export class TaskState {
   get info(): TaskInfo {
     return this;
   }
+  /** Default cwd — overridden by Engine with actual worktree/repo root */
+  get cwd(): string { return this.#dir; }
   get number(): number {
     return this.taskNumber;
   }
