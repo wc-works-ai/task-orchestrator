@@ -97,6 +97,7 @@ export class PiSpawner {
         // Parse NDJSON lines in the stream for live console output
         lineBuf += txt;
         const lines = lineBuf.split('\n');
+        /* c8 ignore next 1 — split always returns ≥1 element, pop never returns undefined */
         lineBuf = lines.pop() ?? '';
         for (const raw of lines) {
           if (!raw.trim()) continue;
