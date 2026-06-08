@@ -27,3 +27,5 @@
 {"run":14,"commit":"13e0f84","metric":0,"metrics":{},"status":"keep","description":"Second consecutive run confirming 100% branch coverage (branch_gap=0)","timestamp":1780892515191,"segment":12,"confidence":null}
 {"type":"config","name":"T03 — PiSpawner branch coverage","metricName":"branch_gap","metricUnit":"","bestDirection":"lower"}
 {"run":15,"commit":"3d0b978","metric":64.71,"metrics":{},"status":"keep","description":"Baseline: PiSpawner.ts branch coverage 35.29% (24/68 branches). Gap: 64.71. Uncovered lines 124-164 (#printEvent method).","timestamp":1780893803109,"segment":13,"confidence":null}
+{"run":16,"commit":"bd7e2bc","metric":10.3,"metrics":{},"status":"keep","description":"Added 12 tests covering #printEvent branches: tool_execution_start (path/command/neither/name-fallback), tool_execution_end (METRIC regex, log_experiment keep/crash/discard, isError, non-text content, no content). Gap: 64.71 → 10.3.","timestamp":1780893938195,"segment":13,"confidence":null}
+{"type":"config","name":"T03 — PiSpawner.ts 100% branch coverage","metricName":"branch_gap","metricUnit":"","bestDirection":"lower"}

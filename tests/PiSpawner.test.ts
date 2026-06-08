@@ -366,4 +366,88 @@ describe('PiSpawner', () => {
     var r = await p;
     expect(r.success).toBe(true);
   });
+
+  it('skips whitespace lines in NDJSON stream', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiSpawner().spawn(t, dir);
+    setTimeout(() => {
+      // Emit a whitespace-only line to hit !raw.trim() continue
+      mock.stdout!.emit('data', Buffer.from('  \n'));
+      mock.emit('close', 0);
+    }, 5);
+    var r = await p;
+    expect(r.success).toBe(true);
+  });
+
+  it('handles event with no type field', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiSpawner().spawn(t, dir);
+    setTimeout(() => {
+      // No type field — tests obj.type ?? '' fallback (line 124)
+      var ev = JSON.stringify({ notType: 'something' });
+      mock.stdout!.emit('data', Buffer.from(ev + '\n'));
+      mock.emit('close', 0);
+    }, 5);
+    var r = await p;
+    expect(r.success).toBe(true);
+  });
+
+  it('handles tool_execution_start with no name and no arguments', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiSpawner().spawn(t, dir);
+    setTimeout(() => {
+      // No toolName, no name, no arguments — tests all ?? fallbacks
+      var ev = JSON.stringify({ type: 'tool_execution_start' });
+      mock.stdout!.emit('data', Buffer.from(ev + '\n'));
+      mock.emit('close', 0);
+    }, 5);
+    var r = await p;
+    expect(r.success).toBe(true);
+  });
+
+  it('handles tool_execution_end with no toolName', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiSpawner().spawn(t, dir);
+    setTimeout(() => {
+      // No toolName — tests obj.toolName ?? '' fallback in tool_execution_end
+      var ev = JSON.stringify({ type: 'tool_execution_end', result: { content: [{ type: 'text', text: 'some output' }] } });
+      mock.stdout!.emit('data', Buffer.from(ev + '\n'));
+      mock.emit('close', 0);
+    }, 5);
+    var r = await p;
+    expect(r.success).toBe(true);
+  });
+
+  it('handles log_experiment with empty text content', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiSpawner().spawn(t, dir);
+    setTimeout(() => {
+      // Empty text content — tests if (line) else branch
+      var ev = JSON.stringify({ type: 'tool_execution_end', toolName: 'log_experiment', result: { content: [{ type: 'text', text: '' }] } });
+      mock.stdout!.emit('data', Buffer.from(ev + '\n'));
+      mock.emit('close', 0);
+    }, 5);
+    var r = await p;
+    expect(r.success).toBe(true);
+  });
 });
