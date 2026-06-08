@@ -19,6 +19,7 @@ export interface EngineOptions {
   readonly instanceId?: string;
   readonly repoDir?: string;     // for worktree creation
   readonly worktreesDir?: string; // override default .worktrees/ location
+  readonly retryCooldownMs?: number; // min ms between spawn retries (0 = no cooldown, default 30000)
   readonly onTick?: (result: TickResult | TickNull, total: number) => void | Promise<void>;
 }
 
@@ -29,8 +30,11 @@ export class Engine {
   readonly #bench: BenchmarkFn;
   readonly #spawn: SpawnFn | null;
   readonly #id: string;
+  readonly #retryCooldownMs: number;
   /** Track active worktrees by task number */
   readonly #worktrees = new Map<number, Worktree>();
+  /** Track last failure time per task for retry cooldown */
+  readonly #retryCooldowns = new Map<number, number>();
 
   constructor(tasksDir: string, opts: EngineOptions = {}) {
     this.#dir = tasksDir;
@@ -39,6 +43,7 @@ export class Engine {
     this.#bench = opts.benchmark ?? (() => 1);
     this.#spawn = opts.spawn ?? null;
     this.#id = opts.instanceId ?? `${process.pid}_${Date.now()}`;
+    this.#retryCooldownMs = opts.retryCooldownMs ?? 0; // default: no cooldown
   }
 
   get instanceId(): string { return this.#id; }
@@ -101,6 +106,14 @@ export class Engine {
       return { task: null, metric: 0, converged: false };
     }
 
+    // Check retry cooldown — if this task failed recently, skip it
+    const lastFail = this.#retryCooldowns.get(task.taskNumber);
+    if (this.#retryCooldownMs > 0 && lastFail && Date.now() - lastFail < this.#retryCooldownMs) {
+      task.release(Status.FAILED);
+      this.#log(`T${task.taskNumber}: cooldown (${Date.now() - lastFail}ms < ${this.#retryCooldownMs}ms)`);
+      return { task: null, metric: 0, converged: false };
+    }
+
     // Reset worktree on retry so agent starts fresh (discard conflicting changes)
     /* istanbul ignore next: dead code — pick() always sets IN_PROGRESS */
     if (task.isFailed) {
@@ -153,11 +166,13 @@ export class Engine {
         const msg = e instanceof Error ? e.message : String(e);
         if (msg.includes('conflict')) {
           task.status = Status.FAILED;
+          this.#retryCooldowns.set(task.taskNumber, Date.now());
           console.error(`  ⚠️  T${task.taskNumber}: merge conflict — task FAILED, worktree kept for inspection`);
         }
       }
     }
 
+    this.#retryCooldowns.set(task.taskNumber, Date.now());
     task.release(Status.FAILED);
     this.#log(`T${task.taskNumber} FAILED (metric=${metric})`);
     return { task: task.info, metric, converged: false };
