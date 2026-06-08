@@ -115,12 +115,17 @@ export class TaskState {
     return n;
   }
   resetConvergence(): void { try { rmSync(join(this.#dir, F_COUNTER)); } catch {} }
-  get hasConverged(): boolean { return this.convergenceCount >= CONVERGENCE_THRESHOLD; }
+  get hasConverged(): boolean {
+    return this.convergenceCount >= CONVERGENCE_THRESHOLD;
+  }
 
   // ── Failures ────────────────────────────────────────────────────────
   get failureCount(): number {
-    try { return parseInt(readFileSync(join(this.#dir, F_FAILURES), 'utf-8').trim(), 10) || 0; }
-    catch { return 0; }
+    try {
+      return parseInt(readFileSync(join(this.#dir, F_FAILURES), 'utf-8').trim(), 10) || 0;
+    } catch {
+      return 0;
+    }
   }
   incrementFailures(): number {
     const n = this.failureCount + 1;
@@ -203,9 +208,12 @@ export class TaskState {
   get scope(): string[] {
     try {
       const c = readFileSync(join(this.#dir, 'autoresearch.md'), 'utf-8');
-      const section = c.match(/^## Scope\s*\n([\s\S]*?)(?=^## |$(?!.))/ms);
-      return (section?.[1] ?? '').split('\n').map(s => s.replace(/^[-*]\s*/, '').trim()).filter(Boolean);
-    } catch { return []; }
+      const m = c.match(/^## Scope([\s\S]*?)(?=## |$)/s);
+      const raw = m?.[1]?.trim() ?? '';
+      return raw ? raw.split('\n').map(s => s.replace(/^[-*]\s*/, '').trim()).filter(Boolean) : [];
+    } catch {
+      return [];
+    }
   }
 
   get goal(): string {

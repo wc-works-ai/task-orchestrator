@@ -154,7 +154,7 @@ if (!existsSync(dir)) {
 
 const engine = new Engine(dir, {
   repoDir: repo,
-  spawn: (task) => spawner.spawn(task),
+  spawn: (task, worktreePath, signal) => spawner.spawn(task, worktreePath, signal),
   benchmark: async (t: TaskInfo) => {
     try {
       const out = execSync(`node ${t.directory}/benchmark.js`, {

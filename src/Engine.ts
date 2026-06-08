@@ -10,7 +10,7 @@ export interface SpawnResult {
   readonly iterations: number;
 }
 
-export type SpawnFn = (task: TaskState, worktreePath?: string) => Promise<SpawnResult>;
+export type SpawnFn = (task: TaskState, worktreePath?: string, signal?: AbortSignal) => Promise<SpawnResult>;
 
 export interface EngineOptions {
   readonly benchmark?: BenchmarkFn;
@@ -118,9 +118,15 @@ export class Engine {
         await wt.create();
         this.#worktrees.set(task.taskNumber, wt);
       }
+      const ac = new AbortController();
       try {
-        const hb = setInterval(() => task.heartbeat(), 30_000);
-        await this.#spawn(task, wt?.path);
+        const hb = setInterval(() => {
+          task.heartbeat();
+          if (existsSync(this.#stopFile)) {
+            ac.abort();
+          }
+        }, 30_000);
+        await this.#spawn(task, wt?.path, ac.signal);
         clearInterval(hb);
         metric = await this.#run(task, wt?.path);
         if (metric === 0) return this.#handleZero(task, metric, wt);
@@ -190,10 +196,15 @@ export class Engine {
       if (!e.startsWith('T')) continue;
       const task = new TaskState(resolve(dir, e));
       if (!task.isInProgress || !task.isClaimed) continue;
-      const age = this.#heartbeatAge(task);
-      if (age === null || age < HEARTBEAT_MAX_MS) continue;
       const pid = this.#ownerPid(task);
-      if (pid !== null && this.#alive(pid)) continue;
+      if (pid !== null && this.#alive(pid)) {
+        // Process alive — respect heartbeat timeout
+        const age = this.#heartbeatAge(task);
+        if (age !== null && age < HEARTBEAT_MAX_MS) continue;
+        // Stale heartbeat but alive PID — skip (long-running op)
+        continue;
+      }
+      // Owner dead or unknown — release immediately
       task.release(Status.FAILED);
       task.resetConvergence();
       this.#log(`STALE: ${task.taskName} claim released`);

@@ -34,20 +34,23 @@ export class PiSpawner {
     return task.model || this.#model;
   }
 
-  async spawn(task: TaskState, worktreePath?: string): Promise<SpawnResult> {
+  async spawn(task: TaskState, worktreePath?: string, signal?: AbortSignal): Promise<SpawnResult> {
     const cwd = worktreePath ?? this.#workDir;
     const models = [this.modelFor(task), this.#fallback]
       .filter((m, i, arr) => m && arr.indexOf(m) === i);
 
     console.log(`T${task.taskNumber} using ${models.join(', ')}`);
     for (const model of models) {
-      const result = await this.#run(task, model, cwd);
+      if (signal?.aborted) return { success: false, iterations: 0 };
+      const result = await this.#run(task, model, cwd, signal);
       if (result.success) return result;
     }
     return { success: false, iterations: 0 };
   }
 
-  #run(task: TaskState, model: string, cwd: string): Promise<SpawnResult> {
+  #run(task: TaskState, model: string, cwd: string, signal?: AbortSignal): Promise<SpawnResult> {
+    if (signal?.aborted) return Promise.resolve({ success: false, iterations: 0 });
+
     return new Promise(resolve => {
       let settled = false;
       const done = (r: SpawnResult) => { if (!settled) { settled = true; resolve(r); } };
@@ -62,6 +65,9 @@ export class PiSpawner {
         stdio: ['ignore', 'pipe', 'pipe'],
         timeout: 600_000, // 10 min
       });
+
+      // Kill child if stop signal fires mid-spawn
+      signal?.addEventListener('abort', () => { child.kill(); done({ success: false, iterations: 0 }); }, { once: true });
 
       let output = '';
 

@@ -164,7 +164,7 @@ describe('Engine', () => {
     expect(r.task).toBeNull();
   });
 
-  it('recovers task with missing heartbeat file (heartbeatAge returns null)', async () => {
+  it('recovers task with missing heartbeat file (dead PID)', async () => {
     const { writeFileSync, mkdirSync } = await import('node:fs');
     const { join } = await import('node:path');
 
@@ -174,15 +174,13 @@ describe('Engine', () => {
     const claimDir = join(taskDir, '.claim');
     mkdirSync(claimDir, { recursive: true });
     writeFileSync(join(claimDir, 'owner'), 'pid:99999\n');
-    // No heartbeat file — heartbeatAge catch returns null → skipped by recovery
+    // No heartbeat file but PID is dead — recovery releases immediately
     writeFileSync(join(taskDir, '.status'), 'IN_PROGRESS:orchestrator-dead\n');
 
     const engine = new Engine(dir, { benchmark: zero, instanceId: 'recover-test' });
     const r = await engine.tick();
-    // No heartbeat = age null = skipped by recovery (null < 300000 is true for null? No:)
-    // if (age === null || age < HEARTBEAT_MAX_MS) continue;
-    // age === null → true → continue → task NOT recovered → tick finds nothing
-    expect(r.task).toBeNull();
+    // Dead PID → recovery releases → pick() finds → processes it
+    expect(r.task).not.toBeNull();
   });
 
   it('recovers task with missing owner file but stale heartbeat', async () => {
@@ -317,6 +315,52 @@ describe('Engine', () => {
     writeFileSync(join(blockDir, '.failure_count'), '5\n');
     // No actionable tasks — tick should log diagnostic for blocked task
     const r = await new Engine(dir, { benchmark: zero, instanceId: 'test' }).tick();
+    expect(r.task).toBeNull();
+  });
+
+  it('recovers task claimed by dead process on tick', async () => {
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    // Create a task in in_progress with a dead claiming process
+    const taskDir = resolve(dir, 'in_progress', 'T01-other-claim');
+    mkdirSync(taskDir, { recursive: true });
+    const claimDir = join(taskDir, '.claim');
+    mkdirSync(claimDir, { recursive: true });
+    writeFileSync(join(claimDir, 'owner'), 'pid:99999\nstarted:1\ninstance:other-inst\n');
+    writeFileSync(join(taskDir, '.status'), 'IN_PROGRESS:other-inst\n');
+    // Recovery releases dead PID claims immediately → pick() finds it
+    const r = await new Engine(dir, { benchmark: zero, instanceId: 'my-inst' }).tick();
+    expect(r.task).not.toBeNull();
+  });
+
+  it('diagnostic: logs skip for task with unmet deps', async () => {
+    // Create a pending task that depends on non-existent task
+    make(dir, 1, 'needs-t99', { deps: [99] });
+    // tick() should log diagnostic about unmet deps and return null
+    const r = await new Engine(dir, { benchmark: zero, instanceId: 'test' }).tick();
+    expect(r.task).toBeNull();
+  });
+
+  it('re-checks convergence for our own in-progress claim', async () => {
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const myId = 'converge-instance';
+    // Create a task that we previously claimed
+    const taskDir = resolve(dir, 'in_progress', 'T01-my-claim');
+    mkdirSync(taskDir, { recursive: true });
+    const claimDir = join(taskDir, '.claim');
+    mkdirSync(claimDir, { recursive: true });
+    writeFileSync(join(claimDir, 'owner'), `pid:${process.pid}\nstarted:1\ninstance:${myId}\n`);
+    writeFileSync(join(taskDir, '.status'), `IN_PROGRESS:${myId}\n`);
+    // pick() returns our own claim → tick re-runs benchmark for convergence
+    const r = await new Engine(dir, { benchmark: zero, instanceId: myId }).tick();
+    expect(r.task).not.toBeNull();
+  });
+
+  it('recovery handles non-directory file in in_progress shard', async () => {
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(resolve(dir, 'in_progress', 'not-a-dir-file'), 'just a file');
+    const r = await new Engine(dir, { benchmark: zero }).tick();
     expect(r.task).toBeNull();
   });
 
