@@ -1,4 +1,4 @@
-import { statSync, readFileSync, readdirSync, existsSync, rmSync, appendFileSync, cpSync, symlinkSync } from 'node:fs';
+import { statSync, readFileSync, readdirSync, existsSync, rmSync, appendFileSync, cpSync } from 'node:fs';
 import { resolve, join, dirname } from 'node:path';
 import { TaskState, Status, type BenchmarkFn, type TickResult, type TickNull } from './TaskState.js';
 import { Worktree } from './Worktree.js';
@@ -125,12 +125,10 @@ export class Engine {
         const taskRel = task.directory.replace(this.#repo, '').replace(/^\//, '');
         const wtTaskDir = join(wt.path, taskRel);
         try { cpSync(task.directory, wtTaskDir, { recursive: true, filter: (f: string) => !f.endsWith('agent.log') }); } catch {}
-        // Symlink node_modules so npm commands work in the worktree
-        const nm = join(this.#repo, 'node_modules');
-        /* c8 ignore next */
-        if (existsSync(nm) && !existsSync(join(wt.path, 'node_modules'))) {
-          /* c8 ignore next */
-          try { symlinkSync(nm, join(wt.path, 'node_modules')); } catch {}
+        // Copy node_modules for isolated npm commands (no symlink — avoids circular chain risk)
+        const wtNm = join(wt.path, 'node_modules');
+        if (!existsSync(wtNm)) {
+          try { cpSync(join(this.#repo, 'node_modules'), wtNm, { recursive: true }); } catch {}
         }
       }
       const ac = new AbortController();
