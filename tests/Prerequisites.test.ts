@@ -96,4 +96,50 @@ describe('Prerequisites', () => {
       Object.defineProperty(process, 'version', { value: prev, configurable: true });
     }
   });
+
+  it('checkApiKey false branch hits key.length > 0 when both env vars absent', async () => {
+    // Force both env vars to be absent to cover the false branch of key.length > 0
+    const prevO = process.env.OPENROUTER_API_KEY;
+    const prevA = process.env.ANTHROPIC_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    try {
+      const results = await Prerequisites.check();
+      const api = results.find(r => r.name === 'API key')!;
+      expect(api.ok).toBe(false);
+      expect(api.message).toBe('set OPENROUTER_API_KEY or ANTHROPIC_API_KEY');
+    } finally {
+      if (prevO) process.env.OPENROUTER_API_KEY = prevO;
+      else delete process.env.OPENROUTER_API_KEY;
+      if (prevA) process.env.ANTHROPIC_API_KEY = prevA;
+      else delete process.env.ANTHROPIC_API_KEY;
+    }
+  });
+
+  it('pi check fails when pi is not in PATH', async () => {
+    const prevPath = process.env.PATH;
+    process.env.PATH = '/usr/bin:/bin';
+    try {
+      const results = await Prerequisites.check();
+      const pi = results.find(r => r.name === 'pi')!;
+      expect(pi.ok).toBe(false);
+      expect(pi.message).toContain('not found');
+    } finally {
+      process.env.PATH = prevPath;
+    }
+  });
+
+  it('checkApiKey covers true branch with key set', async () => {
+    const prevO = process.env.OPENROUTER_API_KEY;
+    process.env.OPENROUTER_API_KEY = 'test-api-key-12345';
+    try {
+      const results = await Prerequisites.check();
+      const api = results.find(r => r.name === 'API key')!;
+      expect(api.ok).toBe(true);
+      expect(api.message).toBe('found');
+    } finally {
+      if (prevO) process.env.OPENROUTER_API_KEY = prevO;
+      else delete process.env.OPENROUTER_API_KEY;
+    }
+  });
 });

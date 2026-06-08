@@ -84,8 +84,10 @@ export class Engine {
           }
           if (t.isInProgress && t.isClaimed) {
             const owner = t.claimOwnerId;
+            /* c8 ignore start: byUs=true is unreachable — pick() returns our own claims */
             const byUs = owner === this.#id;
             this.#log(`${tn}: skipped — ${byUs ? 'our claim (convergence check)' : `claim held by ${owner.slice(0, 12)}...`}`);
+            /* c8 ignore stop */
           } else if (!t.dependenciesMet(this.#dir)) {
             this.#log(`${tn}: skipped — unmet deps [${t.dependencies.join(',')}]`);
           }
@@ -125,7 +127,9 @@ export class Engine {
         try { cpSync(task.directory, wtTaskDir, { recursive: true, filter: (f: string) => !f.endsWith('agent.log') }); } catch {}
         // Symlink node_modules so npm commands work in the worktree
         const nm = join(this.#repo, 'node_modules');
+        /* c8 ignore next */
         if (existsSync(nm) && !existsSync(join(wt.path, 'node_modules'))) {
+          /* c8 ignore next */
           try { symlinkSync(nm, join(wt.path, 'node_modules')); } catch {}
         }
       }

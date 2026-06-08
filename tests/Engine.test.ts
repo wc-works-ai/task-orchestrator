@@ -425,4 +425,33 @@ describe('Engine', () => {
     expect(r.task).toBeNull();
   });
 
+  // ── Diagnostic: converged task in diagnostic loop ─────────────────
+
+  it('diagnostic: skips converged task in pending shard via isConverged', async () => {
+    const { writeFileSync, mkdirSync } = await import('node:fs');
+    // Create a task in pending shard that has CONVERGED status
+    // pick() will skip it (isConverged), then diagnostic should hit isConverged branch
+    const taskDir = resolve(dir, 'pending', 'T01-converged-diag');
+    mkdirSync(taskDir, { recursive: true });
+    writeFileSync(resolve(taskDir, '.status'), 'CONVERGED\n');
+    // No actionable tasks — tick diagnostic should find T01 and hit isConverged true branch
+    const r = await new Engine(dir, { benchmark: zero, instanceId: 'test' }).tick();
+    expect(r.task).toBeNull();
+  });
+
+  it('diagnostic: logs other\'s in-progress claim (byUs=false)', async () => {
+    const { writeFileSync, mkdirSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const taskDir = resolve(dir, 'in_progress', 'T01-other-claim');
+    mkdirSync(taskDir, { recursive: true });
+    const claimDir = join(taskDir, '.claim');
+    mkdirSync(claimDir, { recursive: true });
+    writeFileSync(join(claimDir, 'owner'), `pid:${process.pid}\nstarted:1\ninstance:other-inst\n`);
+    writeFileSync(join(taskDir, '.status'), 'IN_PROGRESS:other-inst\n');
+    writeFileSync(join(claimDir, 'heartbeat'), '');
+    // Use live PID so recovery doesn't clean up; pick() skips (other's claim), diagnostic finds it, byUs=false
+    const r = await new Engine(dir, { benchmark: zero, instanceId: 'my-inst' }).tick();
+    expect(r.task).toBeNull();
+  });
+
 });

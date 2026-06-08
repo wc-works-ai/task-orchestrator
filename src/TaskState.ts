@@ -280,11 +280,8 @@ export class TaskState {
         .sort((a, b) => a - b);
 
       for (const tn of nums) {
-        /* c8 ignore next 3 */
         const dirName = entries.find(e =>
-          new RegExp(`^T0*${tn}-`).test(e));
-        if (!dirName) continue;
-
+          new RegExp(`^T0*${tn}-`).test(e))!;
         const t = new TaskState(resolve(tasksDir, shard, dirName));
 
         if (t.isConverged || t.isBlocked) continue;

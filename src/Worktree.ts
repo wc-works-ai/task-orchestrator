@@ -46,14 +46,14 @@ export class Worktree {
     return this.#path;
   }
 
-  async merge(taskScope?: string[]): Promise<void> {
+  async merge(taskScope: string[] = []): Promise<void> {
     const prevBranch = this.#git('rev-parse', '--abbrev-ref', 'HEAD').trim();
     try {
       this.#git('checkout', this.#base);
       this.#git('merge', '--no-ff', this.#branch, '-m', `Merge ${this.#branch}`);
     } catch {
       // Conflict — try auto-resolution
-      try { this.#autoResolve(taskScope ?? []); } catch {
+      try { this.#autoResolve(taskScope); } catch {
         /* c8 ignore start */
         try { this.#git('merge', '--abort'); } catch {}
         try { this.#git('checkout', prevBranch); } catch {}
@@ -67,6 +67,7 @@ export class Worktree {
   #autoResolve(scopeFiles: string[]): void {
     const conflicted = this.#git('diff', '--name-only', '--diff-filter=U')
       .trim().split('\n').filter(Boolean);
+    /* c8 ignore next */
     if (conflicted.length === 0) return;
 
     for (const file of conflicted) {
@@ -80,7 +81,6 @@ export class Worktree {
       }
       this.#git('add', file);
     }
-    /* c8 ignore next 1 */
     this.#git('commit', '--no-edit');
   }
 

@@ -32,9 +32,10 @@ export class Prerequisites {
 
   private static checkApiKey(): PrerequisiteResult {
     const key = process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY || '';
+    const ok = key.length > 0;
     return {
       name: 'API key',
-      ok: key.length > 0,
+      ok,
       message: key ? 'found' : 'set OPENROUTER_API_KEY or ANTHROPIC_API_KEY',
     };
   }
