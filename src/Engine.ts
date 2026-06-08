@@ -40,7 +40,9 @@ export class Engine {
   get instanceId(): string { return this.#id; }
 
   #log(msg: string): void {
-    try { appendFileSync(resolve(this.#dir, 'orchestrator.log'), `[${new Date().toISOString()}] ${msg}\n`); } catch {}
+    const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    console.log(`[${ts}] ${msg}`);
+    try { appendFileSync(resolve(this.#dir, 'orchestrator.log'), `[${ts}] ${msg}\n`); } catch {}
   }
 
   get #stopFile(): string { return resolve(this.#dir, '.stop'); }
@@ -77,6 +79,7 @@ export class Engine {
     }
 
     let metric = await this.#run(task);
+    this.#log(`T${task.taskNumber} metric=${metric}`);
 
     if (metric === 0) return this.#handleZero(task, metric);
 

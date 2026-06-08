@@ -277,4 +277,31 @@ describe('Engine', () => {
     const r = await new Engine(dir, { benchmark: zero }).tick();
     expect(r.task).toBeNull();
   });
+
+  // ── pickByNumber ──────────────────────────────────────────────────
+
+  it('pickByNumber finds task by number', async () => {
+    make(dir, 1, 'a');
+    make(dir, 5, 'b');
+    const engine = new Engine(dir, { benchmark: zero });
+    const t = await engine.pickByNumber(5);
+    expect(t).not.toBeNull();
+    expect(t!.taskNumber).toBe(5);
+  });
+
+  it('pickByNumber returns null for non-existent task', async () => {
+    make(dir, 1, 'a');
+    const engine = new Engine(dir, { benchmark: zero });
+    const t = await engine.pickByNumber(99);
+    expect(t).toBeNull();
+  });
+
+  it('pickByNumber finds task in non-pending shard', async () => {
+    const t = make(dir, 3, 'c');
+    t.status = Status.CONVERGED;
+    const engine = new Engine(dir, { benchmark: zero });
+    const found = await engine.pickByNumber(3);
+    expect(found).not.toBeNull();
+    expect(found!.taskNumber).toBe(3);
+  });
 });
