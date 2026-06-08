@@ -9,3 +9,4 @@ tasks/*
 .worktrees/
 coverage/
 tasks/
+*.cov_*
