@@ -199,7 +199,7 @@ export class Engine {
     try {
       const info = worktreePath
         ? { ...task.info, directory: resolve(worktreePath, task.directory.replace(this.#repo, '').replace(/^\//, '')), cwd: worktreePath }
-        : { ...task.info, cwd: this.#repo };
+        : task.info;
       return await this.#bench(info);
     }
     catch { return 1; }

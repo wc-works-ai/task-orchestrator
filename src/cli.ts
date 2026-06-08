@@ -169,7 +169,8 @@ const engine = new Engine(dir, {
   benchmark: async (t: TaskInfo) => {
     try {
       const out = execSync(`node ${t.directory}/benchmark.js`, {
-        timeout: 30_000, encoding: 'utf-8', cwd: t.cwd,
+        timeout: 30_000, encoding: 'utf-8',
+        cwd: t.directory.includes('.worktrees/') ? t.cwd : repo,
       });
       return parseInt(out.match(/METRIC\s+\w+=(\d+)/)?.[1] ?? '1', 10);
     } catch { return 1; }
