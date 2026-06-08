@@ -238,7 +238,6 @@ describe('Engine agent spawning', () => {
   it('handles node_modules already existing in worktree (covers line 133 else)', async () => {
     const { execSync } = await import('node:child_process');
     const { mkdirSync: mk, writeFileSync } = await import('node:fs');
-    const { join } = await import('node:path');
 
     const repoDir = resolve(dir, 'repo');
     const tasksDir = resolve(dir, 'tasks');
