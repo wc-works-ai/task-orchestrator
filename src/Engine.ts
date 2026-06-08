@@ -238,10 +238,9 @@ export class Engine {
         // Stale heartbeat but alive PID — skip (long-running op)
         continue;
       }
-      // Owner dead or unknown — release immediately
+      // Owner dead or unknown — release immediately, preserve convergence
       task.release(Status.FAILED);
-      task.resetConvergence();
-      this.#log(`STALE: ${task.taskName} claim released`);
+      this.#log(`STALE: ${task.taskName} claim released (convergence=${task.convergenceCount})`);
     }
   }
 
