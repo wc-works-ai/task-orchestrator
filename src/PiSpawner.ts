@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { writeFileSync, appendFileSync } from 'node:fs';
+import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { TaskState } from './TaskState.js';
 import type { SpawnResult } from './Engine.js';
@@ -73,23 +73,31 @@ export class PiSpawner {
       signal?.addEventListener('abort', () => { child.kill(); done({ success: false, iterations: 0 }); }, { once: true });
 
       let output = '';
+      let lineBuf = '';
 
       const logPath = join(task.directory, F_AGENT_LOG);
-      // Write header so a partial file is recognizable
-      try { writeFileSync(logPath, `=== agent session started at ${new Date().toISOString()} ===
-`); } catch {}
+      // Append header with separator (don't truncate — preserve history across spawns)
+      try { appendFileSync(logPath, `\n=== agent session started at ${new Date().toISOString()} ===\n`); } catch {}
 
-      child.stdout?.on('data', (d: Buffer) => {
-        const txt = d.toString();
+      const handleData = (txt: string) => {
         output += txt;
         try { appendFileSync(logPath, txt); } catch {}
-      });
 
-      child.stderr?.on('data', (d: Buffer) => {
-        const txt = d.toString();
-        output += txt;
-        try { appendFileSync(logPath, txt); } catch {}
-      });
+        // Parse NDJSON lines in the stream for live console output
+        lineBuf += txt;
+        const lines = lineBuf.split('\n');
+        lineBuf = lines.pop() ?? '';
+        for (const raw of lines) {
+          if (!raw.trim()) continue;
+          try {
+            const obj = JSON.parse(raw);
+            PiSpawner.#printEvent(obj);
+          } catch { /* incomplete line — wait for more data */ }
+        }
+      };
+
+      child.stdout?.on('data', (d: Buffer) => handleData(d.toString()));
+      child.stderr?.on('data', (d: Buffer) => handleData(d.toString()));
 
       child.on('close', (code: number | null) => {
         const iterations = (output.match(/log_experiment/g) || []).length;
@@ -109,6 +117,53 @@ export class PiSpawner {
         done({ success: false, iterations: 0 });
       });
     });
+  }
+
+  /** Print key agent events to console for live visibility */
+  static #printEvent(obj: Record<string, unknown>): void {
+    const t = String(obj.type ?? '');
+
+    if (t === 'tool_execution_start') {
+      const name = String(obj.toolName ?? obj.name ?? '');
+      const args = obj.arguments ?? {};
+      let summary = name;
+      if (typeof args === 'object' && args && 'path' in args) {
+        summary += ` ${String(args.path)}`;
+      } else if (typeof args === 'object' && args && 'command' in args) {
+        const cmd = String(args.command).slice(0, 80);
+        summary += ` ${cmd}`;
+      }
+      console.log(`  🔧 ${summary}`);
+    }
+
+    if (t === 'tool_execution_end') {
+      const name = String(obj.toolName ?? '');
+      const result = obj.result as Record<string, unknown> | undefined;
+      const content = result?.content;
+      if (Array.isArray(content)) {
+        for (const c of content) {
+          if (typeof c === 'object' && c && c.type === 'text') {
+            const text = String(c.text);
+            // Show METRIC lines from run_experiment
+            const metricM = text.match(/METRIC\s+\w+=(\d+(?:\.\d+)?)/);
+            if (metricM) {
+              console.log(`  📊 ${metricM[0]}`);
+            }
+            // Show log_experiment results
+            if (name === 'log_experiment') {
+              const line = text.split('\n')[0]?.trim();
+              if (line) {
+                const icon = line.includes('keep') ? '💾' : line.includes('crash') ? '💥' : '📝';
+                console.log(`  ${icon} ${line.slice(0, 100)}`);
+              }
+            }
+          }
+        }
+      }
+      if (obj.isError) {
+        console.log(`  ❌ ${name} failed`);
+      }
+    }
   }
 
   #prompt(task: TaskState, cwd: string): string {
