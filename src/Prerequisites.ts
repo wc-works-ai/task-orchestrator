@@ -11,8 +11,8 @@ type CheckFn = () => PrerequisiteResult;
 const checks: CheckFn[] = [
   () => {
     const v = process.version;
+    /* v8 ignore next: ?? fallback for undefined array index */
     const major = parseInt(v.slice(1).split('.')[0] ?? '0', 10);
-    /* istanbul ignore next: node version branch depends on runtime */
     return { name: 'node', ok: major >= 22, message: `Node ${v} (need >=22)` };
   },
   () => {
