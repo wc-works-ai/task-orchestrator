@@ -2,6 +2,17 @@
 
 TDD + SOLID. Read `TESTING.md` first for test conventions.
 
+**TypeScript strict** — `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noUnusedLocals`
+- **Private fields** — `#name`, never `private name`
+- **Imports** — `import type` for type-only, `verbatimModuleSyntax`
+- **Files** — one class per file, barrel exports in `index.ts`
+- **Tests** — see `TESTING.md`
+
+### Before committing
+1. `npm run c` — zero type errors (~2s)
+2. `npm run t` — all tests pass (~3s)
+3. `npm run all` — full pipeline (pre-push hook enforces)
+
 ---
 
 ## TDD: Red → Green → Refactor
