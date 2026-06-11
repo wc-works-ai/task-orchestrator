@@ -246,6 +246,58 @@ describe('PiSpawner', () => {
     expect(r.iterations).toBe(3);
   });
 
+  it('totals assistant message_end token usage and writes it to agent log', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiSpawner().spawn(t, dir);
+    setTimeout(() => {
+      mock.stdout!.emit('data', Buffer.from(JSON.stringify({
+        type: 'message_update',
+        message: {
+          role: 'assistant',
+          usage: { input: 999, output: 999, cacheRead: 999, cacheWrite: 999, totalTokens: 999 },
+        },
+      }) + '\n'));
+      mock.stdout!.emit('data', Buffer.from(JSON.stringify({
+        type: 'message_end',
+        message: {
+          role: 'user',
+          usage: { input: 50, output: 50, cacheRead: 50, cacheWrite: 50, totalTokens: 200 },
+        },
+      }) + '\n'));
+      mock.stdout!.emit('data', Buffer.from(JSON.stringify({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          usage: { input: 10, output: 2, cacheRead: 100, cacheWrite: 0, totalTokens: 112 },
+        },
+      }) + '\n'));
+      mock.stdout!.emit('data', Buffer.from(JSON.stringify({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          usage: { input: 3, output: 4, cacheRead: 5, cacheWrite: 6, totalTokens: 18 },
+        },
+      }) + '\n'));
+      mock.emit('close', 0);
+    }, 5);
+
+    const r = await p;
+    expect(r.success).toBe(true);
+    expect(r.tokenUsage).toEqual({
+      input: 13,
+      output: 6,
+      cacheRead: 105,
+      cacheWrite: 6,
+      totalTokens: 130,
+    });
+    const log = readFileSync(join(t.directory, 'agent.log'), 'utf-8');
+    expect(log).toContain('=== token usage total=130 input=13 output=6 cacheRead=105 cacheWrite=6 ===');
+  });
+
   it('handles spawn error gracefully', async () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);

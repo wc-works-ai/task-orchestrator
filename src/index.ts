@@ -1,5 +1,5 @@
 export { Engine, MergeRecoveryAction } from './Engine.js';
-export type { EngineOptions, MergeRecoveryFailure, MergeRecoveryFn } from './Engine.js';
+export type { EngineOptions, MergeRecoveryFailure, MergeRecoveryFn, TokenUsage } from './Engine.js';
 export { TaskState, Status, inProgress, isInProgress, CONVERGENCE_THRESHOLD } from './TaskState.js';
 export type { TaskInfo, BenchmarkFn, TickResult } from './TaskState.js';
 export { addTask } from './addTask.js';

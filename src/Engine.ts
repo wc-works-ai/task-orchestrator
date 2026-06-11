@@ -9,12 +9,21 @@ const HEARTBEAT_MAX_MS = env.heartbeatMs;
 export interface SpawnResult {
   readonly success: boolean;
   readonly iterations: number;
+  readonly tokenUsage?: TokenUsage;
   readonly authFailure?: boolean;
   readonly error?: string;
   readonly logPath?: string;
 }
 
 export type SpawnFn = (task: TaskState, worktreePath?: string, signal?: AbortSignal) => Promise<SpawnResult>;
+
+export interface TokenUsage {
+  readonly input: number;
+  readonly output: number;
+  readonly cacheRead: number;
+  readonly cacheWrite: number;
+  readonly totalTokens: number;
+}
 
 class MergeFailureError extends Error {}
 
@@ -193,6 +202,7 @@ export class Engine {
         this.#log(
           `T${task.taskNumber} agent ${spawnResult.success ? 'finished' : 'stopped without finishing'} ` +
           `(${this.#experimentLabel(spawnResult.iterations)}` +
+          `${spawnResult.tokenUsage ? `; tokens: ${this.#tokenUsageLabel(spawnResult.tokenUsage)}` : ''}` +
           `${spawnResult.error ? `; reason: ${this.#singleLine(spawnResult.error)}` : ''}` +
           `${spawnResult.logPath ? `; details: ${spawnResult.logPath}` : ''})`,
         );
@@ -323,6 +333,10 @@ export class Engine {
 
   #experimentLabel(count: number): string {
     return count === 1 ? '1 progress record' : `${count} progress records`;
+  }
+
+  #tokenUsageLabel(usage: TokenUsage): string {
+    return `total=${usage.totalTokens} input=${usage.input} output=${usage.output} cacheRead=${usage.cacheRead} cacheWrite=${usage.cacheWrite}`;
   }
 
   #singleLine(value: string): string {

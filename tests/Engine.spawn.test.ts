@@ -88,6 +88,30 @@ describe('Engine agent spawning', () => {
     }
   });
 
+  it('logs token usage returned by the spawned agent', async () => {
+    make(dir, 1, 'a');
+    const spawn = vi.fn().mockResolvedValue({
+      success: true,
+      iterations: 2,
+      tokenUsage: { input: 10, output: 5, cacheRead: 15, cacheWrite: 0, totalTokens: 30 },
+      logPath: resolve(dir, 'agent.log'),
+    });
+    const benchmark = vi.fn()
+      .mockResolvedValueOnce(1)
+      .mockResolvedValue(0);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      const engine = new Engine(dir, { benchmark, spawn });
+      await engine.tick();
+      expect(joinedCalls(logSpy)).toContain(
+        'T1 agent finished (2 progress records; tokens: total=30 input=10 output=5 cacheRead=15 cacheWrite=0',
+      );
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
   it('marks FAILED when no spawner provided and metric is non-zero', async () => {
     make(dir, 1, 'a');
     const r = await new Engine(dir, { benchmark: () => 1 }).tick();

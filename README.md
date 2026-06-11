@@ -39,6 +39,8 @@ npm run tick
 
 If merge-back is blocked, the task is not marked converged. Interactive runs ask whether to manually clean up and retry later or auto-stash parent repo changes and retry the merge immediately. Non-interactive runs fail closed and keep the worktree for inspection.
 
+Agent summaries include total token usage when the spawned `pi` run reports usage data. The same total is written to `agent.log`.
+
 ## CLI
 
 | Command | Description |

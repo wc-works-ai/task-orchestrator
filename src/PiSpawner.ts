@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { TaskState } from './TaskState.js';
 import { env } from './env.js';
 import { piCommand } from './PiCommand.js';
-import type { SpawnResult } from './Engine.js';
+import type { SpawnResult, TokenUsage } from './Engine.js';
 
 
 
@@ -13,6 +13,7 @@ const F_AGENT_LOG = 'agent.log';
 const AUTH_FAILURE_RE = /No API key found for ([^\s.]+)\./g;
 const SUMMARY_MAX = 120;
 const PROGRESS_STATUS_INTERVAL = 30_000;
+type MutableTokenUsage = { -readonly [K in keyof TokenUsage]: TokenUsage[K] };
 
 export interface PiSpawnerOptions {
   /** Optional model override when task doesn't specify one */
@@ -65,6 +66,7 @@ export class PiSpawner {
     console.log(`  log: ${logPath}`);
     console.log('  status: agent running; details in agent.log');
     const authErrors: string[] = [];
+    const tokenUsage = PiSpawner.#emptyTokenUsage();
     let lastResult: SpawnResult | undefined;
     let sawNonAuthFailure = false;
     for (const model of models) {
@@ -72,7 +74,8 @@ export class PiSpawner {
       if (signal?.aborted) return { success: false, iterations: 0 };
       const result = await this.#run(task, model, cwd, signal);
       lastResult = result;
-      if (result.success) return result;
+      if (result.tokenUsage) PiSpawner.#addTokenUsage(tokenUsage, result.tokenUsage);
+      if (result.success) return PiSpawner.#withTokenUsage(result, tokenUsage);
       if (result.authFailure) {
         if (result.error) {
           authErrors.push(result.error);
@@ -88,10 +91,11 @@ export class PiSpawner {
         iterations: lastResult?.iterations ?? 0,
         authFailure: true,
         error: authErrors.join('; '),
+        ...(PiSpawner.#hasTokenUsage(tokenUsage) ? { tokenUsage: { ...tokenUsage } } : {}),
         ...(lastResult?.logPath ? { logPath: lastResult.logPath } : {}),
       };
     }
-    return lastResult ?? { success: false, iterations: 0 };
+    return lastResult ? PiSpawner.#withTokenUsage(lastResult, tokenUsage) : { success: false, iterations: 0 };
   }
 
   #run(task: TaskState, model: string | undefined, cwd: string, signal?: AbortSignal): Promise<SpawnResult> {
@@ -121,8 +125,14 @@ export class PiSpawner {
       signal?.addEventListener('abort', () => { aborted = true; child.kill(); }, { once: true });
 
       let output = '';
+      let lineBuf = '';
+      const tokenUsage = PiSpawner.#emptyTokenUsage();
       let lastProgress = Date.now();
       let lastStatus = Date.now();
+      const result = (r: Omit<SpawnResult, 'tokenUsage'>): SpawnResult =>
+        PiSpawner.#hasTokenUsage(tokenUsage)
+          ? { ...r, tokenUsage: { ...tokenUsage } }
+          : r;
 
       const logPath = join(task.directory, F_AGENT_LOG);
       // Append header with separator (don't truncate — preserve history across spawns)
@@ -142,6 +152,18 @@ export class PiSpawner {
       const handleData = (txt: string) => {
         output += txt;
         try { appendFileSync(logPath, txt); } catch {}
+
+        lineBuf += txt;
+        const lines = lineBuf.split('\n');
+        lineBuf = lines.pop() ?? '';
+        for (const raw of lines) {
+          if (!raw.trim()) continue;
+          try {
+            const obj = JSON.parse(raw) as Record<string, unknown>;
+            const usage = PiSpawner.#usageFromEvent(obj);
+            if (usage) PiSpawner.#addTokenUsage(tokenUsage, usage);
+          } catch {}
+        }
       };
 
       child.stdout?.on('data', (d: Buffer) => { lastProgress = Date.now(); handleData(d.toString()); });
@@ -158,7 +180,7 @@ export class PiSpawner {
           const error = `No agent output for ${PiSpawner.#formatDuration(quietFor)}; stopped pi`;
           console.error(`  ❌ ${error}. See ${logPath}`);
           child.kill();
-          done({ success: false, iterations: 0, error, logPath });
+          done(result({ success: false, iterations: 0, error, logPath }));
           return;
         }
         if (quietFor < this.#progressStatusInterval) return;
@@ -176,6 +198,7 @@ export class PiSpawner {
         // Append footer and close — previous chunks already streamed
         try {
           appendFileSync(logPath, `=== agent session ended (exit ${code}) ===
+${PiSpawner.#hasTokenUsage(tokenUsage) ? `=== token usage ${PiSpawner.#formatTokenUsage(tokenUsage)} ===\n` : ''}
 `);
         /* c8 ignore start */
         } catch (e: unknown) {
@@ -186,19 +209,19 @@ export class PiSpawner {
         // report as a failure regardless of exit code.
         const authError = PiSpawner.#authError(output);
         if (!aborted && code !== 0 && authError) {
-          done({ success: false, iterations, authFailure: true, error: authError, logPath });
+          done(result({ success: false, iterations, authFailure: true, error: authError, logPath }));
         } else if (aborted) {
-          done({ success: false, iterations, error: 'pi spawn aborted', logPath });
+          done(result({ success: false, iterations, error: 'pi spawn aborted', logPath }));
         } else if (code === 0) {
-          done({ success: true, iterations, logPath });
+          done(result({ success: true, iterations, logPath }));
         } else {
-          done({ success: false, iterations, error: `pi exited with code ${code ?? 'unknown'}`, logPath });
+          done(result({ success: false, iterations, error: `pi exited with code ${code ?? 'unknown'}`, logPath }));
         }
       });
 
       child.on('error', (e: Error) => {
         clearInterval(progressTimer);
-        done({ success: false, iterations: 0, error: e.message, logPath });
+        done(result({ success: false, iterations: 0, error: e.message, logPath }));
       });
     });
   }
@@ -226,6 +249,64 @@ export class PiSpawner {
 
   static #formatDuration(ms: number): string {
     return ms < 1000 ? `${ms}ms` : `${Math.round(ms / 1000)}s`;
+  }
+
+  static #emptyTokenUsage(): MutableTokenUsage {
+    return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
+  }
+
+  static #addTokenUsage(total: MutableTokenUsage, usage: TokenUsage): void {
+    total.input += usage.input;
+    total.output += usage.output;
+    total.cacheRead += usage.cacheRead;
+    total.cacheWrite += usage.cacheWrite;
+    total.totalTokens += usage.totalTokens;
+  }
+
+  static #withTokenUsage(result: SpawnResult, usage: TokenUsage): SpawnResult {
+    return PiSpawner.#hasTokenUsage(usage) ? { ...result, tokenUsage: { ...usage } } : result;
+  }
+
+  static #hasTokenUsage(usage: TokenUsage): boolean {
+    return usage.input > 0 || usage.output > 0 || usage.cacheRead > 0 || usage.cacheWrite > 0 || usage.totalTokens > 0;
+  }
+
+  static #usageFromEvent(obj: Record<string, unknown>): TokenUsage | null {
+    if (obj.type !== 'message_end') return null;
+    const message = PiSpawner.#record(obj.message);
+    if (!message || message.role !== 'assistant') return null;
+    const usage = PiSpawner.#record(message.usage);
+    if (!usage) return null;
+    const parsed = PiSpawner.#parseUsage(usage);
+    return PiSpawner.#hasTokenUsage(parsed) ? parsed : null;
+  }
+
+  static #parseUsage(usage: Record<string, unknown>): TokenUsage {
+    const input = PiSpawner.#numberFrom(usage, ['input', 'input_tokens', 'prompt_tokens']);
+    const output = PiSpawner.#numberFrom(usage, ['output', 'output_tokens', 'completion_tokens']);
+    const cacheRead = PiSpawner.#numberFrom(usage, ['cacheRead', 'cache_read', 'cache_read_tokens', 'cached_tokens']);
+    const cacheWrite = PiSpawner.#numberFrom(usage, ['cacheWrite', 'cache_write', 'cache_write_tokens']);
+    const totalTokens = PiSpawner.#numberFrom(usage, ['totalTokens', 'total_tokens']) || input + output + cacheRead + cacheWrite;
+    return { input, output, cacheRead, cacheWrite, totalTokens };
+  }
+
+  static #record(value: unknown): Record<string, unknown> | null {
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : null;
+  }
+
+  static #numberFrom(record: Record<string, unknown>, keys: readonly string[]): number {
+    for (const key of keys) {
+      const value = record[key];
+      const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+      if (Number.isFinite(number)) return number;
+    }
+    return 0;
+  }
+
+  static #formatTokenUsage(usage: TokenUsage): string {
+    return `total=${usage.totalTokens} input=${usage.input} output=${usage.output} cacheRead=${usage.cacheRead} cacheWrite=${usage.cacheWrite}`;
   }
 
   #prompt(task: TaskState, cwd: string): string {
