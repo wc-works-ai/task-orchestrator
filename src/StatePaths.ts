@@ -1,4 +1,7 @@
 import { basename, join, resolve } from 'node:path';
+import { homedir } from 'node:os';
+
+const DEFAULT_STATE_ROOT = 'task-orchestrator';
 
 export interface StatePathInputs {
   readonly repo?: string | undefined;
@@ -22,12 +25,15 @@ export function repoSlug(repoPath: string): string {
   return slug;
 }
 
+export function defaultStateRoot(): string {
+  return join(homedir(), DEFAULT_STATE_ROOT);
+}
+
 export function resolveStatePaths(inputs: StatePathInputs): StatePaths {
   if (!inputs.repo) throw new Error('--repo is required (or set ORCH_REPO)');
-  if (!inputs.stateRoot) throw new Error('--state-root is required (or set ORCH_STATE_ROOT)');
 
   const repo = resolve(inputs.repo);
-  const stateRoot = resolve(inputs.stateRoot);
+  const stateRoot = resolve(inputs.stateRoot || defaultStateRoot());
   const slug = repoSlug(repo);
 
   return {

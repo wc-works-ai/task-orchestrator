@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
+import { createInterface } from 'node:readline/promises';
+import { stdin as input, stdout as output } from 'node:process';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { existsSync, mkdirSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { addTask } from './addTask.js';
-import { Engine } from './Engine.js';
+import { Engine, MergeRecoveryAction, type MergeRecoveryFailure } from './Engine.js';
 import { TaskState, type TaskInfo } from './TaskState.js';
 import { PiSpawner } from './PiSpawner.js';
 import { Prerequisites } from './Prerequisites.js';
@@ -14,6 +16,35 @@ import { resolveStatePaths } from './StatePaths.js';
 function isPathInside(child: string, parent: string): boolean {
   const rel = relative(parent, child);
   return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+}
+
+async function promptMergeRecovery(failure: MergeRecoveryFailure): Promise<MergeRecoveryAction> {
+  console.error('');
+  console.error(`  ⚠️  T${failure.task.number} could not merge ${failure.branch}`);
+  console.error(`  worktree: ${failure.worktreePath}`);
+  console.error(`  reason: ${failure.error}`);
+  if (!input.isTTY) {
+    console.error('  Non-interactive shell: leaving the task failed so you can clean up and retry.');
+    return MergeRecoveryAction.Stop;
+  }
+
+  const rl = createInterface({ input, output });
+  try {
+    while (true) {
+      const answer = (await rl.question(
+        '  How should orchestrator proceed? [1] manual cleanup/retry (default), [2] auto-stash parent changes and retry merge: ',
+      )).trim().toLowerCase();
+      if (answer === '' || answer === '1' || answer === 'm' || answer === 'manual') {
+        return MergeRecoveryAction.Stop;
+      }
+      if (answer === '2' || answer === 's' || answer === 'stash' || answer === 'auto-stash') {
+        return MergeRecoveryAction.StashAndRetry;
+      }
+      console.error('  Enter 1 for manual cleanup/retry, or 2 to auto-stash and retry merge.');
+    }
+  } finally {
+    rl.close();
+  }
 }
 
 const { values, positionals } = await parseArgs({
@@ -32,6 +63,7 @@ const { values, positionals } = await parseArgs({
     metric: { type: 'string', default: '' },
     scope:  { type: 'string', default: '' },
     once:   { type: 'boolean', default: false },
+    'auto-stash': { type: 'boolean', default: false },
     worktrees: { type: 'string', default: '' },
     help:   { type: 'boolean', short: 'h', default: false },
   },
@@ -41,26 +73,29 @@ if (values.help) {
   console.log(`
 Task Orchestrator — autonomous task execution
 
-  orchestrator --state-root <dir> run until all tasks complete (loop)
-  orchestrator --state-root <dir> --once
-  orchestrator --state-root <dir> --status
-  orchestrator --state-root <dir> --check
-  orchestrator --state-root <dir> --stop
-  orchestrator --state-root <dir> --task <n>
+  orchestrator                  run until all tasks complete (loop)
+  orchestrator --once
+  orchestrator --status
+  orchestrator --check
+  orchestrator --stop
+  orchestrator --task <n>
+  orchestrator --auto-stash  stash parent repo changes before merging
   orchestrator --repo <dir>     override target repo/folder (default: current directory)
+  orchestrator --state-root <dir> override state root (default: <home>\\task-orchestrator)
   orchestrator --tasks <dir>    override derived task directory
   orchestrator --worktrees <dir> override derived worktree directory
-  orchestrator --state-root <dir> add <name>
-  orchestrator --state-root <dir> add <name> --goal "..." --metric x --scope "a b"
+  orchestrator add <name>
+  orchestrator add <name> --goal "..." --metric x --scope "a b"
 
 Resolution order for optional settings: CLI flag > environment variable > derived default.
 
 Environment variables:
   ORCH_REPO=<dir>            optional target repo/folder override
-  ORCH_STATE_ROOT=<dir>      required orchestrator state root
+  ORCH_STATE_ROOT=<dir>      optional state root override
   ORCH_TASKS=<dir>           optional task directory override
   ORCH_WORKTREES=<dir>       optional worktree directory override
   ORCH_MODEL=<model>         model override (uses pi default when unset)
+  ORCH_AUTO_STASH=1          stash parent repo changes before merging
   ORCH_CONVERGE=<n>          zero-runs to converge (default: 3)
   ORCH_MAX_FAILURES=<n>      failures before BLOCKED (default: 5)
   ORCH_HEARTBEAT_MS=<ms>     stale claim timeout (default: 300000)
@@ -79,13 +114,14 @@ try {
   });
 } catch (e: unknown) {
   console.error(`\n  ❌ ${e instanceof Error ? e.message : String(e)}`);
-  console.error('  Example: orchestrator --state-root Q:\\Orchestrator\n');
+  console.error('  Example: orchestrator --repo Q:\\Repos\\FabricSparkCST\n');
   process.exit(1);
 }
 
 const repo = paths.repo;
 const dir = paths.tasks;
 const worktreesDir = paths.worktrees;
+const autoStash = values['auto-stash'] || env.autoStash;
 
 console.log(`repo: ${repo}`);
 console.log(`tasks: ${dir}`);
@@ -202,6 +238,8 @@ const effectiveWorktreesDir = worktreesDir;
 const engine = new Engine(dir, {
   repoDir: repo,
   worktreesDir,
+  autoStashBeforeMerge: autoStash,
+  mergeRecovery: autoStash ? () => MergeRecoveryAction.StashAndRetry : promptMergeRecovery,
   spawn: (task, worktreePath, signal) => spawner.spawn(task, worktreePath, signal),
   benchmark: async (t: TaskInfo) => {
     try {
@@ -228,24 +266,30 @@ if (values.task) {
   process.exit(0);
 }
 
-if (values.once) {
-  const r = await engine.tick();
-  if (r.task) {
-    const icon = r.converged ? '✅' : r.metric === 0 ? '⏳' : '❌';
-    console.log(`${icon} T${r.task.number}: metric=${r.metric}`);
+try {
+  if (values.once) {
+    const r = await engine.tick();
+    if (r.task) {
+      const icon = r.converged ? '✅' : r.metric === 0 ? '⏳' : '❌';
+      console.log(`${icon} T${r.task.number}: metric=${r.metric}`);
+    } else {
+      console.log('Nothing actionable.');
+    }
   } else {
-    console.log('Nothing actionable.');
+    console.log('Running until tasks complete');
+    const n = await engine.loop({
+      onTick: (r) => {
+        if (r.task) {
+          const icon = r.converged ? '✅' : r.metric === 0 ? '⏳' : '❌';
+          const status = r.converged ? 'converged' : r.metric === 0 ? 'convergence pending' : `metric=${r.metric}`;
+          console.log(`  ${icon} T${r.task.number}: ${status} — ${r.task.goal.slice(0, 60)}`);
+        }
+      },
+    });
+    console.log(`\n🎉 ${n} ticks — all done\n`);
   }
-} else {
-  console.log('Running until tasks complete');
-  const n = await engine.loop({
-    onTick: (r) => {
-      if (r.task) {
-        const icon = r.converged ? '✅' : r.metric === 0 ? '⏳' : '❌';
-        const status = r.converged ? 'converged' : r.metric === 0 ? 'convergence pending' : `metric=${r.metric}`;
-        console.log(`  ${icon} T${r.task.number}: ${status} — ${r.task.goal.slice(0, 60)}`);
-      }
-    },
-  });
-  console.log(`\n🎉 ${n} ticks — all done\n`);
+} catch (e: unknown) {
+  const message = e instanceof Error ? e.message : String(e);
+  console.error(`\n  ❌ ${message}\n`);
+  process.exit(1);
 }

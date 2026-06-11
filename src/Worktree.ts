@@ -2,6 +2,10 @@ import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 
+function gitErrorMessage(e: unknown): string {
+  return e instanceof Error ? e.message.replace(/\s+/g, ' ').trim() : String(e);
+}
+
 export interface WorktreeOptions {
   readonly name: string;
   readonly baseBranch?: string;
@@ -50,25 +54,38 @@ export class Worktree {
     const prevBranch = this.#git('rev-parse', '--abbrev-ref', 'HEAD').trim();
     try {
       this.#git('checkout', this.#base);
+    } catch (e: unknown) {
+      try { this.#git('checkout', prevBranch); } catch {}
+      throw new Error(`Unable to switch to ${this.#base} before merging ${this.#branch}: ${gitErrorMessage(e)}`);
+    }
+
+    try {
       this.#git('merge', '--no-ff', this.#branch, '-m', `Merge ${this.#branch}`);
     } catch {
       // Conflict — try auto-resolution
-      try { this.#autoResolve(taskScope); } catch {
+      try { this.#autoResolve(taskScope); } catch (e: unknown) {
         /* c8 ignore start */
         try { this.#git('merge', '--abort'); } catch {}
         try { this.#git('checkout', prevBranch); } catch {}
-        throw new Error(`Merge conflict in ${this.#name} — manual resolution required`);
+        throw new Error(`Merge conflict in ${this.#name} — manual resolution required: ${gitErrorMessage(e)}`);
         /* c8 ignore stop */
       }
     }
+  }
+
+  async stashParentChanges(message: string): Promise<boolean> {
+    if (!this.#git('status', '--porcelain').trim()) return false;
+    this.#git('stash', 'push', '-u', '-m', message);
+    return true;
   }
 
   /** Auto-resolve: accept worktree version for scoped files, main version for rest */
   #autoResolve(scopeFiles: string[]): void {
     const conflicted = this.#git('diff', '--name-only', '--diff-filter=U')
       .trim().split('\n').filter(Boolean);
-    /* c8 ignore next */
-    if (conflicted.length === 0) return;
+    if (conflicted.length === 0) {
+      throw new Error('merge failed without conflicted files to auto-resolve');
+    }
 
     for (const file of conflicted) {
       const isScoped = scopeFiles.some(sf => file.includes(sf));

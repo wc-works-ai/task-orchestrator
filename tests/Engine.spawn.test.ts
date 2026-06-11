@@ -1,8 +1,8 @@
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { rm } from 'node:fs/promises';
-import { mkdtempSync, mkdirSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { Engine } from '../src/Engine.js';
+import { mkdtempSync, mkdirSync, existsSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { Engine, MergeRecoveryAction } from '../src/Engine.js';
 import { TaskState, Status, type TaskInfo } from '../src/TaskState.js';
 
 function setup() {
@@ -175,6 +175,168 @@ describe('Engine agent spawning', () => {
 
     expect(r.converged).toBe(true);
     expect(r.metric).toBe(0);
+  });
+
+  it('does not mark converged or remove worktree when merge back fails', async () => {
+    const { execSync } = await import('node:child_process');
+    const { mkdirSync: mk } = await import('node:fs');
+
+    const repoDir = resolve(dir, 'repo');
+    const tasksDir = resolve(dir, 'tasks');
+    const worktreesDir = resolve(dir, 'worktrees');
+    mk(repoDir, { recursive: true });
+    execSync('git init && git config user.email test@test && git config user.name test', { cwd: repoDir });
+    writeFileSync(join(repoDir, 'tracked.txt'), 'master');
+    execSync('git add tracked.txt && git commit -m "master tracked"', { cwd: repoDir });
+    execSync('git checkout -b dev', { cwd: repoDir });
+    writeFileSync(join(repoDir, 'tracked.txt'), 'dev');
+    execSync('git add tracked.txt && git commit -m "dev tracked"', { cwd: repoDir });
+
+    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
+      mk(resolve(tasksDir, s), { recursive: true });
+    }
+
+    const d = resolve(tasksDir, 'pending', 'T01-x');
+    mk(d, { recursive: true });
+    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+
+    const spawn = vi.fn().mockImplementation(async (_task: TaskState, wtPath?: string) => {
+      if (!wtPath) throw new Error('missing worktree path');
+      writeFileSync(join(wtPath, 'work.txt'), 'worktree');
+      execSync('git add work.txt && git commit -m "work"', { cwd: wtPath });
+      writeFileSync(join(repoDir, 'tracked.txt'), 'dirty dev');
+      return { success: true, iterations: 1 };
+    });
+    const benchmark = vi.fn()
+      .mockResolvedValueOnce(1).mockResolvedValueOnce(0)
+      .mockResolvedValue(0);
+    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir });
+
+    await engine.tick();
+    await engine.tick();
+    await expect(engine.tick()).rejects.toThrow(/merge failed/);
+
+    const all = await TaskState.scan(tasksDir);
+    expect(all.get('1')!.status).toBe(Status.FAILED);
+    expect(existsSync(join(worktreesDir, 'T01-x', '.git'))).toBe(true);
+  });
+
+  it('auto-stashes parent changes and retries merge when recovery chooses stash', async () => {
+    const { execSync } = await import('node:child_process');
+    const { mkdirSync: mk } = await import('node:fs');
+
+    const repoDir = resolve(dir, 'repo');
+    const tasksDir = resolve(dir, 'tasks');
+    const worktreesDir = resolve(dir, 'worktrees');
+    mk(repoDir, { recursive: true });
+    execSync('git init && git config user.email test@test && git config user.name test', { cwd: repoDir });
+    writeFileSync(join(repoDir, 'tracked.txt'), 'master');
+    execSync('git add tracked.txt && git commit -m "master tracked"', { cwd: repoDir });
+    execSync('git checkout -b dev', { cwd: repoDir });
+    writeFileSync(join(repoDir, 'tracked.txt'), 'dev');
+    execSync('git add tracked.txt && git commit -m "dev tracked"', { cwd: repoDir });
+
+    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
+      mk(resolve(tasksDir, s), { recursive: true });
+    }
+
+    const d = resolve(tasksDir, 'pending', 'T01-x');
+    mk(d, { recursive: true });
+    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+
+    const spawn = vi.fn().mockImplementation(async (_task: TaskState, wtPath?: string) => {
+      if (!wtPath) throw new Error('missing worktree path');
+      writeFileSync(join(wtPath, 'work.txt'), 'worktree');
+      execSync('git add work.txt && git commit -m "work"', { cwd: wtPath });
+      writeFileSync(join(repoDir, 'tracked.txt'), 'dirty dev');
+      return { success: true, iterations: 1 };
+    });
+    const recover = vi.fn().mockResolvedValue(MergeRecoveryAction.StashAndRetry);
+    const benchmark = vi.fn()
+      .mockResolvedValueOnce(1).mockResolvedValueOnce(0)
+      .mockResolvedValue(0);
+    const engine = new Engine(tasksDir, {
+      benchmark,
+      spawn,
+      repoDir,
+      worktreesDir,
+      mergeRecovery: recover,
+    });
+
+    await engine.tick();
+    await engine.tick();
+    const r = await engine.tick();
+
+    expect(r.converged).toBe(true);
+    expect(recover).toHaveBeenCalledWith(expect.objectContaining({
+      task: expect.objectContaining({ number: 1 }),
+      worktreePath: join(worktreesDir, 'T01-x'),
+      branch: 'orchestrator/T01-x',
+      error: expect.stringContaining('Unable to switch to master'),
+    }));
+    const all = await TaskState.scan(tasksDir);
+    expect(all.get('1')!.status).toBe(Status.CONVERGED);
+    expect(existsSync(join(worktreesDir, 'T01-x', '.git'))).toBe(false);
+    expect(existsSync(join(repoDir, 'work.txt'))).toBe(true);
+    expect(execSync('git status --porcelain', { cwd: repoDir, encoding: 'utf-8' })).toBe('');
+    expect(execSync('git stash list', { cwd: repoDir, encoding: 'utf-8' }))
+      .toContain('orchestrator T01-x merge recovery');
+  });
+
+  it('auto-stashes parent changes before the first merge when enabled', async () => {
+    const { execSync } = await import('node:child_process');
+    const { mkdirSync: mk } = await import('node:fs');
+
+    const repoDir = resolve(dir, 'repo');
+    const tasksDir = resolve(dir, 'tasks');
+    const worktreesDir = resolve(dir, 'worktrees');
+    mk(repoDir, { recursive: true });
+    execSync('git init && git config user.email test@test && git config user.name test', { cwd: repoDir });
+    writeFileSync(join(repoDir, 'tracked.txt'), 'master');
+    execSync('git add tracked.txt && git commit -m "master tracked"', { cwd: repoDir });
+    execSync('git checkout -b dev', { cwd: repoDir });
+    writeFileSync(join(repoDir, 'tracked.txt'), 'dev');
+    execSync('git add tracked.txt && git commit -m "dev tracked"', { cwd: repoDir });
+
+    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
+      mk(resolve(tasksDir, s), { recursive: true });
+    }
+
+    const d = resolve(tasksDir, 'pending', 'T01-x');
+    mk(d, { recursive: true });
+    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+
+    const spawn = vi.fn().mockImplementation(async (_task: TaskState, wtPath?: string) => {
+      if (!wtPath) throw new Error('missing worktree path');
+      writeFileSync(join(wtPath, 'work.txt'), 'worktree');
+      execSync('git add work.txt && git commit -m "work"', { cwd: wtPath });
+      writeFileSync(join(repoDir, 'tracked.txt'), 'dirty dev');
+      return { success: true, iterations: 1 };
+    });
+    const recover = vi.fn().mockRejectedValue(new Error('recovery should not run'));
+    const benchmark = vi.fn()
+      .mockResolvedValueOnce(1).mockResolvedValueOnce(0)
+      .mockResolvedValue(0);
+    const engine = new Engine(tasksDir, {
+      benchmark,
+      spawn,
+      repoDir,
+      worktreesDir,
+      mergeRecovery: recover,
+      autoStashBeforeMerge: true,
+    });
+
+    await engine.tick();
+    await engine.tick();
+    const r = await engine.tick();
+
+    expect(r.converged).toBe(true);
+    expect(recover).not.toHaveBeenCalled();
+    expect(existsSync(join(worktreesDir, 'T01-x', '.git'))).toBe(false);
+    expect(existsSync(join(repoDir, 'work.txt'))).toBe(true);
+    expect(execSync('git status --porcelain', { cwd: repoDir, encoding: 'utf-8' })).toBe('');
+    expect(execSync('git stash list', { cwd: repoDir, encoding: 'utf-8' }))
+      .toContain('orchestrator T01-x pre-merge');
   });
 
   it('handles merge conflict error from spawn', async () => {

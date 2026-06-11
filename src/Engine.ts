@@ -1,6 +1,6 @@
 import { statSync, readFileSync, readdirSync, existsSync, rmSync, appendFileSync, cpSync } from 'node:fs';
 import { resolve, join, dirname, relative } from 'node:path';
-import { TaskState, Status, MAX_FAILURES, type BenchmarkFn, type TickResult, type TickNull } from './TaskState.js';
+import { TaskState, Status, MAX_FAILURES, type BenchmarkFn, type TaskInfo, type TickResult, type TickNull } from './TaskState.js';
 import { Worktree } from './Worktree.js';
 import { env } from './env.js';
 
@@ -16,9 +16,28 @@ export interface SpawnResult {
 
 export type SpawnFn = (task: TaskState, worktreePath?: string, signal?: AbortSignal) => Promise<SpawnResult>;
 
+class MergeFailureError extends Error {}
+
+export const MergeRecoveryAction = {
+  Stop: 'stop',
+  StashAndRetry: 'stash-and-retry',
+} as const;
+export type MergeRecoveryAction = (typeof MergeRecoveryAction)[keyof typeof MergeRecoveryAction];
+
+export interface MergeRecoveryFailure {
+  readonly task: TaskInfo;
+  readonly worktreePath: string;
+  readonly branch: string;
+  readonly error: string;
+}
+
+export type MergeRecoveryFn = (failure: MergeRecoveryFailure) => Promise<MergeRecoveryAction> | MergeRecoveryAction;
+
 export interface EngineOptions {
   readonly benchmark?: BenchmarkFn;
   readonly spawn?: SpawnFn;
+  readonly mergeRecovery?: MergeRecoveryFn;
+  readonly autoStashBeforeMerge?: boolean;
   readonly instanceId?: string;
   readonly repoDir?: string;     // for worktree creation
   readonly worktreesDir?: string; // override default .worktrees/ location
@@ -32,6 +51,8 @@ export class Engine {
   readonly #worktreesDir: string | undefined;
   readonly #bench: BenchmarkFn;
   readonly #spawn: SpawnFn | null;
+  readonly #mergeRecovery: MergeRecoveryFn | undefined;
+  readonly #autoStashBeforeMerge: boolean;
   readonly #id: string;
   readonly #retryCooldownMs: number;
   /** Track active worktrees by task number */
@@ -45,6 +66,8 @@ export class Engine {
     this.#worktreesDir = opts.worktreesDir ?? env.worktreesDir;
     this.#bench = opts.benchmark ?? (() => 1);
     this.#spawn = opts.spawn ?? null;
+    this.#mergeRecovery = opts.mergeRecovery;
+    this.#autoStashBeforeMerge = opts.autoStashBeforeMerge ?? false;
     this.#id = opts.instanceId ?? `${process.pid}_${Date.now()}`;
     this.#retryCooldownMs = opts.retryCooldownMs ?? 0; // default: no cooldown
   }
@@ -128,7 +151,7 @@ export class Engine {
     let metric = await this.#run(task);
     this.#log(`T${task.taskNumber} check: metric=${metric}${metric === 0 ? ' (done)' : ' (needs work; target is 0)'}`);
 
-    if (metric === 0) return this.#handleZero(task, metric);
+    if (metric === 0) return await this.#handleZero(task, metric);
 
     // Non-zero: try spawner if available
     task.resetConvergence();
@@ -178,8 +201,9 @@ export class Engine {
         }
         metric = await this.#run(task, wt?.path);
         this.#log(`T${task.taskNumber} check after agent: metric=${metric}${metric === 0 ? ' (done)' : ' (still needs work)'}`);
-        if (metric === 0) return this.#handleZero(task, metric, wt);
+        if (metric === 0) return await this.#handleZero(task, metric, wt);
       } catch (e: unknown) {
+        if (e instanceof MergeFailureError) throw e;
         const msg = e instanceof Error ? e.message : String(e);
         if (msg.includes('conflict')) {
           task.status = Status.FAILED;
@@ -209,22 +233,67 @@ export class Engine {
 
   // ── Private ──────────────────────────────────────────────────────────
 
-  #handleZero(task: TaskState, metric: number, wt: Worktree | null = null): TickResult {
+  async #handleZero(task: TaskState, metric: number, wt: Worktree | null = null): Promise<TickResult> {
     task.incrementConvergence();
     if (task.hasConverged) {
-      task.status = Status.CONVERGED;
-      this.#log(`T${task.taskNumber} CONVERGED`);
       // Use passed worktree or look up from map (for subsequent ticks after spawn)
       const tree = wt ?? this.#worktrees.get(task.taskNumber) ?? null;
-      if (tree) { this.#mergeAndRemove(task.taskNumber, tree, task.scope); }
+      if (tree) {
+        try {
+          await this.#mergeAndRemove(task, tree);
+        } catch (e: unknown) {
+          await this.#recoverMergeFailure(task, tree, e);
+        }
+      }
+      task.status = Status.CONVERGED;
+      this.#log(`T${task.taskNumber} CONVERGED`);
       return { task: task.info, metric, converged: true };
     }
     return { task: task.info, metric, converged: false };
   }
 
-  async #mergeAndRemove(tn: number, wt: Worktree, scope?: string[]): Promise<void> {
-    try { await wt.merge(scope); await wt.remove(); } catch { /* leave for inspection */ }
-    this.#worktrees.delete(tn);
+  async #mergeAndRemove(task: TaskState, wt: Worktree): Promise<void> {
+    if (this.#autoStashBeforeMerge) {
+      const stashed = await wt.stashParentChanges(`orchestrator ${task.taskName} pre-merge`);
+      if (stashed) this.#log(`T${task.taskNumber} stashed parent repo changes before merge`);
+    }
+    await wt.merge(task.scope);
+    await wt.remove();
+    this.#worktrees.delete(task.taskNumber);
+  }
+
+  async #recoverMergeFailure(task: TaskState, wt: Worktree, e: unknown): Promise<void> {
+    const detail = this.#singleLine(e instanceof Error ? e.message : String(e));
+    const action = this.#mergeRecovery
+      ? await this.#mergeRecovery({
+        task: task.info,
+        worktreePath: wt.path,
+        branch: wt.branch,
+        error: detail,
+      })
+      : MergeRecoveryAction.Stop;
+
+    if (action === MergeRecoveryAction.StashAndRetry) {
+      const stashed = await wt.stashParentChanges(`orchestrator ${task.taskName} merge recovery`);
+      this.#log(`T${task.taskNumber} ${stashed ? 'stashed parent repo changes' : 'found no parent repo changes to stash'}; retrying merge`);
+      try {
+        await this.#mergeAndRemove(task, wt);
+        return;
+      } catch (retryError: unknown) {
+        this.#handleMergeFailure(task, retryError, 'after auto-stash');
+      }
+    }
+
+    this.#handleMergeFailure(task, e);
+  }
+
+  #handleMergeFailure(task: TaskState, e: unknown, context = ''): never {
+    const detail = this.#singleLine(e instanceof Error ? e.message : String(e));
+    const reason = context ? `${context}: ${detail}` : detail;
+    task.release(Status.FAILED);
+    this.#retryCooldowns.set(task.taskNumber, Date.now());
+    this.#log(`T${task.taskNumber} merge failed: ${reason}; task FAILED; worktree kept for inspection`);
+    throw new MergeFailureError(`T${task.taskNumber} merge failed; worktree kept for inspection. ${reason}`);
   }
 
   #taskDirectoryInWorktree(task: TaskState, worktreePath: string): string {

@@ -19,9 +19,10 @@ TDD + SOLID. Read `TESTING.md` first for test conventions.
 | Variable | Default | What it controls |
 |---|---|---|
 | `ORCH_REPO` | current directory | Target repo/folder override |
-| `ORCH_STATE_ROOT` | required | Orchestrator state root |
+| `ORCH_STATE_ROOT` | `<home>\task-orchestrator` | Orchestrator state root override |
 | `ORCH_TASKS` | `<state-root>\<repo-slug>\tasks` | Task directory override |
 | `ORCH_MODEL` | pi default | Model override passed to `pi` |
+| `ORCH_AUTO_STASH` | unset | Stash parent repo changes before merging |
 | `ORCH_CONVERGE` | `3` | Zero-runs to converge |
 | `ORCH_MAX_FAILURES` | `5` | Failures before BLOCKED |
 | `ORCH_WORKTREES` | `<state-root>\<repo-slug>\worktrees` | Worktree directory override |

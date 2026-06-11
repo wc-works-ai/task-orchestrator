@@ -66,6 +66,39 @@ describe('Worktree', () => {
     expect(existsSync(join(repo, 'test.txt'))).toBe(true);
   });
 
+  it('throws without removing worktree when parent checkout is blocked by local changes', async () => {
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(join(repo, 'tracked.txt'), 'master');
+    execSync('git add tracked.txt && git commit -m "master tracked"', { cwd: repo });
+    execSync('git checkout -b dev', { cwd: repo });
+    writeFileSync(join(repo, 'tracked.txt'), 'dev');
+    execSync('git add tracked.txt && git commit -m "dev tracked"', { cwd: repo });
+
+    const wt = new Worktree(repo, { name: 'T01-test', baseBranch: 'master' });
+    await wt.create();
+    writeFileSync(join(wt.path, 'work.txt'), 'worktree');
+    execSync('git add work.txt && git commit -m "work"', { cwd: wt.path });
+
+    writeFileSync(join(repo, 'tracked.txt'), 'dirty dev');
+
+    await expect(wt.merge()).rejects.toThrow(/Unable to switch to master/);
+    expect(existsSync(join(wt.path, '.git'))).toBe(true);
+    expect(execSync('git branch --show-current', { cwd: repo, encoding: 'utf-8' }).trim()).toBe('dev');
+  });
+
+  it('stashes parent changes only when parent repo is dirty', async () => {
+    const { writeFileSync } = await import('node:fs');
+    const wt = new Worktree(repo, { name: 'T01-test' });
+
+    await expect(wt.stashParentChanges('clean stash')).resolves.toBe(false);
+
+    writeFileSync(join(repo, 'dirty.txt'), 'dirty');
+    await expect(wt.stashParentChanges('dirty stash')).resolves.toBe(true);
+
+    expect(execSync('git status --porcelain', { cwd: repo, encoding: 'utf-8' })).toBe('');
+    expect(execSync('git stash list', { cwd: repo, encoding: 'utf-8' })).toContain('dirty stash');
+  });
+
   it('auto-resolves conflict in unscoped files', async () => {
     const wt = new Worktree(repo, { name: 'T01-test' });
     await wt.create();
