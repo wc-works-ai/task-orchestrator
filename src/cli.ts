@@ -41,21 +41,22 @@ if (values.help) {
   console.log(`
 Task Orchestrator — autonomous task execution
 
-  orchestrator --repo <dir> --state-root <dir> run until all tasks complete (loop)
-  orchestrator --repo <dir> --state-root <dir> --once
-  orchestrator --repo <dir> --state-root <dir> --status
-  orchestrator --repo <dir> --state-root <dir> --check
-  orchestrator --repo <dir> --state-root <dir> --stop
-  orchestrator --repo <dir> --state-root <dir> --task <n>
+  orchestrator --state-root <dir> run until all tasks complete (loop)
+  orchestrator --state-root <dir> --once
+  orchestrator --state-root <dir> --status
+  orchestrator --state-root <dir> --check
+  orchestrator --state-root <dir> --stop
+  orchestrator --state-root <dir> --task <n>
+  orchestrator --repo <dir>     override target repo/folder (default: current directory)
   orchestrator --tasks <dir>    override derived task directory
   orchestrator --worktrees <dir> override derived worktree directory
-  orchestrator --repo <dir> --state-root <dir> add <name>
-  orchestrator --repo <dir> --state-root <dir> add <name> --goal "..." --metric x --scope "a b"
+  orchestrator --state-root <dir> add <name>
+  orchestrator --state-root <dir> add <name> --goal "..." --metric x --scope "a b"
 
 Resolution order for optional settings: CLI flag > environment variable > derived default.
 
 Environment variables:
-  ORCH_REPO=<dir>            required target repo/folder
+  ORCH_REPO=<dir>            optional target repo/folder override
   ORCH_STATE_ROOT=<dir>      required orchestrator state root
   ORCH_TASKS=<dir>           optional task directory override
   ORCH_WORKTREES=<dir>       optional worktree directory override
@@ -71,14 +72,14 @@ Environment variables:
 let paths;
 try {
   paths = resolveStatePaths({
-    repo: values.repo || env.repoDir,
+    repo: values.repo || env.repoDir || process.cwd(),
     stateRoot: values['state-root'] || env.stateRoot,
     tasks: values.tasks || env.tasksDir,
     worktrees: values.worktrees || env.worktreesDir,
   });
 } catch (e: unknown) {
   console.error(`\n  ❌ ${e instanceof Error ? e.message : String(e)}`);
-  console.error('  Example: orchestrator --repo Q:\\Repos\\FabricSparkCST --state-root Q:\\Orchestrator\n');
+  console.error('  Example: orchestrator --state-root Q:\\Orchestrator\n');
   process.exit(1);
 }
 

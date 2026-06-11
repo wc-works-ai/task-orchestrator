@@ -18,7 +18,7 @@ TDD + SOLID. Read `TESTING.md` first for test conventions.
 ### Environment variables
 | Variable | Default | What it controls |
 |---|---|---|
-| `ORCH_REPO` | required | Target repo/folder |
+| `ORCH_REPO` | current directory | Target repo/folder override |
 | `ORCH_STATE_ROOT` | required | Orchestrator state root |
 | `ORCH_TASKS` | `<state-root>\<repo-slug>\tasks` | Task directory override |
 | `ORCH_MODEL` | pi default | Model override passed to `pi` |

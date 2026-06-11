@@ -41,14 +41,14 @@ npm run tick
 
 | Command | Description |
 |---|---|
-| `orchestrator --repo <dir> --state-root <dir>` | Run until all tasks complete |
-| `orchestrator --repo <dir> --state-root <dir> --once` | Process one tick and exit |
-| `orchestrator --repo <dir> --state-root <dir> --status` | Show task dashboard |
-| `orchestrator --repo <dir> --state-root <dir> --check` | Check prerequisites |
-| `orchestrator --repo <dir> --state-root <dir> --stop` | Signal running instances to stop |
-| `orchestrator --repo <dir> --state-root <dir> --task <n>` | Force-pick specific task |
-| `orchestrator --repo <dir> --state-root <dir> add <name>` | Scaffold a new task |
-| `orchestrator --repo <dir> --state-root <dir> edit <n>` | Edit task metadata |
+| `orchestrator --state-root <dir>` | Run current repo until all tasks complete |
+| `orchestrator --state-root <dir> --once` | Process one tick and exit |
+| `orchestrator --state-root <dir> --status` | Show task dashboard |
+| `orchestrator --state-root <dir> --check` | Check prerequisites |
+| `orchestrator --state-root <dir> --stop` | Signal running instances to stop |
+| `orchestrator --state-root <dir> --task <n>` | Force-pick specific task |
+| `orchestrator --state-root <dir> add <name>` | Scaffold a new task |
+| `orchestrator --state-root <dir> edit <n>` | Edit task metadata |
 
 By default, tasks and worktrees are stored together under the required state root:
 
@@ -63,7 +63,7 @@ Explicit `--tasks` and `--worktrees` paths override those derived locations.
 
 | Variable | Default | Controls |
 |---|---|---|
-| `ORCH_REPO` | required | Target repo/folder |
+| `ORCH_REPO` | current directory | Target repo/folder override |
 | `ORCH_STATE_ROOT` | required | Orchestrator state root |
 | `ORCH_TASKS` | `<state-root>\<repo-slug>\tasks` | Task directory override |
 | `ORCH_MODEL` | pi default | Model override passed to `pi` |
