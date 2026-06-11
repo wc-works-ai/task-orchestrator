@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { piCommand } from './PiCommand.js';
 
 export interface PrerequisiteResult {
   readonly name: string;
@@ -22,11 +23,14 @@ export class Prerequisites {
   }
 
   private static checkPi(): PrerequisiteResult {
-    const r = spawnSync('pi', ['--version'], { timeout: 5000, encoding: 'utf-8' });
+    const command = piCommand(['--version']);
+    const r = spawnSync(command.command, command.args, { timeout: 5000, encoding: 'utf-8' });
     return {
       name: 'pi',
       ok: r.status === 0,
-      message: r.status === 0 ? (r.stdout?.trim() || 'installed') : 'pi CLI not found — install with: npm install -g @anthropic-ai/claude-code',
+      message: r.status === 0
+        ? (r.stdout?.trim() || r.stderr?.trim() || 'installed')
+        : 'pi CLI not found — install with: npm install -g @earendil-works/pi-coding-agent',
     };
   }
 

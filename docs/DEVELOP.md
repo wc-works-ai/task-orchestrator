@@ -18,12 +18,13 @@ TDD + SOLID. Read `TESTING.md` first for test conventions.
 ### Environment variables
 | Variable | Default | What it controls |
 |---|---|---|
-| `ORCH_TASKS` | `./tasks` | Task directory |
-| `ORCH_REPO` | auto-detect | Git repo root |
-| `ORCH_MODEL` | `openrouter/owl-alpha` | Default AI model |
+| `ORCH_REPO` | required | Target repo/folder |
+| `ORCH_STATE_ROOT` | required | Orchestrator state root |
+| `ORCH_TASKS` | `<state-root>\<repo-slug>\tasks` | Task directory override |
+| `ORCH_MODEL` | pi default | Model override passed to `pi` |
 | `ORCH_CONVERGE` | `3` | Zero-runs to converge |
 | `ORCH_MAX_FAILURES` | `5` | Failures before BLOCKED |
-| `ORCH_WORKTREES` | `<repo>/.worktrees` | Worktree directory |
+| `ORCH_WORKTREES` | `<state-root>\<repo-slug>\worktrees` | Worktree directory override |
 | `ORCH_HEARTBEAT_MS` | `300000` | Stale claim timeout |
 
 CLI flags override env vars. See `orchestrator --help`.

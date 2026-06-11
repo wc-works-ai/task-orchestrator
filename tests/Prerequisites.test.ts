@@ -1,7 +1,25 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import { Prerequisites } from '../src/Prerequisites.js';
 
+vi.mock('node:child_process', () => ({ spawnSync: vi.fn() }));
+
+function spawnResult(status: number | null, stdout = '', stderr = ''): ReturnType<typeof spawnSync> {
+  return { status, stdout, stderr } as ReturnType<typeof spawnSync>;
+}
+
+const defaultSpawnSync = ((command: string | URL) => {
+  if (String(command) === 'where.exe') return spawnResult(1);
+  if (String(command) === 'pi') return spawnResult(0, '0.79.0\n');
+  if (String(command) === 'gh') return spawnResult(0);
+  return spawnResult(1);
+}) as typeof spawnSync;
+
 describe('Prerequisites', () => {
+  beforeEach(() => {
+    vi.mocked(spawnSync).mockImplementation(defaultSpawnSync);
+  });
+
   it('checks node version', async () => {
     const results = await Prerequisites.check();
     const node = results.find(r => r.name === 'node');
@@ -102,6 +120,12 @@ describe('Prerequisites', () => {
   it('checkAuth fails when no env vars and gh not authed', async () => {
     const prevO = process.env.OPENROUTER_API_KEY;
     const prevA = process.env.ANTHROPIC_API_KEY;
+    vi.mocked(spawnSync).mockImplementation(((command: string | URL) => {
+      if (String(command) === 'where.exe') return spawnResult(1);
+      if (String(command) === 'pi') return spawnResult(0, '0.79.0\n');
+      if (String(command) === 'gh') return spawnResult(1);
+      return spawnResult(1);
+    }) as typeof spawnSync);
     delete process.env.OPENROUTER_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
     try {
@@ -123,6 +147,12 @@ describe('Prerequisites', () => {
     const prevPath = process.env.PATH;
     const prevO = process.env.OPENROUTER_API_KEY;
     const prevA = process.env.ANTHROPIC_API_KEY;
+    vi.mocked(spawnSync).mockImplementation(((command: string | URL) => {
+      if (String(command) === 'where.exe') return spawnResult(1);
+      if (String(command) === 'pi') return spawnResult(0, '0.79.0\n');
+      if (String(command) === 'gh') return spawnResult(1);
+      return spawnResult(1);
+    }) as typeof spawnSync);
     delete process.env.OPENROUTER_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
     process.env.PATH = '/usr/bin:/bin';
@@ -142,15 +172,36 @@ describe('Prerequisites', () => {
 
   it('pi check fails when pi is not in PATH', async () => {
     const prevPath = process.env.PATH;
+    vi.mocked(spawnSync).mockImplementation(((command: string | URL) => {
+      if (String(command) === 'where.exe') return spawnResult(1);
+      if (String(command) === 'pi') return spawnResult(1);
+      if (String(command) === 'gh') return spawnResult(0);
+      return spawnResult(1);
+    }) as typeof spawnSync);
     process.env.PATH = '/usr/bin:/bin';
     try {
       const results = await Prerequisites.check();
       const pi = results.find(r => r.name === 'pi')!;
       expect(pi.ok).toBe(false);
-      expect(pi.message).toContain('not found');
+      expect(pi.message).toBe('pi CLI not found — install with: npm install -g @earendil-works/pi-coding-agent');
     } finally {
       process.env.PATH = prevPath;
     }
+  });
+
+  it('pi check reports version emitted on stderr', async () => {
+    vi.mocked(spawnSync).mockImplementation(((command: string | URL) => {
+      if (String(command) === 'where.exe') return spawnResult(1);
+      if (String(command) === 'pi') return spawnResult(0, '', '0.79.0\n');
+      if (String(command) === 'gh') return spawnResult(0);
+      return spawnResult(1);
+    }) as typeof spawnSync);
+
+    const results = await Prerequisites.check();
+    const pi = results.find(r => r.name === 'pi')!;
+
+    expect(pi.ok).toBe(true);
+    expect(pi.message).toBe('0.79.0');
   });
 
   it('checkAuth covers true branch with key set', async () => {

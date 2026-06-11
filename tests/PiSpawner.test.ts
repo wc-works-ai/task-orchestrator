@@ -7,7 +7,10 @@ import type { ChildProcess } from 'node:child_process';
 import { TaskState, Status } from '../src/TaskState.js';
 import { PiSpawner } from '../src/PiSpawner.js';
 
-vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
+vi.mock('node:child_process', () => ({
+  spawn: vi.fn(),
+  spawnSync: vi.fn(() => ({ status: 1, stdout: '' })),
+}));
 
 const { spawn } = await vi.importMock<typeof import('node:child_process')>('node:child_process');
 
@@ -36,10 +39,14 @@ function make(dir: string, n: number, name: string, goal?: string): TaskState {
   return t;
 }
 
+function joinedCalls(spy: { mock: { calls: readonly (readonly unknown[])[] } }): string {
+  return spy.mock.calls.map((call: readonly unknown[]) => call.map(String).join(' ')).join('\n');
+}
+
 describe('PiSpawner', () => {
   let dir = '';
-  beforeEach(() => { dir = setup(); vi.clearAllMocks(); });
-  afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
+  beforeEach(() => { dir = setup(); vi.clearAllMocks(); delete process.env.ORCH_MODEL; });
+  afterEach(async () => { delete process.env.ORCH_MODEL; await rm(dir, { recursive: true, force: true }); });
 
   it('uses model from task metadata', () => {
     const t = make(dir, 1, 'a', '- **Model:** custom-model\n## Goal\nTest');
@@ -55,11 +62,10 @@ describe('PiSpawner', () => {
     process.env.ORCH_MODEL = 'env-model';
     const t = make(dir, 1, 'a');
     expect(new PiSpawner().modelFor(t)).toBe('env-model');
-    delete process.env.ORCH_MODEL;
   });
 
-  it('hardcoded default is owl-alpha', () => {
-    expect(new PiSpawner().modelFor(make(dir, 1, 'a'))).toBe('openrouter/owl-alpha');
+  it('uses pi default when no model is configured', () => {
+    expect(new PiSpawner().modelFor(make(dir, 1, 'a'))).toBeUndefined();
   });
 
   it('spawn calls pi with correct model', async () => {
@@ -76,12 +82,130 @@ describe('PiSpawner', () => {
       expect.objectContaining({ cwd: '/tmp/worktree' }));
   });
 
+  it('omits --model so pi can use its default when no model is configured', async () => {
+    const t = make(dir, 1, 'a');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiSpawner().spawn(t, '/tmp/worktree');
+    setTimeout(() => mock.emit('close', 0), 5);
+    const r = await p;
+    expect(r.success).toBe(true);
+    const args = vi.mocked(spawn).mock.calls[0]?.[1];
+    expect(args).not.toContain('--model');
+  });
+
+  it('prints spawn context without internal agent events', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nReview Azure DevOps PR 981660 for FabricSparkCST and write a concise report');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      const p = new PiSpawner().spawn(t, dir);
+      setTimeout(() => {
+        mock.stdout!.emit('data', Buffer.from(JSON.stringify({ type: 'tool_execution_start', toolName: 'bash', arguments: { command: 'npm run t' } }) + '\n'));
+        mock.stdout!.emit('data', Buffer.from(JSON.stringify({ type: 'tool_execution_end', toolName: 'bash', result: { content: [{ type: 'text', text: 'METRIC branch_gap=42.5\nnested test output' }] } }) + '\n'));
+        mock.stdout!.emit('data', Buffer.from(JSON.stringify({ type: 'tool_execution_end', toolName: 'log_experiment', result: { content: [{ type: 'text', text: 'Logged #1: keep\nmore' }] } }) + '\n'));
+        mock.emit('close', 0);
+      }, 5);
+      const r = await p;
+      expect(r.success).toBe(true);
+      const output = joinedCalls(logSpy);
+      expect(output).toContain('T1 using test-model');
+      expect(output).toContain('task: Review Azure DevOps PR 981660 for FabricSparkCST and write a concise report');
+      expect(output).toContain(`worktree: ${dir}`);
+      expect(output).toContain(`log: ${join(t.directory, 'agent.log')}`);
+      expect(output).toContain('status: agent running; details in agent.log');
+      expect(output).not.toContain('npm run t');
+      expect(output).not.toContain('METRIC branch_gap=42.5');
+      expect(output).not.toContain('Logged #1: keep');
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('prints periodic running status without internal agent output', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      const p = new PiSpawner({
+        progressTimeout: 500,
+        progressCheckInterval: 20,
+        progressStatusInterval: 40,
+      }).spawn(t, dir);
+
+      await new Promise(r => setTimeout(r, 90));
+      const output = joinedCalls(logSpy);
+      expect(output).toContain('still running: no agent output for');
+      expect(output).toContain('(auto-stop at 500ms)');
+      expect(output).not.toContain('running: last agent output');
+      expect(output).toContain(`log: ${join(t.directory, 'agent.log')}`);
+
+      mock.emit('close', 0);
+      const r = await p;
+      expect(r.success).toBe(true);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
   it('returns failure on non-zero exit', async () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
     const p = new PiSpawner().spawn(make(dir, 1, 'a'));
     setTimeout(() => mock.emit('close', 1), 5);
     expect((await p).success).toBe(false);
+  });
+
+  it('returns auth failure when pi reports missing provider key', async () => {
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const p = new PiSpawner({ model: 'gpt-5.5' }).spawn(make(dir, 1, 'a'));
+      setTimeout(() => {
+        mock.stderr!.emit('data', Buffer.from('No API key found for azure-openai-responses.\n'));
+        mock.emit('close', 1);
+      }, 5);
+      const r = await p;
+      expect(r.success).toBe(false);
+      expect(r.authFailure).toBe(true);
+      expect(r.error).toBe('No API key found for azure-openai-responses');
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(errorSpy).toHaveBeenCalledWith('  ❌ No API key found for azure-openai-responses');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('tries fallback model after primary auth failure', async () => {
+    const primary = mockChild();
+    const fallback = mockChild();
+    vi.mocked(spawn).mockReturnValueOnce(primary).mockReturnValueOnce(fallback);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const p = new PiSpawner({ model: 'gpt-5.5', fallbackModel: 'backup-model' }).spawn(make(dir, 1, 'a'));
+      setTimeout(() => {
+        primary.stderr!.emit('data', Buffer.from('No API key found for azure-openai-responses.\n'));
+        primary.emit('close', 1);
+      }, 5);
+      setTimeout(() => fallback.emit('close', 0), 10);
+      const r = await p;
+      expect(r.success).toBe(true);
+      expect(r.authFailure).toBeUndefined();
+      expect(spawn).toHaveBeenCalledTimes(2);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it('captures stderr output', async () => {
@@ -173,9 +297,9 @@ describe('PiSpawner', () => {
     expect(r.success).toBe(true);
   });
 
-  // ── #printEvent branch coverage ──────────────────────────────────────────
+  // ── Internal NDJSON output remains quiet on the main terminal ─────────────
 
-  it('prints tool_execution_start with path arg', async () => {
+  it('handles internal tool_execution_start with path arg', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
     t.status = Status.PENDING;
     const mock = mockChild();
@@ -191,7 +315,7 @@ describe('PiSpawner', () => {
     expect(r.success).toBe(true);
   });
 
-  it('prints tool_execution_start with command arg', async () => {
+  it('handles internal tool_execution_start with command arg', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
     t.status = Status.PENDING;
     const mock = mockChild();
@@ -207,7 +331,7 @@ describe('PiSpawner', () => {
     expect(r.success).toBe(true);
   });
 
-  it('prints tool_execution_start with no path or command', async () => {
+  it('handles internal tool_execution_start with no path or command', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
     t.status = Status.PENDING;
     const mock = mockChild();
@@ -223,7 +347,7 @@ describe('PiSpawner', () => {
     expect(r.success).toBe(true);
   });
 
-  it('prints tool_execution_end with METRIC line', async () => {
+  it('handles internal tool_execution_end with METRIC line', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
     t.status = Status.PENDING;
     const mock = mockChild();
@@ -239,7 +363,7 @@ describe('PiSpawner', () => {
     expect(r.success).toBe(true);
   });
 
-  it('prints tool_execution_end with log_experiment keep', async () => {
+  it('handles internal tool_execution_end with log_experiment keep', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
     t.status = Status.PENDING;
     const mock = mockChild();
@@ -255,7 +379,7 @@ describe('PiSpawner', () => {
     expect(r.success).toBe(true);
   });
 
-  it('prints tool_execution_end with log_experiment crash', async () => {
+  it('handles internal tool_execution_end with log_experiment crash', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
     t.status = Status.PENDING;
     const mock = mockChild();
@@ -271,7 +395,7 @@ describe('PiSpawner', () => {
     expect(r.success).toBe(true);
   });
 
-  it('prints tool_execution_end with log_experiment discard (no keep/crash)', async () => {
+  it('handles internal tool_execution_end with log_experiment discard', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
     t.status = Status.PENDING;
     const mock = mockChild();
@@ -287,7 +411,7 @@ describe('PiSpawner', () => {
     expect(r.success).toBe(true);
   });
 
-  it('prints tool_execution_end with isError', async () => {
+  it('handles internal tool_execution_end with isError', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
     t.status = Status.PENDING;
     const mock = mockChild();
@@ -462,11 +586,18 @@ describe('PiSpawner', () => {
 
     // Use check interval > timeout so only ONE check fires past the timeout
     // First check at ~100ms: diff=100ms >= 50ms → kill once, clearInterval, done
-    const p = new PiSpawner({ progressTimeout: 50, progressCheckInterval: 100 }).spawn(t, dir);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const p = new PiSpawner({ progressTimeout: 50, progressCheckInterval: 100 }).spawn(t, dir);
 
-    const result = await p;
-    expect(result.success).toBe(false);
-    expect(mock.kill).toHaveBeenCalled();
+      const result = await p;
+      expect(result.success).toBe(false);
+      expect(mock.kill).toHaveBeenCalled();
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('No agent output for'));
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('stopped pi'));
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it('progress timeout does not kill when output continues', async () => {

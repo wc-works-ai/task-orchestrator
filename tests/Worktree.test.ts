@@ -2,7 +2,7 @@ import { describe, it, beforeEach, afterEach, expect } from 'vitest';
 import { rm } from 'node:fs/promises';
 import { mkdtempSync, existsSync, readFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import { Worktree } from '../src/Worktree.js';
 
 function setup() {
@@ -10,6 +10,22 @@ function setup() {
   // Init a git repo
   execSync('git init && git config user.email test@test && git config user.name test && git commit --allow-empty -m init', { cwd: dir });
   return dir;
+}
+
+function readGlobalGitConfig(cwd: string, key: string): string {
+  try {
+    return execFileSync('git', ['config', '--global', key], { cwd, encoding: 'utf-8' }).trim();
+  } catch {
+    return '';
+  }
+}
+
+function unsetGlobalGitConfig(cwd: string, key: string): void {
+  try { execFileSync('git', ['config', '--global', '--unset', key], { cwd }); } catch {}
+}
+
+function writeGlobalGitConfig(cwd: string, key: string, value: string): void {
+  execFileSync('git', ['config', '--global', key, value], { cwd });
 }
 
 describe('Worktree', () => {
@@ -171,17 +187,17 @@ describe('Worktree', () => {
       // Create a worktree which calls #gitConfig for user.name/user.email
       const wt = new Worktree(bareRepo, { name: 'T01-test' });
       // Temporarily unset global user config for this test
-      const origUser = execSync('git config --global user.name 2>/dev/null || true', { cwd: bareRepo, encoding: 'utf-8' }).trim();
-      const origEmail = execSync('git config --global user.email 2>/dev/null || true', { cwd: bareRepo, encoding: 'utf-8' }).trim();
+      const origUser = readGlobalGitConfig(bareRepo, 'user.name');
+      const origEmail = readGlobalGitConfig(bareRepo, 'user.email');
       try {
-        if (origUser) execSync('git config --global --unset user.name', { cwd: bareRepo });
-        if (origEmail) execSync('git config --global --unset user.email', { cwd: bareRepo });
+        if (origUser) unsetGlobalGitConfig(bareRepo, 'user.name');
+        if (origEmail) unsetGlobalGitConfig(bareRepo, 'user.email');
         // Now create — should not throw even without user config
         await wt.create();
         expect(existsSync(join(wt.path, '.git'))).toBe(true);
       } finally {
-        if (origUser) execSync(`git config --global user.name "${origUser}"`, { cwd: bareRepo });
-        if (origEmail) execSync(`git config --global user.email "${origEmail}"`, { cwd: bareRepo });
+        if (origUser) writeGlobalGitConfig(bareRepo, 'user.name', origUser);
+        if (origEmail) writeGlobalGitConfig(bareRepo, 'user.email', origEmail);
       }
       await wt.remove();
     } finally {

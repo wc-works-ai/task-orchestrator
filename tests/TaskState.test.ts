@@ -45,9 +45,9 @@ describe('TaskState', () => {
 
   it('moves directory to correct shard on status change', () => {
     const t = make(dir, 1, 'a');
-    expect(t.directory).toContain('/pending/');
+    expect(t.directory).toBe(resolve(dir, 'pending', 'T01-a'));
     t.status = Status.CONVERGED;
-    expect(t.directory).toContain('/converged/');
+    expect(t.directory).toBe(resolve(dir, 'converged', 'T01-a'));
   });
 
   it('IN_PROGRESS includes instance id', () => {
@@ -142,7 +142,7 @@ describe('TaskState', () => {
     t.markBlocked();
     expect(t.status).toBe(Status.BLOCKED);
     expect(t.convergenceCount).toBe(0);
-    expect(t.directory).toContain('/blocked/');
+    expect(t.directory).toBe(resolve(dir, 'blocked', 'T01-a'));
   });
 
   it('scan finds tasks across shards', async () => {
@@ -436,7 +436,7 @@ describe('TaskState', () => {
     const t = make(dir, 1, 'a');
     // Setting PENDING when already in pending shard → target === dirname → no migration
     t.status = Status.PENDING;
-    expect(t.directory).toContain('/pending/');
+    expect(t.directory).toBe(resolve(dir, 'pending', 'T01-a'));
   });
 
   it('statusCache returns the internal cache', () => {

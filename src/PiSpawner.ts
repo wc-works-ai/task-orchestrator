@@ -3,17 +3,21 @@ import { writeFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { TaskState } from './TaskState.js';
 import { env } from './env.js';
+import { piCommand } from './PiCommand.js';
 import type { SpawnResult } from './Engine.js';
 
 
 
 // ── File names ──────────────────────────────────────────────────────────────
 const F_AGENT_LOG = 'agent.log';
+const AUTH_FAILURE_RE = /No API key found for ([^\s.]+)\./g;
+const SUMMARY_MAX = 120;
+const PROGRESS_STATUS_INTERVAL = 30_000;
 
 export interface PiSpawnerOptions {
-  /** Default model when task doesn't specify one */
+  /** Optional model override when task doesn't specify one */
   readonly model?: string;
-  /** Fallback model if primary fails */
+  /** Optional fallback model if primary fails */
   readonly fallbackModel?: string;
   /** Working directory for the agent */
   readonly workDir?: string;
@@ -21,45 +25,76 @@ export interface PiSpawnerOptions {
   readonly progressTimeout?: number;
   /** Interval (ms) for progress checks (default: 10_000). Only overridden in tests. */
   readonly progressCheckInterval?: number;
+  /** Min silent time (ms) before quiet running status lines (default: 30_000). Only overridden in tests. */
+  readonly progressStatusInterval?: number;
 }
 
 export class PiSpawner {
-  readonly #model: string;
-  readonly #fallback: string;
+  readonly #model: string | undefined;
+  readonly #fallback: string | undefined;
   readonly #workDir: string;
   readonly #progressTimeout: number;
   readonly #progressCheckInterval: number;
+  readonly #progressStatusInterval: number;
 
   constructor(opts: PiSpawnerOptions = {}) {
-    this.#model = opts.model
-      ?? env.model;
-    this.#fallback = opts.fallbackModel ?? 'openrouter/owl-alpha';
+    this.#model = opts.model || env.model;
+    this.#fallback = opts.fallbackModel || undefined;
     this.#workDir = opts.workDir ?? process.cwd();
     this.#progressTimeout = opts.progressTimeout ?? env.progressTimeoutMs;
     this.#progressCheckInterval = opts.progressCheckInterval ?? 10_000;
+    this.#progressStatusInterval = opts.progressStatusInterval ?? PROGRESS_STATUS_INTERVAL;
   }
 
-  /** Resolve the model for a task: metadata → constructor → env → default */
-  modelFor(task: TaskState): string {
+  /** Resolve the model for a task: metadata → constructor → env → pi default */
+  modelFor(task: TaskState): string | undefined {
     return task.model || this.#model;
   }
 
   async spawn(task: TaskState, worktreePath?: string, signal?: AbortSignal): Promise<SpawnResult> {
     const cwd = worktreePath ?? this.#workDir;
-    const models = [this.modelFor(task), this.#fallback]
-      .filter((m, i, arr) => m && arr.indexOf(m) === i);
+    const primaryModel = this.modelFor(task);
+    const models = this.#fallback && this.#fallback !== primaryModel
+      ? [primaryModel, this.#fallback]
+      : [primaryModel];
+    const logPath = join(task.directory, F_AGENT_LOG);
 
-    console.log(`T${task.taskNumber} using ${models.join(', ')}`);
+    console.log(`T${task.taskNumber} using ${models.map(PiSpawner.#modelLabel).join(', ')}`);
+    console.log(`  task: ${PiSpawner.#shortText(task.goal)}`);
+    console.log(`  worktree: ${cwd}`);
+    console.log(`  log: ${logPath}`);
+    console.log('  status: agent running; details in agent.log');
+    const authErrors: string[] = [];
+    let lastResult: SpawnResult | undefined;
+    let sawNonAuthFailure = false;
     for (const model of models) {
       /* c8 ignore next 1 */
       if (signal?.aborted) return { success: false, iterations: 0 };
       const result = await this.#run(task, model, cwd, signal);
+      lastResult = result;
       if (result.success) return result;
+      if (result.authFailure) {
+        if (result.error) {
+          authErrors.push(result.error);
+          console.error(`  ❌ ${result.error}`);
+        }
+      } else {
+        sawNonAuthFailure = true;
+      }
     }
-    return { success: false, iterations: 0 };
+    if (authErrors.length > 0 && !sawNonAuthFailure) {
+      return {
+        success: false,
+        iterations: lastResult?.iterations ?? 0,
+        authFailure: true,
+        error: authErrors.join('; '),
+        ...(lastResult?.logPath ? { logPath: lastResult.logPath } : {}),
+      };
+    }
+    return lastResult ?? { success: false, iterations: 0 };
   }
 
-  #run(task: TaskState, model: string, cwd: string, signal?: AbortSignal): Promise<SpawnResult> {
+  #run(task: TaskState, model: string | undefined, cwd: string, signal?: AbortSignal): Promise<SpawnResult> {
     /* c8 ignore next 1 */
     if (signal?.aborted) return Promise.resolve({ success: false, iterations: 0 });
 
@@ -67,12 +102,11 @@ export class PiSpawner {
       let settled = false;
       const done = (r: SpawnResult) => { if (!settled) { settled = true; resolve(r); } };
 
-      const child: ChildProcess = spawn('pi', [
-        '--mode', 'json',
-        '--no-session',
-        '--model', model,
-        '-p', this.#prompt(task, cwd),
-      ], {
+      const args = ['--mode', 'json', '--no-session'];
+      if (model) args.push('--model', model);
+      args.push('-p', this.#prompt(task, cwd));
+      const command = piCommand(args);
+      const child: ChildProcess = spawn(command.command, command.args, {
         cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
         timeout: 600_000, // 10 min
@@ -87,8 +121,8 @@ export class PiSpawner {
       signal?.addEventListener('abort', () => { aborted = true; child.kill(); }, { once: true });
 
       let output = '';
-      let lineBuf = '';
       let lastProgress = Date.now();
+      let lastStatus = Date.now();
 
       const logPath = join(task.directory, F_AGENT_LOG);
       // Append header with separator (don't truncate — preserve history across spawns)
@@ -108,19 +142,6 @@ export class PiSpawner {
       const handleData = (txt: string) => {
         output += txt;
         try { appendFileSync(logPath, txt); } catch {}
-
-        // Parse NDJSON lines in the stream for live console output
-        lineBuf += txt;
-        const lines = lineBuf.split('\n');
-        /* c8 ignore next 1 — split always returns ≥1 element, pop never returns undefined */
-        lineBuf = lines.pop() ?? '';
-        for (const raw of lines) {
-          if (!raw.trim()) continue;
-          try {
-            const obj = JSON.parse(raw);
-            PiSpawner.#printEvent(obj);
-          } catch { /* incomplete line — wait for more data */ }
-        }
       };
 
       child.stdout?.on('data', (d: Buffer) => { lastProgress = Date.now(); handleData(d.toString()); });
@@ -130,10 +151,23 @@ export class PiSpawner {
       let progressStale = false;
       const progressTimer = setInterval(() => {
         if (progressStale) return;
-        if (Date.now() - lastProgress < this.#progressTimeout) return;
-        progressStale = true;
-        child.kill();
-        done({ success: false, iterations: 0 });
+        const now = Date.now();
+        const quietFor = now - lastProgress;
+        if (quietFor >= this.#progressTimeout) {
+          progressStale = true;
+          const error = `No agent output for ${PiSpawner.#formatDuration(quietFor)}; stopped pi`;
+          console.error(`  ❌ ${error}. See ${logPath}`);
+          child.kill();
+          done({ success: false, iterations: 0, error, logPath });
+          return;
+        }
+        if (quietFor < this.#progressStatusInterval) return;
+        if (now - lastStatus < this.#progressStatusInterval) return;
+        lastStatus = now;
+        console.log(
+          `  still running: no agent output for ${PiSpawner.#formatDuration(quietFor)} ` +
+          `(auto-stop at ${PiSpawner.#formatDuration(this.#progressTimeout)})`,
+        );
       }, this.#progressCheckInterval);
 
       child.on('close', (code: number | null) => {
@@ -150,61 +184,48 @@ export class PiSpawner {
         /* c8 ignore stop */
         // If the signal was aborted, the kill may have triggered this close;
         // report as a failure regardless of exit code.
-        done({ success: !aborted && code === 0, iterations });
+        const authError = PiSpawner.#authError(output);
+        if (!aborted && code !== 0 && authError) {
+          done({ success: false, iterations, authFailure: true, error: authError, logPath });
+        } else if (aborted) {
+          done({ success: false, iterations, error: 'pi spawn aborted', logPath });
+        } else if (code === 0) {
+          done({ success: true, iterations, logPath });
+        } else {
+          done({ success: false, iterations, error: `pi exited with code ${code ?? 'unknown'}`, logPath });
+        }
       });
 
-      child.on('error', () => {
+      child.on('error', (e: Error) => {
         clearInterval(progressTimer);
-        done({ success: false, iterations: 0 });
+        done({ success: false, iterations: 0, error: e.message, logPath });
       });
     });
   }
 
-  /** Print key agent events to console for live visibility */
-  static #printEvent(obj: Record<string, unknown>): void {
-    const t = String(obj.type ?? '');
-
-    if (t === 'tool_execution_start') {
-      const name = String(obj.toolName ?? obj.name ?? '');
-      const args = obj.arguments ?? {};
-      let summary = name;
-      if (typeof args === 'object' && args && 'path' in args) {
-        summary += ` ${String(args.path)}`;
-      } else if (typeof args === 'object' && args && 'command' in args) {
-        const cmd = String(args.command).slice(0, 80);
-        summary += ` ${cmd}`;
-      }
-      console.log(`  🔧 ${summary}`);
+  /** Extract provider auth failures from pi output. */
+  static #authError(output: string): string {
+    const providers: string[] = [];
+    for (const match of output.matchAll(AUTH_FAILURE_RE)) {
+      const provider = match[1];
+      if (provider && !providers.includes(provider)) providers.push(provider);
     }
+    return providers.length > 0 ? `No API key found for ${providers.join(', ')}` : '';
+  }
 
-    if (t === 'tool_execution_end') {
-      const name = String(obj.toolName ?? '');
-      const result = obj.result as Record<string, unknown> | undefined;
-      const content = result?.content;
-      if (Array.isArray(content)) {
-        for (const c of content) {
-          if (typeof c === 'object' && c && c.type === 'text') {
-            const text = String(c.text);
-            // Show METRIC lines from run_experiment
-            const metricM = text.match(/METRIC\s+\w+=(\d+(?:\.\d+)?)/);
-            if (metricM) {
-              console.log(`  📊 ${metricM[0]}`);
-            }
-            // Show log_experiment results
-            if (name === 'log_experiment') {
-              const line = text.split('\n')[0]?.trim();
-              if (line) {
-                const icon = line.includes('keep') ? '💾' : line.includes('crash') ? '💥' : '📝';
-                console.log(`  ${icon} ${line.slice(0, 100)}`);
-              }
-            }
-          }
-        }
-      }
-      if (obj.isError) {
-        console.log(`  ❌ ${name} failed`);
-      }
-    }
+  static #modelLabel(model: string | undefined): string {
+    return model || 'pi default';
+  }
+
+  static #shortText(text: string): string {
+    const normalized = text.replace(/\s+/g, ' ').trim();
+    return normalized.length > SUMMARY_MAX
+      ? `${normalized.slice(0, SUMMARY_MAX - 3)}...`
+      : normalized;
+  }
+
+  static #formatDuration(ms: number): string {
+    return ms < 1000 ? `${ms}ms` : `${Math.round(ms / 1000)}s`;
   }
 
   #prompt(task: TaskState, cwd: string): string {

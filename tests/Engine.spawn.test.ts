@@ -3,7 +3,7 @@ import { rm } from 'node:fs/promises';
 import { mkdtempSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Engine } from '../src/Engine.js';
-import { TaskState, Status } from '../src/TaskState.js';
+import { TaskState, Status, type TaskInfo } from '../src/TaskState.js';
 
 function setup() {
   const dir = mkdtempSync(resolve('/tmp', 'eng-ts-'));
@@ -23,6 +23,10 @@ function make(dir: string, n: number, name: string, opts?: {
   t.status = opts?.status ?? Status.PENDING;
   if (opts?.deps) t.dependencies = opts.deps;
   return t;
+}
+
+function joinedCalls(spy: { mock: { calls: readonly (readonly unknown[])[] } }): string {
+  return spy.mock.calls.map((call: readonly unknown[]) => call.map(String).join(' ')).join('\n');
 }
 
 describe('Engine agent spawning', () => {
@@ -56,6 +60,32 @@ describe('Engine agent spawning', () => {
     // Task should be FAILED
     const all = await TaskState.scan(dir);
     expect(all.get('1')!.status).toBe(Status.FAILED);
+  });
+
+  it('logs plain-language spawn failure, metric check, and retry decision', async () => {
+    make(dir, 1, 'a');
+    const spawn = vi.fn().mockResolvedValue({
+      success: false,
+      iterations: 2,
+      error: 'pi exited with code 1',
+      logPath: resolve(dir, 'agent.log'),
+    });
+    const benchmark = vi.fn().mockResolvedValue(1);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      const engine = new Engine(dir, { benchmark, spawn });
+      const r = await engine.tick();
+      expect(r.converged).toBe(false);
+      const output = joinedCalls(logSpy);
+      expect(output).toContain('T1 check: metric=1 (needs work; target is 0)');
+      expect(output).toContain('T1 action: starting agent because metric is 1');
+      expect(output).toContain('T1 agent stopped without finishing (2 progress records; reason: pi exited with code 1');
+      expect(output).toContain('T1 check after agent: metric=1 (still needs work)');
+      expect(output).toContain('T1 retrying: metric is still 1 (failed attempt 1/5)');
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 
   it('marks FAILED when no spawner provided and metric is non-zero', async () => {
@@ -233,6 +263,48 @@ describe('Engine agent spawning', () => {
     const r = await engine.tick();
     expect(r.metric).toBe(0);
     expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses copied task directory for worktree spawn and benchmark', async () => {
+    const { execSync } = await import('node:child_process');
+    const { mkdirSync: mk, writeFileSync } = await import('node:fs');
+
+    const repoDir = resolve(dir, 'repo');
+    const tasksDir = resolve(repoDir, 'tasks');
+    mk(repoDir, { recursive: true });
+    execSync('git init && git config user.email test@test && git config user.name test && git commit --allow-empty -m init', { cwd: repoDir });
+
+    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
+      mk(resolve(tasksDir, s), { recursive: true });
+    }
+
+    const d = resolve(tasksDir, 'pending', 'T01-a');
+    mk(d, { recursive: true });
+    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+
+    let worktreePath = '';
+    const benchmarkDirs: string[] = [];
+    const benchmarkCwds: string[] = [];
+    const benchmark = vi.fn((task: TaskInfo) => {
+      benchmarkDirs.push(task.directory);
+      benchmarkCwds.push(task.cwd);
+      return benchmarkDirs.length === 1 ? 1 : 0;
+    });
+    const spawn = vi.fn(async (task: TaskState, wt?: string) => {
+      worktreePath = wt ?? '';
+      expect(task.directory).toBe(resolve(worktreePath, 'tasks', 'in_progress', 'T01-a'));
+      return { success: true, iterations: 1 };
+    });
+
+    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir });
+    const r = await engine.tick();
+
+    const expectedTaskDir = resolve(worktreePath, 'tasks', 'in_progress', 'T01-a');
+    expect(r.metric).toBe(0);
+    expect(worktreePath).toBeTruthy();
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(benchmarkDirs[1]).toBe(expectedTaskDir);
+    expect(benchmarkCwds[1]).toBe(worktreePath);
   });
 
   it('handles node_modules already existing in worktree (covers line 133 else)', async () => {

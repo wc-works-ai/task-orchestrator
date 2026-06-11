@@ -3,7 +3,7 @@ import { rm } from 'node:fs/promises';
 import { mkdtempSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Engine } from '../src/Engine.js';
-import { TaskState, Status, CONVERGENCE_THRESHOLD } from '../src/TaskState.js';
+import { TaskState, Status, CONVERGENCE_THRESHOLD, MAX_FAILURES } from '../src/TaskState.js';
 
 function setup() {
   const dir = mkdtempSync(resolve('/tmp', 'eng-ts-'));
@@ -69,6 +69,47 @@ describe('Engine', () => {
     expect(r.metric).toBe(1);
     const all = await TaskState.scan(dir);
     expect(all.get('1')!.status).toBe(Status.FAILED);
+  });
+
+  it('increments failures and blocks after max failed ticks', async () => {
+    make(dir, 1, 'a');
+    const engine = new Engine(dir, {
+      benchmark: one,
+      spawn: async () => ({ success: false, iterations: 0 }),
+    });
+
+    for (let i = 0; i < MAX_FAILURES; i++) {
+      const r = await engine.tick();
+      expect(r.task).not.toBeNull();
+      expect(r.metric).toBe(1);
+    }
+
+    const all = await TaskState.scan(dir);
+    const task = all.get('1')!;
+    expect(task.failureCount).toBe(MAX_FAILURES);
+    expect(task.status).toBe(Status.BLOCKED);
+    expect((await engine.tick()).task).toBeNull();
+  });
+
+  it('blocks immediately when spawn reports auth failure', async () => {
+    make(dir, 1, 'auth');
+    const engine = new Engine(dir, {
+      benchmark: one,
+      spawn: async () => ({
+        success: false,
+        iterations: 0,
+        authFailure: true,
+        error: 'No API key found for azure-openai-responses',
+      }),
+    });
+
+    const r = await engine.tick();
+    expect(r.task).not.toBeNull();
+
+    const all = await TaskState.scan(dir);
+    const task = all.get('1')!;
+    expect(task.status).toBe(Status.BLOCKED);
+    expect(task.failureCount).toBe(1);
   });
 
   it('skips task with unmet deps, picks next', async () => {

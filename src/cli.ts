@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
-import { resolve, dirname } from 'node:path';
-import { existsSync } from 'node:fs';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { existsSync, mkdirSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { addTask } from './addTask.js';
 import { Engine } from './Engine.js';
@@ -9,23 +9,19 @@ import { TaskState, type TaskInfo } from './TaskState.js';
 import { PiSpawner } from './PiSpawner.js';
 import { Prerequisites } from './Prerequisites.js';
 import { env } from './env.js';
+import { resolveStatePaths } from './StatePaths.js';
 
-const tasksDir = resolve(env.tasksDir);
-const repoDir = resolve(env.repoDir || findRepoRoot(tasksDir));
-
-function findRepoRoot(start: string): string {
-  let dir = resolve(start);
-  while (dir !== '/') {
-    if (existsSync(resolve(dir, '.git'))) return dir;
-    dir = dirname(dir);
-  }
-  return process.cwd();
+function isPathInside(child: string, parent: string): boolean {
+  const rel = relative(parent, child);
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
 const { values, positionals } = await parseArgs({
   allowPositionals: true,
   options: {
-    tasks:  { type: 'string', default: tasksDir },
+    repo:   { type: 'string', default: '' },
+    'state-root': { type: 'string', default: '' },
+    tasks:  { type: 'string', default: '' },
     loop:   { type: 'boolean', default: false },
     status: { type: 'boolean', default: false },
     check:  { type: 'boolean', default: false },
@@ -41,34 +37,65 @@ const { values, positionals } = await parseArgs({
   },
 });
 
-const repo = resolve(repoDir);
-const dir = resolve(values.tasks!);
-
 if (values.help) {
   console.log(`
 Task Orchestrator — autonomous task execution
 
-  orchestrator                  run until all tasks complete (loop)
-  orchestrator --once           process one tick and exit
-  orchestrator --status         show dashboard
-  orchestrator --check          check prerequisites
-  orchestrator --stop           signal all instances to stop
-  orchestrator --task <n>       force-pick specific task
-  orchestrator --worktrees <dir> worktree directory (default: <repo>/.worktrees)
-  orchestrator add <name>       scaffold a new task (AI fills details)
-  orchestrator add <name> --goal "..." --metric x --scope "a b"
+  orchestrator --repo <dir> --state-root <dir> run until all tasks complete (loop)
+  orchestrator --repo <dir> --state-root <dir> --once
+  orchestrator --repo <dir> --state-root <dir> --status
+  orchestrator --repo <dir> --state-root <dir> --check
+  orchestrator --repo <dir> --state-root <dir> --stop
+  orchestrator --repo <dir> --state-root <dir> --task <n>
+  orchestrator --tasks <dir>    override derived task directory
+  orchestrator --worktrees <dir> override derived worktree directory
+  orchestrator --repo <dir> --state-root <dir> add <name>
+  orchestrator --repo <dir> --state-root <dir> add <name> --goal "..." --metric x --scope "a b"
 
-Environment variables (CLI flags override):
-  ORCH_TASKS=<dir>         task directory
-  ORCH_REPO=<dir>          git repo root for worktrees
-  ORCH_MODEL=<model>       default AI model
-  ORCH_CONVERGE=<n>        zero-runs to converge (default: 3)
-  ORCH_MAX_FAILURES=<n>    failures before BLOCKED (default: 5)
-  ORCH_WORKTREES=<dir>    worktree directory (default: <repo>/.worktrees)
-  ORCH_HEARTBEAT_MS=<ms>   stale claim timeout (default: 300000)
+Resolution order for optional settings: CLI flag > environment variable > derived default.
+
+Environment variables:
+  ORCH_REPO=<dir>            required target repo/folder
+  ORCH_STATE_ROOT=<dir>      required orchestrator state root
+  ORCH_TASKS=<dir>           optional task directory override
+  ORCH_WORKTREES=<dir>       optional worktree directory override
+  ORCH_MODEL=<model>         model override (uses pi default when unset)
+  ORCH_CONVERGE=<n>          zero-runs to converge (default: 3)
+  ORCH_MAX_FAILURES=<n>      failures before BLOCKED (default: 5)
+  ORCH_HEARTBEAT_MS=<ms>     stale claim timeout (default: 300000)
+  ORCH_PROGRESS_TIMEOUT=<ms> kill agent after no output (default: 120000)
 `);
   process.exit(0);
 }
+
+let paths;
+try {
+  paths = resolveStatePaths({
+    repo: values.repo || env.repoDir,
+    stateRoot: values['state-root'] || env.stateRoot,
+    tasks: values.tasks || env.tasksDir,
+    worktrees: values.worktrees || env.worktreesDir,
+  });
+} catch (e: unknown) {
+  console.error(`\n  ❌ ${e instanceof Error ? e.message : String(e)}`);
+  console.error('  Example: orchestrator --repo Q:\\Repos\\FabricSparkCST --state-root Q:\\Orchestrator\n');
+  process.exit(1);
+}
+
+const repo = paths.repo;
+const dir = paths.tasks;
+const worktreesDir = paths.worktrees;
+
+console.log(`repo: ${repo}`);
+console.log(`tasks: ${dir}`);
+console.log(`worktrees: ${worktreesDir}`);
+
+if (!existsSync(repo)) {
+  console.error(`\n  ❌ Repo folder not found: ${repo}\n`);
+  process.exit(1);
+}
+mkdirSync(paths.stateRoot, { recursive: true });
+mkdirSync(worktreesDir, { recursive: true });
 
 // ── edit command ─────────────────────────────────────────────────────────
 if (positionals[0] === 'edit') {
@@ -147,7 +174,10 @@ if (failed.length > 0) {
   // pi/API key missing — warn but continue (user might have custom benchmark)
 }
 
-const spawner = new PiSpawner(values.model ? { model: values.model } : {});
+const spawner = new PiSpawner({
+  ...(values.model ? { model: values.model } : {}),
+  workDir: repo,
+});
 
 if (values.stop) {
   const { writeFileSync } = await import('node:fs');
@@ -159,38 +189,29 @@ if (values.stop) {
 // Verify tasks directory exists before running
 if (!existsSync(dir)) {
   console.error(`\n  ❌ Tasks directory not found: ${dir}`);
-  console.error(`  Create it or set ORCH_TASKS to a valid path.\n`);
+  console.error('  Create it with the add command, or pass --tasks / ORCH_TASKS to an existing task folder.\n');
   process.exit(1);
 }
 
 // Resolve the effective worktrees directory for robust benchmark cwd detection.
 // Use a path-prefix check instead of fragile substring matching to avoid
 // false positives when the repo path itself contains '.worktrees/'.
-const effectiveWorktreesDir = values.worktrees
-  ? resolve(values.worktrees)
-  : resolve(repo, '.worktrees');
+const effectiveWorktreesDir = worktreesDir;
 
 const engine = new Engine(dir, {
   repoDir: repo,
-  ...(values.worktrees ? { worktreesDir: values.worktrees } : {}),
+  worktreesDir,
   spawn: (task, worktreePath, signal) => spawner.spawn(task, worktreePath, signal),
   benchmark: async (t: TaskInfo) => {
     try {
       const out = execSync(`node ${t.directory}/benchmark.js`, {
         timeout: 30_000, encoding: 'utf-8',
-        cwd: (t.directory + '/').startsWith(effectiveWorktreesDir + '/') ? t.cwd : repo,
+        cwd: isPathInside(t.directory, effectiveWorktreesDir) ? t.cwd : repo,
       });
       return parseInt(out.match(/METRIC\s+\w+=(\d+)/)?.[1] ?? '1', 10);
     } catch { return 1; }
   },
 });
-
-// Verify tasks directory exists before running
-if (!existsSync(dir)) {
-  console.error(`\n  ❌ Tasks directory not found: ${dir}`);
-  console.error(`  Create it or set ORCH_TASKS to a valid path.\n`);
-  process.exit(1);
-}
 
 // Force-pick a specific task by number
 if (values.task) {
@@ -215,10 +236,14 @@ if (values.once) {
     console.log('Nothing actionable.');
   }
 } else {
-  console.log(`Running until tasks complete (${dir}, repo: ${repo})`);
+  console.log('Running until tasks complete');
   const n = await engine.loop({
     onTick: (r) => {
-      if (r.task) console.log(`  ${r.converged ? '✅' : '⏳'} T${r.task.number}: ${r.task.goal.slice(0, 60)}`);
+      if (r.task) {
+        const icon = r.converged ? '✅' : r.metric === 0 ? '⏳' : '❌';
+        const status = r.converged ? 'converged' : r.metric === 0 ? 'convergence pending' : `metric=${r.metric}`;
+        console.log(`  ${icon} T${r.task.number}: ${status} — ${r.task.goal.slice(0, 60)}`);
+      }
     },
   });
   console.log(`\n🎉 ${n} ticks — all done\n`);

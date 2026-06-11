@@ -32,7 +32,7 @@ npm run tick
 
 ## How it works
 
-1. **Define a task** in `tasks/pending/<name>/autoresearch.md` with goal, metric, scope, and acceptance criteria
+1. **Define a task** in `<state-root>/<repo-slug>/tasks/pending/<name>/autoresearch.md` with goal, metric, scope, and acceptance criteria
 2. **Run the orchestrator** — it picks the highest-priority task, runs the benchmark, and spawns an AI agent
 3. **Agent iterates** — reads the task, runs experiments, edits files in an isolated git worktree
 4. **Convergence** — when the benchmark reaches its target for 3 consecutive runs, the task is merged back
@@ -41,23 +41,33 @@ npm run tick
 
 | Command | Description |
 |---|---|
-| `orchestrator` | Run until all tasks complete |
-| `orchestrator --once` | Process one tick and exit |
-| `orchestrator --status` | Show task dashboard |
-| `orchestrator --check` | Check prerequisites |
-| `orchestrator --stop` | Signal running instances to stop |
-| `orchestrator --task <n>` | Force-pick a specific task |
-| `orchestrator add <name>` | Scaffold a new task |
-| `orchestrator edit <n>` | Edit task metadata |
+| `orchestrator --repo <dir> --state-root <dir>` | Run until all tasks complete |
+| `orchestrator --repo <dir> --state-root <dir> --once` | Process one tick and exit |
+| `orchestrator --repo <dir> --state-root <dir> --status` | Show task dashboard |
+| `orchestrator --repo <dir> --state-root <dir> --check` | Check prerequisites |
+| `orchestrator --repo <dir> --state-root <dir> --stop` | Signal running instances to stop |
+| `orchestrator --repo <dir> --state-root <dir> --task <n>` | Force-pick specific task |
+| `orchestrator --repo <dir> --state-root <dir> add <name>` | Scaffold a new task |
+| `orchestrator --repo <dir> --state-root <dir> edit <n>` | Edit task metadata |
+
+By default, tasks and worktrees are stored together under the required state root:
+
+```text
+<state-root>\<repo-slug>\tasks
+<state-root>\<repo-slug>\worktrees
+```
+
+Explicit `--tasks` and `--worktrees` paths override those derived locations.
 
 ## Environment variables
 
 | Variable | Default | Controls |
 |---|---|---|
-| `ORCH_TASKS` | `./tasks` | Task directory |
-| `ORCH_REPO` | auto-detect | Git repo root |
-| `ORCH_MODEL` | `openrouter/owl-alpha` | Default AI model |
-| `ORCH_WORKTREES` | `<repo>/.worktrees` | Worktree directory |
+| `ORCH_REPO` | required | Target repo/folder |
+| `ORCH_STATE_ROOT` | required | Orchestrator state root |
+| `ORCH_TASKS` | `<state-root>\<repo-slug>\tasks` | Task directory override |
+| `ORCH_MODEL` | pi default | Model override passed to `pi` |
+| `ORCH_WORKTREES` | `<state-root>\<repo-slug>\worktrees` | Worktree directory override |
 | `ORCH_CONVERGE` | `3` | Zero-runs to converge |
 | `ORCH_MAX_FAILURES` | `5` | Failures before BLOCKED |
 | `ORCH_HEARTBEAT_MS` | `300000` | Stale claim timeout |

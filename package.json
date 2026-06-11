@@ -44,6 +44,7 @@
     "postversion": "git push --follow-tags",
     "prepublishOnly": "npm run all",
     "tick": "tsx src/cli.ts",
+    "help": "tsx src/cli.ts --help",
     "check": "tsx src/cli.ts --check",
     "stop": "tsx src/cli.ts --stop",
     "add": "tsx src/cli.ts add"

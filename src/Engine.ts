@@ -1,6 +1,6 @@
 import { statSync, readFileSync, readdirSync, existsSync, rmSync, appendFileSync, cpSync } from 'node:fs';
-import { resolve, join, dirname } from 'node:path';
-import { TaskState, Status, type BenchmarkFn, type TickResult, type TickNull } from './TaskState.js';
+import { resolve, join, dirname, relative } from 'node:path';
+import { TaskState, Status, MAX_FAILURES, type BenchmarkFn, type TickResult, type TickNull } from './TaskState.js';
 import { Worktree } from './Worktree.js';
 import { env } from './env.js';
 
@@ -9,6 +9,9 @@ const HEARTBEAT_MAX_MS = env.heartbeatMs;
 export interface SpawnResult {
   readonly success: boolean;
   readonly iterations: number;
+  readonly authFailure?: boolean;
+  readonly error?: string;
+  readonly logPath?: string;
 }
 
 export type SpawnFn = (task: TaskState, worktreePath?: string, signal?: AbortSignal) => Promise<SpawnResult>;
@@ -123,7 +126,7 @@ export class Engine {
     }
 
     let metric = await this.#run(task);
-    this.#log(`T${task.taskNumber} metric=${metric}`);
+    this.#log(`T${task.taskNumber} check: metric=${metric}${metric === 0 ? ' (done)' : ' (needs work; target is 0)'}`);
 
     if (metric === 0) return this.#handleZero(task, metric);
 
@@ -137,11 +140,14 @@ export class Engine {
         await wt.create();
         this.#worktrees.set(task.taskNumber, wt);
       }
+      let spawnTask = task;
       if (wt) {
         // Copy task directory into worktree (tasks/ not tracked in git)
-        const taskRel = task.directory.replace(this.#repo, '').replace(/^\//, '');
-        const wtTaskDir = join(wt.path, taskRel);
-        try { cpSync(task.directory, wtTaskDir, { recursive: true, filter: (f: string) => !f.endsWith('agent.log') }); } catch {}
+        const wtTaskDir = this.#taskDirectoryInWorktree(task, wt.path);
+        try {
+          cpSync(task.directory, wtTaskDir, { recursive: true, filter: (f: string) => !f.endsWith('agent.log') });
+          spawnTask = new TaskState(wtTaskDir);
+        } catch {}
         // Copy node_modules for isolated npm commands (no symlink — avoids circular chain risk)
         const wtNm = join(wt.path, 'node_modules');
         if (!existsSync(wtNm)) {
@@ -149,18 +155,29 @@ export class Engine {
         }
       }
       const ac = new AbortController();
+      let hb: ReturnType<typeof setInterval> | undefined;
       try {
+        this.#log(`T${task.taskNumber} action: starting agent because metric is ${metric}`);
         /* c8 ignore start */
-        const hb = setInterval(() => {
+        hb = setInterval(() => {
           task.heartbeat();
           if (existsSync(this.#stopFile)) {
             ac.abort();
           }
         }, 30_000);
         /* c8 ignore stop */
-        await this.#spawn(task, wt?.path, ac.signal);
-        clearInterval(hb);
+        const spawnResult = await this.#spawn(spawnTask, wt?.path, ac.signal);
+        this.#log(
+          `T${task.taskNumber} agent ${spawnResult.success ? 'finished' : 'stopped without finishing'} ` +
+          `(${this.#experimentLabel(spawnResult.iterations)}` +
+          `${spawnResult.error ? `; reason: ${this.#singleLine(spawnResult.error)}` : ''}` +
+          `${spawnResult.logPath ? `; details: ${spawnResult.logPath}` : ''})`,
+        );
+        if (spawnResult.authFailure) {
+          return this.#handleBlocked(task, metric, spawnResult.error ?? 'pi authentication failed');
+        }
         metric = await this.#run(task, wt?.path);
+        this.#log(`T${task.taskNumber} check after agent: metric=${metric}${metric === 0 ? ' (done)' : ' (still needs work)'}`);
         if (metric === 0) return this.#handleZero(task, metric, wt);
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -169,13 +186,12 @@ export class Engine {
           this.#retryCooldowns.set(task.taskNumber, Date.now());
           console.error(`  ⚠️  T${task.taskNumber}: merge conflict — task FAILED, worktree kept for inspection`);
         }
+      } finally {
+        if (hb) clearInterval(hb);
       }
     }
 
-    this.#retryCooldowns.set(task.taskNumber, Date.now());
-    task.release(Status.FAILED);
-    this.#log(`T${task.taskNumber} FAILED (metric=${metric})`);
-    return { task: task.info, metric, converged: false };
+    return this.#handleFailure(task, metric);
   }
 
   // ── Loop ────────────────────────────────────────────────────────────
@@ -211,10 +227,43 @@ export class Engine {
     this.#worktrees.delete(tn);
   }
 
+  #taskDirectoryInWorktree(task: TaskState, worktreePath: string): string {
+    return resolve(worktreePath, relative(this.#repo, task.directory));
+  }
+
+  #handleFailure(task: TaskState, metric: number): TickResult {
+    const failures = task.incrementFailures();
+    this.#retryCooldowns.set(task.taskNumber, Date.now());
+    if (failures >= MAX_FAILURES) {
+      task.markBlocked();
+      this.#log(`T${task.taskNumber} stopping: metric is still ${metric} after ${failures}/${MAX_FAILURES} failed attempts; no retries left`);
+    } else {
+      task.release(Status.FAILED);
+      this.#log(`T${task.taskNumber} retrying: metric is still ${metric} (failed attempt ${failures}/${MAX_FAILURES})`);
+    }
+    return { task: task.info, metric, converged: false };
+  }
+
+  #handleBlocked(task: TaskState, metric: number, reason: string): TickResult {
+    const failures = task.incrementFailures();
+    task.markBlocked();
+    this.#retryCooldowns.set(task.taskNumber, Date.now());
+    this.#log(`T${task.taskNumber} stopping: ${this.#singleLine(reason)} (failed attempt ${failures}/${MAX_FAILURES}, metric=${metric})`);
+    return { task: task.info, metric, converged: false };
+  }
+
+  #experimentLabel(count: number): string {
+    return count === 1 ? '1 progress record' : `${count} progress records`;
+  }
+
+  #singleLine(value: string): string {
+    return value.replace(/\s+/g, ' ').slice(0, 200);
+  }
+
   async #run(task: TaskState, worktreePath?: string): Promise<number> {
     try {
       const info = worktreePath
-        ? { ...task.info, directory: resolve(worktreePath, task.directory.replace(this.#repo, '').replace(/^\//, '')), cwd: worktreePath }
+        ? { ...task.info, directory: this.#taskDirectoryInWorktree(task, worktreePath), cwd: worktreePath }
         : task.info;
       return await this.#bench(info);
     }
