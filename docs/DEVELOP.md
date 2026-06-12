@@ -13,7 +13,8 @@ TDD + SOLID. Read `TESTING.md` first for test conventions.
 ### Before committing
 1. `npm run c` — zero type errors (~2s, pre-commit hook enforces)
 2. `npm run t` — all tests pass (~3s, pre-commit hook enforces)
-3. `npm run all` — full pipeline (pre-push hook enforces)
+3. `npm run tc` — 100% coverage — coverage regressions block merge (mandatory)
+4. `npm run all` — full pipeline (pre-push hook enforces)
 
 ### Environment variables
 See `README.md` for the grouped configuration table.

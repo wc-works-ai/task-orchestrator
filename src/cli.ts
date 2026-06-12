@@ -251,6 +251,7 @@ const engine = new Engine(dir, {
   worktreesDir,
   autoStashBeforeMerge: autoStash,
   mergeRecovery: autoStash ? () => MergeRecoveryAction.StashAndRetry : promptMergeRecovery,
+  verifyCmd: 'npm run tc',
   spawn: (task, worktreePath, signal) => agent.spawn(task, worktreePath, signal),
   benchmark: async (t: TaskInfo) => {
     try {
