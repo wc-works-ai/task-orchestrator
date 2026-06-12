@@ -1,5 +1,5 @@
 import { statSync, readFileSync, readdirSync, existsSync, rmSync, mkdirSync, writeFileSync, appendFileSync, cpSync } from 'node:fs';
-import { resolve, join, dirname, relative } from 'node:path';
+import { resolve, join, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
@@ -231,8 +231,8 @@ export class Engine {
 
         if (this.#spawn) {
           try {
-            const { wt, spawnTask } = await this.#prepareWorktree(task);
-            metric = await this.#runSpawnCycle(task, spawnTask, wt, metric, ac.signal);
+            const wt = await this.#prepareWorktree(task);
+            metric = await this.#runSpawnCycle(task, wt, metric, ac.signal);
             if (metric === -1) return { task: null, metric: 0, converged: false, stopped: true, ...(this.#environmentError !== undefined && { environmentError: this.#environmentError }) };
             if (metric === 0) return await this.#handleZero(task, metric, wt);
           } catch (e: unknown) {
@@ -450,10 +450,6 @@ export class Engine {
     return true;
   }
 
-  #taskDirectoryInWorktree(task: TaskState, worktreePath: string): string {
-    return resolve(worktreePath, relative(this.#repo, task.directory));
-  }
-
   #handleFailure(task: TaskState, metric: number): TickResult {
     const failures = task.incrementFailures();
     const limit = task.maxFailures;
@@ -469,32 +465,26 @@ export class Engine {
     return { task: task.info, metric, converged: false };
   }
 
-  async #prepareWorktree(task: TaskState): Promise<{ wt: Worktree | null; spawnTask: TaskState }> {
+  async #prepareWorktree(task: TaskState): Promise<Worktree | null> {
     let wt = this.#worktrees.get(task.taskNumber) ?? null;
-    let spawnTask = task;
     if (!wt && existsSync(resolve(this.#repo, '.git'))) {
       wt = new Worktree(this.#repo, { name: task.taskName, baseBranch: this.#baseBranch, ...(this.#worktreesDir ? { worktreesDir: this.#worktreesDir } : {}) });
       await wt.create();
       this.#worktrees.set(task.taskNumber, wt);
     }
     if (wt) {
-      const wtTaskDir = this.#taskDirectoryInWorktree(task, wt.path);
-      try {
-        cpSync(task.directory, wtTaskDir, { recursive: true, filter: (f: string) => !f.endsWith('agent.log') });
-        spawnTask = new TaskState(wtTaskDir);
-      } catch {}
       // Copy node_modules for isolated npm commands (no symlink — avoids circular chain risk)
       const wtNm = join(wt.path, 'node_modules');
       if (!existsSync(wtNm)) {
         try { cpSync(join(this.#repo, 'node_modules'), wtNm, { recursive: true }); } catch {}
       }
     }
-    return { wt, spawnTask };
+    return wt;
   }
 
-  async #runSpawnCycle(task: TaskState, spawnTask: TaskState, wt: Worktree | null, metric: number, signal: AbortSignal): Promise<number> {
+  async #runSpawnCycle(task: TaskState, wt: Worktree | null, metric: number, signal: AbortSignal): Promise<number> {
     this.#log(`T${task.taskNumber} action: starting agent because metric is ${metric}`);
-    const spawnResult = await this.#spawn!(spawnTask, wt?.path, signal);
+    const spawnResult = await this.#spawn!(task, wt?.path, signal);
     this.#log(
       `T${task.taskNumber} agent ${spawnResult.success ? 'finished' : 'stopped without finishing'} ` +
       `(${this.#experimentLabel(spawnResult.iterations)}` +
@@ -540,9 +530,12 @@ export class Engine {
 
   async #run(task: TaskState, worktreePath?: string): Promise<number> {
     try {
-      const info = worktreePath
-        ? { ...task.info, directory: this.#taskDirectoryInWorktree(task, worktreePath), cwd: worktreePath }
-        : task.info;
+      // The task's benchmark.js lives in the task directory and inspects its
+      // process.cwd(). Run it against the worktree (to measure the agent's
+      // work) or the repo (initial "is it already done?" check). Do NOT relocate
+      // the task directory: it may live outside the repo (independent state-root
+      // layout), so a repo-relative remap would not land inside the worktree.
+      const info = { ...task.info, cwd: worktreePath ?? this.#repo };
       return await this.#bench(info);
     }
     catch { return 1; }

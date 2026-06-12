@@ -2,7 +2,7 @@
 import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { resolve } from 'node:path';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { addTask } from './addTask.js';
@@ -15,11 +15,6 @@ import { resolveStatePaths } from './StatePaths.js';
 import { printOverview, printRunSummary } from './RunReport.js';
 import { parseMetrics, unmetSummary } from './metrics.js';
 import { formatEffectiveConfig, formatSettingsHelp } from './config.js';
-
-function isPathInside(child: string, parent: string): boolean {
-  const rel = relative(parent, child);
-  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
-}
 
 async function promptMergeRecovery(failure: MergeRecoveryFailure): Promise<MergeRecoveryAction> {
   console.error('');
@@ -261,11 +256,6 @@ if (!existsSync(dir)) {
   process.exit(1);
 }
 
-// Resolve the effective worktrees directory for robust benchmark cwd detection.
-// Use a path-prefix check instead of fragile substring matching to avoid
-// false positives when the repo path itself contains '.worktrees/'.
-const effectiveWorktreesDir = worktreesDir;
-
 const engine = new Engine(dir, {
   repoDir: repo,
   worktreesDir,
@@ -277,12 +267,14 @@ const engine = new Engine(dir, {
   infinite,
   spawn: (task, worktreePath, signal) => agent.spawn(task, worktreePath, signal),
   benchmark: async (t: TaskInfo) => {
-    const benchCwd = isPathInside(t.directory, effectiveWorktreesDir) ? t.cwd : repo;
+    // Engine sets t.cwd to the worktree (post-agent / pre-merge checks) or the
+    // repo (initial check). Run the task's benchmark.js from there so it measures
+    // the right tree regardless of where the task directory lives.
     const reasonPath = resolve(t.directory, 'benchmark.log');
     let out: string;
     try {
       out = execFileSync(process.execPath, [resolve(t.directory, 'benchmark.js')], {
-        timeout: 30_000, encoding: 'utf-8', cwd: benchCwd,
+        timeout: 30_000, encoding: 'utf-8', cwd: t.cwd,
       });
     } catch (e: unknown) {
       // Capture whatever the benchmark printed before crashing/timing out so the

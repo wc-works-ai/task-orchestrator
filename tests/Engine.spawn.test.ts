@@ -535,7 +535,7 @@ describe('Engine agent spawning', () => {
     expect(spawn).toHaveBeenCalledTimes(1);
   });
 
-  it('uses copied task directory for worktree spawn and benchmark', async () => {
+  it('runs the worktree benchmark against the worktree cwd using the task own dir', async () => {
     const { execSync } = await import('node:child_process');
     const { mkdirSync: mk, writeFileSync } = await import('node:fs');
 
@@ -562,19 +562,63 @@ describe('Engine agent spawning', () => {
     });
     const spawn = vi.fn(async (task: TaskState, wt?: string) => {
       worktreePath = wt ?? '';
-      expect(task.directory).toBe(resolve(worktreePath, 'tasks', 'in_progress', 'T01-a'));
+      // The task is no longer copied into the worktree; it stays in the tasks dir.
+      expect(task.directory).toBe(resolve(tasksDir, 'in_progress', 'T01-a'));
       return { success: true, iterations: 1 };
     });
 
     const engine = new Engine(tasksDir, { benchmark, spawn, repoDir });
     const r = await engine.tick();
 
-    const expectedTaskDir = resolve(worktreePath, 'tasks', 'in_progress', 'T01-a');
+    const originalTaskDir = resolve(tasksDir, 'in_progress', 'T01-a');
     expect(r.metric).toBe(0);
     expect(worktreePath).toBeTruthy();
     expect(spawn).toHaveBeenCalledTimes(1);
-    expect(benchmarkDirs[1]).toBe(expectedTaskDir);
+    // Initial check measures the repo; post-agent check measures the worktree —
+    // both run the task's own benchmark.js (task dir), never a worktree copy.
+    expect(benchmarkDirs[0]).toBe(originalTaskDir);
+    expect(benchmarkCwds[0]).toBe(repoDir);
+    expect(benchmarkDirs[1]).toBe(originalTaskDir);
     expect(benchmarkCwds[1]).toBe(worktreePath);
+  });
+
+  it('measures the worktree even when the task directory lives outside the repo', async () => {
+    // Regression for the cross-layout bug: tasks live in an independent folder
+    // (not under the repo). The post-agent benchmark must still run against the
+    // worktree, not fall back to the repo.
+    const { execSync } = await import('node:child_process');
+    const { mkdirSync: mk, writeFileSync } = await import('node:fs');
+
+    const repoDir = resolve(dir, 'repo');
+    const tasksDir = resolve(dir, 'state', 'tasks'); // sibling of the repo, NOT under it
+    mk(repoDir, { recursive: true });
+    execSync('git init && git config user.email test@test && git config user.name test && git commit --allow-empty -m init', { cwd: repoDir });
+
+    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
+      mk(resolve(tasksDir, s), { recursive: true });
+    }
+    const d = resolve(tasksDir, 'pending', 'T01-a');
+    mk(d, { recursive: true });
+    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+
+    let worktreePath = '';
+    const benchmarkCwds: string[] = [];
+    const benchmark = vi.fn((task: TaskInfo) => {
+      benchmarkCwds.push(task.cwd);
+      return benchmarkCwds.length === 1 ? 1 : 0; // fail first, pass after agent
+    });
+    const spawn = vi.fn(async (_task: TaskState, wt?: string) => {
+      worktreePath = wt ?? '';
+      return { success: true, iterations: 1 };
+    });
+
+    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir });
+    const r = await engine.tick();
+
+    expect(r.metric).toBe(0);
+    expect(worktreePath).toBeTruthy();
+    expect(benchmarkCwds[0]).toBe(repoDir);        // initial check → repo
+    expect(benchmarkCwds[1]).toBe(worktreePath);   // post-agent check → worktree
   });
 
   it('handles node_modules already existing in worktree (covers line 133 else)', async () => {
