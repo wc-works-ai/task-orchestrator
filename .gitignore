@@ -10,3 +10,8 @@ tasks/
 coverage/
 *.cov_*
 autoresearch.*
+
+# Test artifacts
+test-artifacts/
+pi-spawn-*/
+.test-tmp/
