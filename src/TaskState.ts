@@ -296,6 +296,16 @@ export class TaskState {
     this.resetConvergence();
   }
 
+  /** Reset a blocked/failed task back to PENDING: clear the claim, zero the
+   *  failure count and convergence, and move it to the pending shard so the
+   *  loop retries it from scratch. Safe to run while a loop is active — no stop
+   *  signal needed, since blocked/failed tasks are not being processed. */
+  unblock(): void {
+    try { rmSync(join(this.#dir, F_FAILURES)); } catch {}
+    this.resetConvergence();
+    this.release(Status.PENDING);
+  }
+
   // ── Metadata ────────────────────────────────────────────────────────
   #readAutoresearch(): string {
     try { return readFileSync(join(this.#dir, 'autoresearch.md'), 'utf-8'); }

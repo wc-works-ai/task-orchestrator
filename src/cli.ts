@@ -64,6 +64,7 @@ const { values, positionals } = await parseArgs({
     reasoning: { type: 'string', default: '' },
     stop:   { type: 'boolean', default: false },
     task:   { type: 'string', short: 't', default: '' },
+    unblock: { type: 'string', default: '' },
     goal:   { type: 'string', default: '' },
     metric: { type: 'string', default: '' },
     scope:  { type: 'string', default: '' },
@@ -90,6 +91,7 @@ Task Orchestrator — autonomous task execution
   orchestrator --stop
   orchestrator --config
   orchestrator --task <n>
+  orchestrator --unblock <n>    reset a blocked/failed task to pending (loop-safe)
   orchestrator --loop        alias for --infinite
   orchestrator edit <n> [--goal ...] [--metric ...] [--scope ...]
   orchestrator add <name>
@@ -298,6 +300,18 @@ const engine = new Engine(dir, {
     return r.total;
   },
 });
+
+// Reset a blocked/failed task back to pending (no --stop needed; loop-safe)
+if (values.unblock) {
+  const tn = parseInt(values.unblock, 10);
+  if (isNaN(tn)) { console.error('Invalid task number'); process.exit(1); }
+  const task = await engine.pickByNumber(tn);
+  if (!task) { console.error(`T${tn} not found`); process.exit(1); }
+  if (task.isConverged) { console.error(`T${tn} is CONVERGED; nothing to unblock`); process.exit(1); }
+  task.unblock();
+  console.log(`T${tn} unblocked → PENDING (claim cleared, failures reset); it will be picked up on the next tick.`);
+  process.exit(0);
+}
 
 // Force-pick a specific task by number
 if (values.task) {
