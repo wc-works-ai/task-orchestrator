@@ -242,8 +242,7 @@ const prereqs = await Prerequisites.check(agent);
 const failed = prereqs.filter(r => !r.ok);
 if (failed.length > 0) {
   console.error(Prerequisites.format(prereqs));
-  if (failed.some(r => r.name === 'node')) process.exit(1);
-  // agent prereqs missing — warn but continue (user might have custom benchmark)
+  process.exit(1);
 }
 
 if (values.stop) {
