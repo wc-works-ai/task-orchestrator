@@ -31,7 +31,8 @@ TDD + SOLID. Read `TESTING.md` first for test conventions.
 | `ORCH_INFINITE` | unset | Never exit on idle; wait for new or addressed tasks until stopped |
 | `ORCH_IDLE_SLEEP_MS` | `5000` | Sleep interval between keep-alive/infinite idle ticks |
 | `ORCH_WORKTREES` | `<state-root>\<repo-slug>\worktrees` | Worktree directory override |
-| `ORCH_HEARTBEAT_MS` | `300000` | Stale claim timeout |
+| `ORCH_HEARTBEAT_MS` | `300000` | Heartbeat freshness window; a claim with a younger heartbeat is treated as alive |
+| `ORCH_CLAIM_MAX_MS` | `1800000` | Hard claim ceiling; a stale claim older than this is reclaimed even across machines |
 | `ORCH_AGENT_LOG_MAX_BYTES` | `10485760` | Maximum `agent.log` size before older output is truncated |
 | `ORCH_AGENT_LOG_RAW` | unset | Write raw spawned-agent stdout/stderr to `agent.log` |
 | `ORCH_LOG_LEVEL` | `normal` | Console verbosity: `quiet`, `normal`, or `verbose`; quiet still writes full `orchestrator.log` |

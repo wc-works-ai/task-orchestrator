@@ -35,7 +35,7 @@ npm run tick
 1. **Define a task** in `<state-root>/<repo-slug>/tasks/pending/<name>/autoresearch.md` with goal, metric, scope, and acceptance criteria
 2. **Run the orchestrator** — it picks the highest-priority task, runs the benchmark, and spawns an AI agent
 3. **Agent iterates** — reads the task, runs experiments, edits files in an isolated git worktree
-4. **Convergence** — when the benchmark reaches its target for 3 consecutive runs, the task is merged back
+4. **Convergence** — when every metric reaches 0 for 3 consecutive runs, the task is merged back
 
 If merge-back is blocked, the task is marked BLOCKED and the worktree is kept for inspection while the run continues. Interactive runs may auto-stash parent repo changes and retry the merge immediately.
 
@@ -91,7 +91,8 @@ Explicit `--tasks` and `--worktrees` paths override those derived locations.
 | `ORCH_KEEP_ALIVE` | unset | Keep looping through transient idle/cooldown periods when set to `1`, `true`, `yes`, or `on` |
 | `ORCH_INFINITE` | unset | Never exit on idle; wait for new or addressed tasks until `--stop` |
 | `ORCH_IDLE_SLEEP_MS` | `5000` | Sleep interval between keep-alive/infinite idle ticks |
-| `ORCH_HEARTBEAT_MS` | `300000` | Stale claim timeout |
+| `ORCH_HEARTBEAT_MS` | `300000` | Heartbeat freshness window; a claim with a younger heartbeat is treated as alive |
+| `ORCH_CLAIM_MAX_MS` | `1800000` | Hard claim ceiling; a stale claim older than this is reclaimed even across machines |
 | `ORCH_AGENT_LOG_MAX_BYTES` | `10485760` | Maximum `agent.log` size before older output is truncated |
 | `ORCH_AGENT_LOG_RAW` | unset | Write raw spawned-agent stdout/stderr to `agent.log` when set to `1`, `true`, `yes`, or `on` |
 | `ORCH_LOG_LEVEL` | `normal` | Console verbosity: `quiet`, `normal`, or `verbose`; quiet still writes full `orchestrator.log` |
@@ -104,6 +105,8 @@ tasks/pending/T01-my-task/
 ├── autoresearch.sh   # Auto-generated experiment runner
 └── benchmark.js      # Measures metric, outputs "METRIC <name>=<value>"
 ```
+
+A benchmark may print **multiple** `METRIC <name>=<value>` lines. The effective metric is the **sum** of all values, so a task converges only when **every** criterion is 0. Unmet criteria are listed in the console (`T<n> unmet: ...`). A benchmark that prints no METRIC line is treated as metric `1` (not done).
 
 Optional `autoresearch.md` metadata:
 
@@ -122,6 +125,17 @@ A *task-agnostic* failure would hit every task the same way: the coding agent's 
 The affected task is left `FAILED` **without** consuming a retry. The CLI prints `Environment issue: <reason>` and exits non-zero, so operators or automation can fix the environment and rerun. Remaining pending tasks are not picked, which prevents one environment problem from churning every task into `FAILED`.
 
 A *task-specific* failure is different: the agent ran but the metric is still non-zero, or a merge conflict occurred. These failures consume the task's retry budget as usual.
+
+## Running multiple orchestrators
+
+Several orchestrators can safely share one task directory and repo. Coordination uses plain files — no database, no daemon:
+
+- **Atomic claim.** Picking a task creates a `.claim` directory with `mkdir` (atomic on every OS). If two orchestrators race, only one `mkdir` wins; the loser moves on. The claim records the owner's `pid`, `host`, start time, and a unique `instance` id.
+- **Liveness by heartbeat.** The owner refreshes a `heartbeat` file while it works. Others judge a claim **only** by heartbeat age, never by the owner's pid — a pid is meaningless on a different machine. A claim whose heartbeat is younger than `ORCH_HEARTBEAT_MS` is always left alone.
+- **Recovery.** If the heartbeat is stale, a claim is reclaimed only when either (a) the owner is on **this** machine and its pid is gone, or (b) the claim is older than the hard ceiling `ORCH_CLAIM_MAX_MS` (covers a crashed owner on another machine). Otherwise it is left alone until the ceiling, so a slow remote owner is never stolen from prematurely.
+- **Unique identity.** Each orchestrator gets a globally-unique instance id (`<pid>-<random>`), so two machines never mistake each other's claims for their own.
+
+Reclaiming a stale claim preserves the task's convergence count, so progress is never lost.
 
 ## Coding agents
 
