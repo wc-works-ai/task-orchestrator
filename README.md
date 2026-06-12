@@ -93,6 +93,7 @@ Explicit `--tasks` and `--worktrees` paths override those derived locations.
 | `ORCH_IDLE_SLEEP_MS` | `5000` | Sleep interval between keep-alive/infinite idle ticks |
 | `ORCH_HEARTBEAT_MS` | `300000` | Heartbeat freshness window; a claim with a younger heartbeat is treated as alive |
 | `ORCH_CLAIM_MAX_MS` | `1800000` | Hard claim ceiling; a stale claim older than this is reclaimed even across machines |
+| `ORCH_MERGE_LOCK_MS` | `600000` | Merge-lock ceiling; a held merge lock older than this (a crashed merger) is broken |
 | `ORCH_AGENT_LOG_MAX_BYTES` | `10485760` | Maximum `agent.log` size before older output is truncated |
 | `ORCH_AGENT_LOG_RAW` | unset | Write raw spawned-agent stdout/stderr to `agent.log` when set to `1`, `true`, `yes`, or `on` |
 | `ORCH_LOG_LEVEL` | `normal` | Console verbosity: `quiet`, `normal`, or `verbose`; quiet still writes full `orchestrator.log` |
@@ -125,6 +126,15 @@ A *task-agnostic* failure would hit every task the same way: the coding agent's 
 The affected task is left `FAILED` **without** consuming a retry. The CLI prints `Environment issue: <reason>` and exits non-zero, so operators or automation can fix the environment and rerun. Remaining pending tasks are not picked, which prevents one environment problem from churning every task into `FAILED`.
 
 A *task-specific* failure is different: the agent ran but the metric is still non-zero, or a merge conflict occurred. These failures consume the task's retry budget as usual.
+
+## Merging converged work
+
+When a task converges, its branch is merged back to the base with a layered, deterministic strategy — the orchestrator never auto-edits file contents:
+
+1. **Update before merge.** The latest base is first merged *into* the task branch (`syncWithBase`). This absorbs a base that advanced while the agent worked (e.g. a sibling task merged), so only genuinely overlapping edits remain a conflict.
+2. **Re-verify acceptance.** After absorbing the base, the benchmark runs again. If the base advance broke any criterion, the task is sent back to the agent (its convergence count resets) rather than merging broken work.
+3. **Serialize merges.** A repo-scoped merge lock (atomic `mkdir`, the same primitive as task claims) lets only one orchestrator merge into the shared base at a time. If the lock is held, the merge is deferred to the next tick; a lock left by a crashed merger (older than `ORCH_MERGE_LOCK_MS`) is broken.
+4. **Park, never discard.** A genuine overlapping conflict marks the task BLOCKED and keeps its branch and worktree for inspection — work is never silently dropped.
 
 ## Running multiple orchestrators
 

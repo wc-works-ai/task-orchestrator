@@ -53,6 +53,22 @@ export class Worktree {
     return this.#path;
   }
 
+  /**
+   * Bring the latest base branch into the task branch, inside the worktree,
+   * before merging back. This resolves the common case where the base advanced
+   * (e.g. a sibling task merged) while the agent worked, so only genuinely
+   * overlapping edits still conflict. A real conflict is aborted and surfaced
+   * as a MergeConflictError, handled like any other merge conflict.
+   */
+  async syncWithBase(): Promise<void> {
+    try {
+      this.#gitInWT('merge', '--no-edit', this.#base);
+    } catch (e: unknown) {
+      try { this.#gitInWT('merge', '--abort'); } catch {}
+      throw new MergeConflictError(`Conflict updating ${this.#branch} with ${this.#base} in ${this.#name}; branch kept to merge after the block is released: ${gitErrorMessage(e)}`);
+    }
+  }
+
   async merge(): Promise<void> {
     const prevBranch = this.#git('rev-parse', '--abbrev-ref', 'HEAD').trim();
     try {

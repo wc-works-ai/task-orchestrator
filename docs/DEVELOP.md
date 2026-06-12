@@ -33,6 +33,7 @@ TDD + SOLID. Read `TESTING.md` first for test conventions.
 | `ORCH_WORKTREES` | `<state-root>\<repo-slug>\worktrees` | Worktree directory override |
 | `ORCH_HEARTBEAT_MS` | `300000` | Heartbeat freshness window; a claim with a younger heartbeat is treated as alive |
 | `ORCH_CLAIM_MAX_MS` | `1800000` | Hard claim ceiling; a stale claim older than this is reclaimed even across machines |
+| `ORCH_MERGE_LOCK_MS` | `600000` | Merge-lock ceiling; a held merge lock older than this (a crashed merger) is broken |
 | `ORCH_AGENT_LOG_MAX_BYTES` | `10485760` | Maximum `agent.log` size before older output is truncated |
 | `ORCH_AGENT_LOG_RAW` | unset | Write raw spawned-agent stdout/stderr to `agent.log` |
 | `ORCH_LOG_LEVEL` | `normal` | Console verbosity: `quiet`, `normal`, or `verbose`; quiet still writes full `orchestrator.log` |

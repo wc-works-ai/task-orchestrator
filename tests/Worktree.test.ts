@@ -204,4 +204,42 @@ describe('Worktree', () => {
       await rm(bareRepo, { recursive: true, force: true });
     }
   });
+
+  it('syncWithBase brings an advanced base into the branch, then merges cleanly', async () => {
+    const { writeFileSync } = await import('node:fs');
+    const wt = new Worktree(repo, { name: 'T01-test', baseBranch: 'master' });
+    await wt.create();
+
+    // Task work on the branch
+    writeFileSync(join(wt.path, 'work.txt'), 'work');
+    execSync('git add work.txt && git commit -m "work"', { cwd: wt.path });
+
+    // Base advances with a non-overlapping file while the agent worked
+    writeFileSync(join(repo, 'base.txt'), 'base');
+    execSync('git add base.txt && git commit -m "base advance"', { cwd: repo });
+
+    await wt.syncWithBase();
+    expect(existsSync(join(wt.path, 'base.txt'))).toBe(true); // branch now has the base advance
+
+    await wt.merge();
+    expect(existsSync(join(repo, 'work.txt'))).toBe(true);    // back-merge succeeds
+  });
+
+  it('syncWithBase throws MergeConflictError and aborts on overlapping edits', async () => {
+    const { writeFileSync } = await import('node:fs');
+    const wt = new Worktree(repo, { name: 'T01-test', baseBranch: 'master' });
+    await wt.create();
+
+    // Branch and base edit the same file differently → genuine conflict
+    writeFileSync(join(wt.path, 'shared.txt'), 'worktree');
+    execSync('git add shared.txt && git commit -m "wt"', { cwd: wt.path });
+    writeFileSync(join(repo, 'shared.txt'), 'base');
+    execSync('git add shared.txt && git commit -m "base"', { cwd: repo });
+
+    await expect(wt.syncWithBase()).rejects.toThrow(MergeConflictError);
+
+    // Aborted cleanly: no MERGE_HEAD left, branch kept
+    expect(() => execSync('git rev-parse -q --verify MERGE_HEAD', { cwd: wt.path, encoding: 'utf-8' })).toThrow();
+    expect(execSync('git branch --show-current', { cwd: wt.path, encoding: 'utf-8' }).trim()).toBe('orchestrator/T01-test');
+  });
 });

@@ -1,4 +1,4 @@
-import { statSync, readFileSync, readdirSync, existsSync, rmSync, appendFileSync, cpSync } from 'node:fs';
+import { statSync, readFileSync, readdirSync, existsSync, rmSync, mkdirSync, writeFileSync, appendFileSync, cpSync } from 'node:fs';
 import { resolve, join, dirname, relative } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -17,6 +17,9 @@ const retryLimitLabel = (limit: number): string => Number.isFinite(limit) ? Stri
 
 type LogCategory = 'routine' | 'transition' | 'always';
 type SleepFn = (ms: number) => Promise<void>;
+
+/** Result of attempting to merge a converged task back to its base branch. */
+type MergeOutcome = 'merged' | 'locked' | 'rework';
 
 const sleep: SleepFn = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -310,7 +313,15 @@ export class Engine {
       const tree = wt ?? this.#worktrees.get(task.taskNumber) ?? null;
       if (tree) {
         try {
-          await this.#mergeAndRemove(task, tree);
+          const outcome = await this.#mergeAndRemove(task, tree);
+          if (outcome === 'locked') {
+            this.#log(`T${task.taskNumber} merge deferred: another orchestrator holds the merge lock; retrying next tick`);
+            return { task: task.info, metric, converged: false };
+          }
+          if (outcome === 'rework') {
+            this.#log(`T${task.taskNumber} base advanced and broke acceptance after sync; re-running agent against the updated base`, 'transition');
+            return { task: task.info, metric, converged: false };
+          }
         } catch (e: unknown) {
           if (e instanceof MergeConflictError) {
             // Park the task as-is: keep its branch, do not rerun. The fleet keeps
@@ -330,14 +341,31 @@ export class Engine {
     return { task: task.info, metric, converged: false };
   }
 
-  async #mergeAndRemove(task: TaskState, wt: Worktree): Promise<void> {
-    if (this.#autoStashBeforeMerge) {
-      const stashed = await wt.stashParentChanges(`orchestrator ${task.taskName} pre-merge`);
-      if (stashed) this.#log(`T${task.taskNumber} stashed parent repo changes before merge`);
+  async #mergeAndRemove(task: TaskState, wt: Worktree): Promise<MergeOutcome> {
+    // Serialize merges across orchestrators sharing this repo: a merge mutates
+    // the shared base checkout, so concurrent merges would corrupt it.
+    if (!this.#acquireMergeLock()) return 'locked';
+    try {
+      if (this.#autoStashBeforeMerge) {
+        const stashed = await wt.stashParentChanges(`orchestrator ${task.taskName} pre-merge`);
+        if (stashed) this.#log(`T${task.taskNumber} stashed parent repo changes before merge`);
+      }
+      // Update the branch with the latest base first, so a base that advanced
+      // while the agent worked does not block the merge. Then re-verify the
+      // benchmark: if absorbing the base broke acceptance, send the task back
+      // to the agent instead of merging broken work.
+      await wt.syncWithBase();
+      if (await this.#run(task, wt.path) !== 0) {
+        task.resetConvergence();
+        return 'rework';
+      }
+      await wt.merge();
+      await wt.remove();
+      this.#worktrees.delete(task.taskNumber);
+      return 'merged';
+    } finally {
+      this.#releaseMergeLock();
     }
-    await wt.merge();
-    await wt.remove();
-    this.#worktrees.delete(task.taskNumber);
   }
 
   async #recoverMergeFailure(task: TaskState, wt: Worktree, e: unknown): Promise<boolean> {
@@ -361,8 +389,7 @@ export class Engine {
       try {
         const stashed = await wt.stashParentChanges(`orchestrator ${task.taskName} merge recovery`);
         this.#log(`T${task.taskNumber} ${stashed ? 'stashed parent repo changes' : 'found no parent repo changes to stash'}; retrying merge`);
-        await this.#mergeAndRemove(task, wt);
-        return true;
+        return (await this.#mergeAndRemove(task, wt)) === 'merged';
       } catch (retryError: unknown) {
         this.#handleMergeFailure(task, retryError, 'after auto-stash');
         return false;
@@ -463,6 +490,38 @@ export class Engine {
       return await this.#bench(info);
     }
     catch { return 1; }
+  }
+
+  // ── Merge lock (cross-orchestrator) ─────────────────────────────────
+
+  get #mergeLockDir(): string { return resolve(this.#repo, '.orchestrator-merge-lock'); }
+
+  /** Atomic mkdir lock so only one orchestrator merges into the shared base at
+   *  a time. A stale lock (older than ORCH_MERGE_LOCK_MS — a crashed merger) is
+   *  broken and re-acquired; the atomic mkdir still arbitrates the retry. */
+  #acquireMergeLock(): boolean {
+    if (this.#tryMakeMergeLock()) return true;
+    if (this.#mergeLockAgeMs() < env.mergeLockMs) return false;
+    try { rmSync(this.#mergeLockDir, { recursive: true, force: true }); } catch {}
+    return this.#tryMakeMergeLock();
+  }
+
+  #tryMakeMergeLock(): boolean {
+    try { mkdirSync(this.#mergeLockDir); } catch { return false; }
+    try { writeFileSync(join(this.#mergeLockDir, 'owner'), `pid:${process.pid}\nhost:${hostname()}\nstarted:${Date.now()}\n`); } catch {}
+    return true;
+  }
+
+  #mergeLockAgeMs(): number {
+    try {
+      const started = parseInt(readFileSync(join(this.#mergeLockDir, 'owner'), 'utf-8').match(/started:(\d+)/)?.[1] ?? '0', 10);
+      if (started > 0) return Date.now() - started;
+    } catch { /* missing/unreadable owner → treat as stale */ }
+    return Infinity;
+  }
+
+  #releaseMergeLock(): void {
+    try { rmSync(this.#mergeLockDir, { recursive: true, force: true }); } catch {}
   }
 
   #recover(): void {
