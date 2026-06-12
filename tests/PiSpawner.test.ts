@@ -161,6 +161,7 @@ describe('PiSpawner', () => {
       expect(r.success).toBe(true);
       const output = joinedCalls(logSpy);
       expect(output).toContain('T1 using test-model');
+      expect(output).toContain('started: ');
       expect(output).toContain('task: Review Azure DevOps PR 981660 for FabricSparkCST and write a concise report');
       expect(output).toContain(`worktree: ${dir}`);
       expect(output).toContain(`log: ${join(t.directory, 'agent.log')}`);

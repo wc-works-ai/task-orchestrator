@@ -101,6 +101,11 @@ export class PiSpawner implements CodingAgent {
     return [PiSpawner.#checkBinary(), PiSpawner.#checkAuth()];
   }
 
+  /** Local timestamp 'YYYY-MM-DD HH:MM:SS' (matches Engine log format). */
+  static #now(): string {
+    return new Date().toISOString().replace('T', ' ').slice(0, 19);
+  }
+
   static #checkBinary(): PrerequisiteResult {
     const command = piCommand(['--version']);
     const r = spawnSync(command.command, command.args, { timeout: 5000, encoding: 'utf-8' });
@@ -134,6 +139,7 @@ export class PiSpawner implements CodingAgent {
     const logPath = join(task.directory, F_AGENT_LOG);
 
     console.log(`T${task.taskNumber} using ${models.map(PiSpawner.#modelLabel).join(', ')}`);
+    console.log(`  started: ${PiSpawner.#now()}`);
     console.log(`  task: ${PiSpawner.#shortText(task.goal)}`);
     console.log(`  worktree: ${cwd}`);
     console.log(`  log: ${logPath}`);
