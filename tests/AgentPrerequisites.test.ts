@@ -103,7 +103,7 @@ describe('PiSpawner.checkPrerequisites', () => {
     }
   });
 
-  it('reports auth missing when no API keys', () => {
+  it('does not fail auth prerequisite when no API keys', () => {
     vi.mocked(spawnSync).mockReturnValue(spawnResult(0, '0.80.0\n'));
     const prevO = process.env.OPENROUTER_API_KEY;
     const prevA = process.env.ANTHROPIC_API_KEY;
@@ -114,8 +114,8 @@ describe('PiSpawner.checkPrerequisites', () => {
       const results = agent.checkPrerequisites();
       const auth = results.find(r => r.name === 'auth')!;
 
-      expect(auth.ok).toBe(false);
-      expect(auth.message).toBe('set OPENROUTER_API_KEY or ANTHROPIC_API_KEY');
+      expect(auth.ok).toBe(true);
+      expect(auth.message).toBe('No API key env found; continuing (pi may use local/session auth)');
     } finally {
       if (prevO) process.env.OPENROUTER_API_KEY = prevO;
       if (prevA) process.env.ANTHROPIC_API_KEY = prevA;

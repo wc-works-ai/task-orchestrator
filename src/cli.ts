@@ -151,7 +151,7 @@ if (values.config) {
   console.log(`  state root: ${paths.stateRoot}`);
   console.log(`  tasks:      ${paths.tasks}`);
   console.log(`  worktrees:  ${paths.worktrees}`);
-  console.log('\nAgent auth is validated by --check.');
+  console.log('\n--check validates prerequisites and reports auth hints; runtime still validates agent auth.');
   process.exit(0);
 }
 

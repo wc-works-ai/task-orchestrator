@@ -508,6 +508,21 @@ describe('Engine', () => {
     expect(sleep).toHaveBeenCalledTimes(3);
   });
 
+  it('infinite idle log includes polling interval', async () => {
+    make(dir, 1, 'done', { status: Status.CONVERGED });
+    make(dir, 2, 'blocked', { status: Status.BLOCKED });
+    const sleep = vi.fn(async () => { writeFileSync(resolve(dir, '.stop'), ''); });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      await new Engine(dir, { benchmark: zero }).loop({ infinite: true, idleSleepMs: 1234, sleep });
+      const logs = logSpy.mock.calls.map(call => String(call[0] ?? '')).join('\n');
+      expect(logs).toContain('polling every 1234ms');
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
   it('keep-alive still stops immediately when complete without infinite mode', async () => {
     make(dir, 1, 'done', { status: Status.CONVERGED });
     make(dir, 2, 'blocked', { status: Status.BLOCKED });

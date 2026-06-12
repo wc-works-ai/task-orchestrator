@@ -118,8 +118,10 @@ export class PiSpawner implements CodingAgent {
     const key = process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY || '';
     return {
       name: 'auth',
-      ok: key.length > 0,
-      message: key.length > 0 ? 'API key found' : 'set OPENROUTER_API_KEY or ANTHROPIC_API_KEY',
+      ok: true,
+      message: key.length > 0
+        ? 'API key found'
+        : 'No API key env found; continuing (pi may use local/session auth)',
     };
   }
 

@@ -271,7 +271,7 @@ export class Engine {
         if (!anyTaskCompleted) {
           if (infinite) {
             if (!announcedIdle) {
-              this.#log('idle: waiting for new tasks or for blocked/failed tasks to be addressed (infinite mode; --stop to exit)');
+              this.#log(`idle: waiting for new tasks or for blocked/failed tasks to be addressed (infinite mode; polling every ${idleSleepMs}ms; --stop to exit)`);
               announcedIdle = true;
             }
             await sleepFn(idleSleepMs);
