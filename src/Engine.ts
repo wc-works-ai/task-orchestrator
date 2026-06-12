@@ -1,6 +1,8 @@
 import { statSync, readFileSync, readdirSync, existsSync, rmSync, appendFileSync, cpSync } from 'node:fs';
 import { resolve, join, dirname, relative } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
 import { TaskState, Status, type BenchmarkFn, type TaskInfo, type TickResult, type TickNull } from './TaskState.js';
 import { Worktree, MergeConflictError } from './Worktree.js';
 import { env } from './env.js';
@@ -9,7 +11,6 @@ import type { SpawnFn, TokenUsage } from './CodingAgent.js';
 // Re-export contract types so external importers keep working
 export type { SpawnResult, SpawnFn, TokenUsage } from './CodingAgent.js';
 
-const HEARTBEAT_MAX_MS = env.heartbeatMs;
 const MAX_CONSECUTIVE_TICK_ERRORS = 10;
 
 const retryLimitLabel = (limit: number): string => Number.isFinite(limit) ? String(limit) : 'infinite';
@@ -79,7 +80,7 @@ export class Engine {
     this.#spawn = opts.spawn ?? null;
     this.#mergeRecovery = opts.mergeRecovery;
     this.#autoStashBeforeMerge = opts.autoStashBeforeMerge ?? false;
-    this.#id = opts.instanceId ?? `${process.pid}_${Date.now()}`;
+    this.#id = opts.instanceId ?? `${process.pid}-${randomUUID().slice(0, 8)}`;
     this.#retryCooldownMs = opts.retryCooldownMs ?? 0; // default: no cooldown
     this.#keepAlive = opts.keepAlive ?? env.keepAlive;
     this.#infinite = opts.infinite ?? env.infinite;
@@ -466,7 +467,9 @@ export class Engine {
 
   #recover(): void {
     const dir = resolve(this.#dir, 'in_progress');
+    const heartbeatMaxMs = env.heartbeatMs;
     const claimMaxMs = env.claimMaxMs;
+    const localHost = hostname();
     let entries: string[];
     try { entries = readdirSync(dir); } catch { return; }
 
@@ -474,29 +477,57 @@ export class Engine {
       if (!e.startsWith('T')) continue;
       const task = new TaskState(resolve(dir, e));
       if (!task.isInProgress || !task.isClaimed) continue;
-      const pid = this.#ownerPid(task);
-      if (pid !== null && this.#alive(pid)) {
-        // Process alive — respect heartbeat timeout
-        const age = this.#heartbeatAge(task);
-        if (age !== null && age < HEARTBEAT_MAX_MS) continue;
-        // Hard ceiling: if age >= claimMaxMs, release even if PID alive (stuck/hung owner)
-        if (age !== null && age >= claimMaxMs) {
-          task.release(Status.FAILED);
-          this.#log(`STALE: ${task.taskName} claim released (hard timeout ${claimMaxMs}ms exceeded; convergence=${task.convergenceCount})`);
-          continue;
-        }
-        // Stale heartbeat but alive PID and under hard ceiling — skip (long-running op)
+
+      // 1. Compute claim age = now - max(heartbeat mtime, startedAt)
+      const claimAge = this.#claimAge(task);
+
+      // 2. Fresh heartbeat → SKIP (machine-independent proof of life)
+      //    This guard MUST come before any PID logic.
+      if (claimAge < heartbeatMaxMs) continue;
+
+      // 3. Heartbeat is stale. Check same-host fast path.
+      const ownerHost = this.#ownerHost(task);
+      const ownerPid = this.#ownerPid(task);
+      if (ownerHost === localHost && (ownerPid === null || !this.#alive(ownerPid))) {
+        // Same host, owner PID is dead → reclaim
+        task.release(Status.FAILED);
+        this.#log(`STALE: ${task.taskName} claim released (convergence=${task.convergenceCount})`);
         continue;
       }
-      // Owner dead or unknown — release immediately, preserve convergence
-      task.release(Status.FAILED);
-      this.#log(`STALE: ${task.taskName} claim released (convergence=${task.convergenceCount})`);
+
+      // 4. Hard ceiling: if claimAge >= claimMaxMs → reclaim (covers dead owner on another machine)
+      if (claimAge >= claimMaxMs) {
+        task.release(Status.FAILED);
+        this.#log(`STALE: ${task.taskName} claim released (hard timeout ${claimMaxMs}ms exceeded; convergence=${task.convergenceCount})`);
+        continue;
+      }
+
+      // 5. Stale but within ceiling, owner on another host → SKIP
     }
   }
 
-  #heartbeatAge(task: TaskState): number | null {
-    try { return Date.now() - statSync(join(task.directory, '.claim', 'heartbeat')).mtimeMs; }
-    catch { return null; }
+  #claimAge(task: TaskState): number {
+    const now = Date.now();
+    let heartbeatMs: number | null = null;
+    try {
+      heartbeatMs = statSync(join(task.directory, '.claim', 'heartbeat')).mtimeMs;
+    } catch { /* heartbeat file missing */ }
+
+    const startedAt = task.claimOwner?.startedAt ?? 0;
+
+    // Use the most recent of heartbeat mtime or startedAt; if both missing, treat as Infinity
+    if (heartbeatMs !== null && startedAt > 0) {
+      return now - Math.max(heartbeatMs, startedAt);
+    } else if (heartbeatMs !== null) {
+      return now - heartbeatMs;
+    } else if (startedAt > 0) {
+      return now - startedAt;
+    }
+    return Infinity;
+  }
+
+  #ownerHost(task: TaskState): string {
+    return task.claimOwner?.host ?? '';
   }
 
   #ownerPid(task: TaskState): number | null {

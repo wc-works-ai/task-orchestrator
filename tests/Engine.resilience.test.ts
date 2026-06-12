@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { rm } from 'node:fs/promises';
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir, hostname } from 'node:os';
 import { Engine } from '../src/Engine.js';
 import { TaskState, Status } from '../src/TaskState.js';
 
@@ -186,6 +186,167 @@ describe('Engine resilience', () => {
       // Claim should still exist
       expect(existsSync(claimDir)).toBe(true);
     } finally {
+      if (originalClaimMaxMs === undefined) delete process.env.ORCH_CLAIM_MAX_MS;
+      else process.env.ORCH_CLAIM_MAX_MS = originalClaimMaxMs;
+    }
+  });
+
+  // ── FIX 1: instanceId is globally unique ────────────────────────────
+
+  it('two Engine instances produce different instanceIds', () => {
+    const engine1 = new Engine(dir);
+    const engine2 = new Engine(dir);
+    expect(engine1.instanceId).not.toBe(engine2.instanceId);
+  });
+
+  it('default instanceId matches ^<pid>- pattern', () => {
+    const engine = new Engine(dir);
+    expect(engine.instanceId).toMatch(new RegExp(`^${process.pid}-`));
+  });
+
+  // ── FIX 3: #recover() respects fresh heartbeats cross-machine ───────
+
+  it('fresh heartbeat protects claim even with dead PID and different host', async () => {
+    const originalHeartbeatMs = process.env.ORCH_HEARTBEAT_MS;
+    // Set heartbeat timeout to 5 minutes (300000ms)
+    process.env.ORCH_HEARTBEAT_MS = '300000';
+
+    try {
+      // Create an in-progress task claimed by a "different host" with a dead PID
+      const taskDir = resolve(dir, 'in_progress', 'T01-cross-machine');
+      mkdirSync(taskDir, { recursive: true });
+
+      const claimDir = join(taskDir, '.claim');
+      mkdirSync(claimDir, { recursive: true });
+      // Use a bogus PID that's definitely not running (999999)
+      // and a different host name
+      writeFileSync(join(claimDir, 'owner'),
+        `pid:999999\nstarted:${Date.now()}\ninstance:remote-inst\nhost:other-host\n`);
+      // Fresh heartbeat (just created, mtime is now)
+      writeFileSync(join(claimDir, 'heartbeat'), '');
+      writeFileSync(join(taskDir, '.status'), 'IN_PROGRESS:remote-inst\n');
+
+      const engine = new Engine(dir, { benchmark: () => 0, instanceId: 'local-engine' });
+
+      // tick() should NOT reclaim this task: heartbeat is fresh
+      const r = await engine.tick();
+
+      // Task should NOT have been picked (it's protected by fresh heartbeat)
+      expect(r.task).toBeNull();
+      // Claim should still exist
+      expect(existsSync(claimDir)).toBe(true);
+    } finally {
+      if (originalHeartbeatMs === undefined) delete process.env.ORCH_HEARTBEAT_MS;
+      else process.env.ORCH_HEARTBEAT_MS = originalHeartbeatMs;
+    }
+  });
+
+  it('same-host claim with dead PID and stale heartbeat is reclaimed', async () => {
+    const originalHeartbeatMs = process.env.ORCH_HEARTBEAT_MS;
+    // Set very short heartbeat timeout for test (1 second)
+    process.env.ORCH_HEARTBEAT_MS = '1000';
+
+    try {
+      const taskDir = resolve(dir, 'in_progress', 'T01-same-host');
+      mkdirSync(taskDir, { recursive: true });
+
+      const claimDir = join(taskDir, '.claim');
+      mkdirSync(claimDir, { recursive: true });
+      // Use a bogus dead PID on this host
+      writeFileSync(join(claimDir, 'owner'),
+        `pid:999999\nstarted:${Date.now() - 10000}\ninstance:dead-inst\nhost:${hostname()}\n`);
+      writeFileSync(join(claimDir, 'heartbeat'), '');
+      writeFileSync(join(taskDir, '.status'), 'IN_PROGRESS:dead-inst\n');
+
+      // Make heartbeat stale (older than 1 second)
+      const oldTime = (Date.now() - 5000) / 1000;
+      utimesSync(join(claimDir, 'heartbeat'), oldTime, oldTime);
+
+      const engine = new Engine(dir, { benchmark: () => 0, instanceId: 'local-engine' });
+
+      // tick() should reclaim this task: same host, dead PID, stale heartbeat
+      const r = await engine.tick();
+
+      // Task should have been recovered and picked up
+      expect(r.task).not.toBeNull();
+      expect(r.task!.number).toBe(1);
+    } finally {
+      if (originalHeartbeatMs === undefined) delete process.env.ORCH_HEARTBEAT_MS;
+      else process.env.ORCH_HEARTBEAT_MS = originalHeartbeatMs;
+    }
+  });
+
+  it('different-host claim with stale heartbeat under claimMaxMs is NOT reclaimed', async () => {
+    const originalHeartbeatMs = process.env.ORCH_HEARTBEAT_MS;
+    const originalClaimMaxMs = process.env.ORCH_CLAIM_MAX_MS;
+    // Set short heartbeat but long hard ceiling
+    process.env.ORCH_HEARTBEAT_MS = '1000';
+    process.env.ORCH_CLAIM_MAX_MS = '3600000'; // 1 hour
+
+    try {
+      const taskDir = resolve(dir, 'in_progress', 'T01-cross-host');
+      mkdirSync(taskDir, { recursive: true });
+
+      const claimDir = join(taskDir, '.claim');
+      mkdirSync(claimDir, { recursive: true });
+      // Claim from a different host with dead PID
+      writeFileSync(join(claimDir, 'owner'),
+        `pid:999999\nstarted:${Date.now() - 10000}\ninstance:remote-inst\nhost:other-host\n`);
+      writeFileSync(join(claimDir, 'heartbeat'), '');
+      writeFileSync(join(taskDir, '.status'), 'IN_PROGRESS:remote-inst\n');
+
+      // Stale heartbeat (past HEARTBEAT_MAX_MS=1s) but under claimMaxMs (1h)
+      const oldTime = (Date.now() - 5000) / 1000;
+      utimesSync(join(claimDir, 'heartbeat'), oldTime, oldTime);
+
+      const engine = new Engine(dir, { benchmark: () => 0, instanceId: 'local-engine' });
+
+      // tick() should NOT reclaim: different host, stale but under hard ceiling
+      const r = await engine.tick();
+
+      expect(r.task).toBeNull();
+      expect(existsSync(claimDir)).toBe(true);
+    } finally {
+      if (originalHeartbeatMs === undefined) delete process.env.ORCH_HEARTBEAT_MS;
+      else process.env.ORCH_HEARTBEAT_MS = originalHeartbeatMs;
+      if (originalClaimMaxMs === undefined) delete process.env.ORCH_CLAIM_MAX_MS;
+      else process.env.ORCH_CLAIM_MAX_MS = originalClaimMaxMs;
+    }
+  });
+
+  it('different-host claim past claimMaxMs IS reclaimed', async () => {
+    const originalHeartbeatMs = process.env.ORCH_HEARTBEAT_MS;
+    const originalClaimMaxMs = process.env.ORCH_CLAIM_MAX_MS;
+    // Short heartbeat and short hard ceiling for testing
+    process.env.ORCH_HEARTBEAT_MS = '1000';
+    process.env.ORCH_CLAIM_MAX_MS = '2000';
+
+    try {
+      const taskDir = resolve(dir, 'in_progress', 'T01-cross-host-timeout');
+      mkdirSync(taskDir, { recursive: true });
+
+      const claimDir = join(taskDir, '.claim');
+      mkdirSync(claimDir, { recursive: true });
+      // Claim from a different host with dead PID, started long ago
+      writeFileSync(join(claimDir, 'owner'),
+        `pid:999999\nstarted:${Date.now() - 10000}\ninstance:remote-inst\nhost:other-host\n`);
+      writeFileSync(join(claimDir, 'heartbeat'), '');
+      writeFileSync(join(taskDir, '.status'), 'IN_PROGRESS:remote-inst\n');
+
+      // Heartbeat older than claimMaxMs (2s)
+      const veryOldTime = (Date.now() - 10000) / 1000;
+      utimesSync(join(claimDir, 'heartbeat'), veryOldTime, veryOldTime);
+
+      const engine = new Engine(dir, { benchmark: () => 0, instanceId: 'local-engine' });
+
+      // tick() should reclaim: past hard ceiling
+      const r = await engine.tick();
+
+      expect(r.task).not.toBeNull();
+      expect(r.task!.number).toBe(1);
+    } finally {
+      if (originalHeartbeatMs === undefined) delete process.env.ORCH_HEARTBEAT_MS;
+      else process.env.ORCH_HEARTBEAT_MS = originalHeartbeatMs;
       if (originalClaimMaxMs === undefined) delete process.env.ORCH_CLAIM_MAX_MS;
       else process.env.ORCH_CLAIM_MAX_MS = originalClaimMaxMs;
     }

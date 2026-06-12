@@ -536,4 +536,36 @@ describe('TaskState', () => {
     expect(statusToShard(Status.CONVERGED)).toBe('converged');
     expect(statusToShard('IN_PROGRESS:orchestrator-1')).toBe('in_progress');
   });
+
+  // ── FIX 2: claim writes host line and claimOwner.host parses it ────
+
+  it('claim writes a host: line in the owner file', async () => {
+    const { hostname } = await import('node:os');
+    const { readFileSync } = await import('node:fs');
+    const t = make(dir, 1, 'a');
+    t.claim('test-instance');
+    const raw = readFileSync(join(t.directory, '.claim', 'owner'), 'utf-8');
+    expect(raw).toContain(`host:${hostname()}`);
+  });
+
+  it('claimOwner.host returns the hostname from the owner file', async () => {
+    const { hostname } = await import('node:os');
+    const t = make(dir, 1, 'a');
+    t.claim('test-instance');
+    expect(t.claimOwner).not.toBeNull();
+    expect(t.claimOwner!.host).toBe(hostname());
+  });
+
+  it('claimOwner.host returns empty string when host line missing (backward compat)', () => {
+    // Simulate an older owner file without the host: line
+    const taskDir = resolve(dir, 'pending', 'T01-old-claim');
+    mkdirSync(taskDir, { recursive: true });
+    const claimDir = join(taskDir, '.claim');
+    mkdirSync(claimDir, { recursive: true });
+    writeFileSync(join(claimDir, 'owner'), 'pid:1234\nstarted:1000\ninstance:old-inst\n');
+    writeFileSync(join(taskDir, '.status'), 'IN_PROGRESS:old-inst\n');
+    const t = new TaskState(taskDir);
+    expect(t.claimOwner).not.toBeNull();
+    expect(t.claimOwner!.host).toBe('');
+  });
 });

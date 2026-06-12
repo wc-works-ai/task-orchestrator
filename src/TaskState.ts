@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, renameSync, readdirSync, cpSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { resolve, basename, join, dirname } from 'node:path';
+import { hostname } from 'node:os';
 import {
   Status, inProgress, isInProgress, isActionable,
   CONVERGENCE_THRESHOLD, MAX_FAILURES, statusToShard, SHARDS,
@@ -54,6 +55,7 @@ interface ClaimOwner {
   readonly pid: number;
   readonly startedAt: number;
   readonly instanceId: string;
+  readonly host: string;
 }
 
 // ── TaskState ───────────────────────────────────────────────────────────────
@@ -207,7 +209,7 @@ export class TaskState {
     const p = join(this.#dir, D_CLAIM);
     try { mkdirSync(p); } catch { return false; }
     writeFileSync(join(p, F_OWNER),
-      `pid:${process.pid}\nstarted:${Date.now()}\ninstance:${instanceId}\n`);
+      `pid:${process.pid}\nstarted:${Date.now()}\ninstance:${instanceId}\nhost:${hostname()}\n`);
     writeFileSync(join(p, F_BEAT), '');
     this.status = inProgress(instanceId);
     return true;
@@ -222,6 +224,7 @@ export class TaskState {
         pid:        parseInt(raw.match(/pid:(\d+)/)?.[1] ?? '0', 10),
         startedAt:  parseInt(raw.match(/started:(\d+)/)?.[1] ?? '0', 10),
         instanceId: raw.match(/instance:(.+)/)?.[1] ?? '',
+        host:       raw.match(/host:(.+)/)?.[1] ?? '',
       };
     } catch { return null; }
   }

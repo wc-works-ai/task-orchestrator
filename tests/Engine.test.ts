@@ -2,6 +2,7 @@ import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { rm } from 'node:fs/promises';
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
+import { hostname } from 'node:os';
 import { Engine } from '../src/Engine.js';
 import { TaskState, Status, CONVERGENCE_THRESHOLD, MAX_FAILURES } from '../src/TaskState.js';
 
@@ -354,7 +355,7 @@ describe('Engine', () => {
     // Claim it
     const claimDir = join(taskDir, '.claim');
     mkdirSync(claimDir, { recursive: true });
-    writeFileSync(join(claimDir, 'owner'), 'pid:99999\n');
+    writeFileSync(join(claimDir, 'owner'), `pid:99999\nhost:${hostname()}\n`);
     writeFileSync(join(claimDir, 'heartbeat'), 'stale');
 
     // Set status to IN_PROGRESS
@@ -428,14 +429,14 @@ describe('Engine', () => {
     const claimDir = join(taskDir, '.claim');
     mkdirSync(claimDir, { recursive: true });
     writeFileSync(join(claimDir, 'heartbeat'), 'stale');
-    // No owner file — ownerPid catch returns null
+    // Owner file with host but invalid pid — ownerPid returns null (parseInt fails)
+    writeFileSync(join(claimDir, 'owner'), `pid:\nhost:${hostname()}\n`);
     writeFileSync(join(taskDir, '.status'), 'IN_PROGRESS:orchestrator-dead\n');
 
     const oldTime = (Date.now() - 400_000) / 1000;
     utimesSync(join(claimDir, 'heartbeat'), oldTime, oldTime);
 
-    // heartbeatAge >300000 (stale), ownerPid returns null (catch, no owner file)
-    // pid === null → pid !== null is false → task should be recovered
+    // heartbeatAge >300000 (stale), ownerPid returns null (invalid), same host → recovered
     const engine = new Engine(dir, { benchmark: zero, instanceId: 'recover-test' });
     const r = await engine.tick();
     // Task recovered to FAILED → picked up → converged (benchmark = zero)
@@ -598,7 +599,7 @@ describe('Engine', () => {
     mkdirSync(taskDir, { recursive: true });
     const claimDir = join(taskDir, '.claim');
     mkdirSync(claimDir, { recursive: true });
-    writeFileSync(join(claimDir, 'owner'), 'pid:abc\n'); // non-numeric pid
+    writeFileSync(join(claimDir, 'owner'), `pid:abc\nhost:${hostname()}\n`); // non-numeric pid, local host
     writeFileSync(join(claimDir, 'heartbeat'), 'stale');
     writeFileSync(join(taskDir, '.status'), 'IN_PROGRESS:orchestrator-dead\n');
     const oldTime = (Date.now() - 400_000) / 1000;
