@@ -220,20 +220,20 @@ if (values.status) {
   for (const k of nums) {
     const t = all.get(String(k));
     if (!t) continue;
-    let icon = '❓', label = 'UNKNOWN';
-    if (t.isConverged) { icon = '✅'; label = 'CONVERGED'; }
-    else if (t.isFailed) { icon = '❌'; label = 'FAILED'; }
-    else if (t.isBlocked) { icon = '🚫'; label = 'BLOCKED'; }
-    else if (t.isPending) { icon = '⬜'; label = 'PENDING'; }
-    else if (t.isInProgress) { icon = '🔄'; label = 'RUNNING'; }
-    const deps = t.dependencies.length > 0 ? `  ← depends: ${t.dependencies.join(', ')}` : '';
+    let label = 'UNKNOWN';
+    if (t.isConverged) label = 'CONVERGED';
+    else if (t.isFailed) label = 'FAILED';
+    else if (t.isBlocked) label = 'BLOCKED';
+    else if (t.isPending) label = 'PENDING';
+    else if (t.isInProgress) label = 'RUNNING';
+    const deps = t.dependencies.length > 0 ? `  <- depends: ${t.dependencies.join(', ')}` : '';
     const goal = t.goal.length > 55 ? t.goal.slice(0, 52) + '...' : t.goal;
-    console.log(`  ${icon} ${label.padEnd(9)} T${k} ${goal}${deps}`);
+    console.log(`  ${label.padEnd(9)} T${k}  ${goal}${deps}`);
     if (t.isBlocked) {
       console.log(`       blocked after ${t.failureCount} failures`);
     }
   }
-  console.log(`  ─ ${all.size} total\n`);
+  console.log(`  -- ${all.size} total\n`);
   process.exit(0);
 }
 
