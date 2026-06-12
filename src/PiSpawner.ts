@@ -32,6 +32,8 @@ interface RunState {
   lineBuf: string;
   lastProgress: number;
   lastStatus: number;
+  lastHeartbeat: number;
+  readonly startedAt: number;
   progressStale: boolean;
 }
 
@@ -200,6 +202,7 @@ export class PiSpawner implements CodingAgent {
       });
 
       let aborted = false;
+      const now = Date.now();
       const state: RunState = {
         rawBytes: 0,
         iterations: 0,
@@ -208,8 +211,10 @@ export class PiSpawner implements CodingAgent {
         authProviders: new Set<string>(),
         tokenUsage: PiSpawner.#emptyTokenUsage(),
         lineBuf: '',
-        lastProgress: Date.now(),
-        lastStatus: Date.now(),
+        lastProgress: now,
+        lastStatus: now,
+        lastHeartbeat: now,
+        startedAt: now,
         progressStale: false,
       };
       let terminationError = '';
@@ -354,13 +359,21 @@ export class PiSpawner implements CodingAgent {
       escalateTermination(error);
       return;
     }
-    if (quietFor < this.#progressStatusInterval) return;
-    if (now - state.lastStatus < this.#progressStatusInterval) return;
-    state.lastStatus = now;
-    console.log(
-      `  still running: no agent output for ${PiSpawner.#formatDuration(quietFor)} ` +
-      `(auto-stop at ${PiSpawner.#formatDuration(this.#progressTimeout)})`,
-    );
+    // Silence-based warning (agent not producing any output)
+    if (quietFor >= this.#progressStatusInterval && now - state.lastStatus >= this.#progressStatusInterval) {
+      state.lastStatus = now;
+      console.log(
+        `  still running: no agent output for ${PiSpawner.#formatDuration(quietFor)} ` +
+        `(auto-stop at ${PiSpawner.#formatDuration(this.#progressTimeout)})`,
+      );
+      return;
+    }
+    // Activity heartbeat (agent IS producing output but user sees nothing)
+    if (now - state.lastHeartbeat >= this.#progressStatusInterval) {
+      state.lastHeartbeat = now;
+      const elapsed = PiSpawner.#formatDuration(now - state.startedAt);
+      console.log(`  agent working: ${elapsed} elapsed, ${state.iterations} iterations, ${PiSpawner.#formatBytes(state.rawBytes)} received`);
+    }
   }
 
   /** Extract provider auth failures from pi output. */
@@ -389,6 +402,12 @@ export class PiSpawner implements CodingAgent {
 
   static #formatDuration(ms: number): string {
     return ms < 1000 ? `${ms}ms` : `${Math.round(ms / 1000)}s`;
+  }
+
+  static #formatBytes(bytes: number): string {
+    if (bytes < 1024) return `${bytes}B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
   }
 
   static #positiveInt(value: number, fallback: number): number {

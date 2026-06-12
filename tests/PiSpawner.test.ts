@@ -1032,6 +1032,70 @@ describe('PiSpawner', () => {
     expect(mock.kill).not.toHaveBeenCalled();
   });
 
+  it('prints activity heartbeat when agent is actively producing output', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      const p = new PiSpawner({
+        progressTimeout: 2000,
+        progressCheckInterval: 15,
+        progressStatusInterval: 40,
+      }).spawn(t, dir);
+
+      // Emit enough data to exercise KB formatting in heartbeat
+      const chunk = Buffer.from('x'.repeat(2048) + '\n');
+      const interval = setInterval(() => {
+        mock.stdout!.emit('data', chunk);
+      }, 10);
+
+      // Wait long enough for 1-2 heartbeat intervals to fire
+      await new Promise(r => setTimeout(r, 100));
+      clearInterval(interval);
+      mock.emit('close', 0);
+      await p;
+
+      const output = joinedCalls(logSpy);
+      expect(output).toContain('agent working:');
+      expect(output).toContain('elapsed');
+      expect(output).toMatch(/\d+(\.\d+)?KB received/);
+      // Should NOT show the silence warning (agent was active)
+      expect(output).not.toContain('still running: no agent output');
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('activity heartbeat formats MB for large output', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      const p = new PiSpawner({
+        progressTimeout: 2000,
+        progressCheckInterval: 15,
+        progressStatusInterval: 40,
+      }).spawn(t, dir);
+
+      // One large chunk to hit MB formatting
+      mock.stdout!.emit('data', Buffer.from('x'.repeat(1_200_000)));
+      await new Promise(r => setTimeout(r, 60));
+      mock.emit('close', 0);
+      await p;
+
+      const output = joinedCalls(logSpy);
+      expect(output).toMatch(/\d+\.\d+MB received/);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
   it('allows configuring progress timeout', async () => {
     // Just verify we can construct with different values without error
     expect(() => new PiSpawner({ progressTimeout: 5000 })).not.toThrow();
