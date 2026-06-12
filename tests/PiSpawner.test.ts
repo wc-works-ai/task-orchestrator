@@ -1,6 +1,7 @@
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { rm } from 'node:fs/promises';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
@@ -27,7 +28,7 @@ function mockChild(): ChildProcess {
 }
 
 function setup() {
-  const dir = mkdtempSync(join(process.cwd(), 'pi-spawn-'));
+  const dir = mkdtempSync(resolve(tmpdir(), 'pi-spawn-'));
   for (const s of ['pending', 'in_progress']) mkdirSync(resolve(dir, s), { recursive: true });
   return dir;
 }

@@ -1,15 +1,14 @@
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { rm } from 'node:fs/promises';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readdirSync, rmSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { TaskState, Status, CONVERGENCE_THRESHOLD, inProgress } from '../src/TaskState.js';
 import { MAX_FAILURES } from '../src/Status.js';
 import { statusToShard } from '../src/Status.js';
 
 function setup() {
-  const base = resolve(process.cwd(), '.test-tmp');
-  mkdirSync(base, { recursive: true });
-  const dir = mkdtempSync(join(base, 'ts-test-'));
+  const dir = mkdtempSync(resolve(tmpdir(), 'ts-test-'));
   for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
     mkdirSync(resolve(dir, s), { recursive: true });
   }
@@ -805,9 +804,7 @@ describe('TaskState', () => {
   });
 
   it('pruneConverged: returns silently when converged dir is missing', () => {
-    const base2 = resolve(process.cwd(), '.test-tmp');
-    mkdirSync(base2, { recursive: true });
-    const freshDir = mkdtempSync(join(base2, 'prune-miss-'));
+    const freshDir = mkdtempSync(resolve(tmpdir(), 'prune-miss-'));
     try {
       expect(() => TaskState.pruneConverged(freshDir, 2)).not.toThrow();
     } finally {
@@ -818,9 +815,7 @@ describe('TaskState', () => {
   // ── countConverged ─────────────────────────────────────────────────
 
   it('countConverged: returns 0 when converged dir is missing', () => {
-    const base2 = resolve(process.cwd(), '.test-tmp');
-    mkdirSync(base2, { recursive: true });
-    const freshDir = mkdtempSync(join(base2, 'cc-miss-'));
+    const freshDir = mkdtempSync(resolve(tmpdir(), 'cc-miss-'));
     try {
       expect(TaskState.countConverged(freshDir)).toBe(0);
     } finally {

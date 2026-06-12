@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { formatOverview, formatRunSummary, printOverview, printRunSummary } from '../src/RunReport.js';
 import { Status, TaskState } from '../src/TaskState.js';
 
 function setup(): string {
-  const dir = mkdtempSync(resolve(process.cwd(), '.test-run-report-'));
+  const dir = mkdtempSync(resolve(tmpdir(), '.test-run-report-'));
   for (const shard of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
     mkdirSync(resolve(dir, shard), { recursive: true });
   }

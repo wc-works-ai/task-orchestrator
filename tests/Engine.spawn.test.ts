@@ -1,12 +1,13 @@
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { rm } from 'node:fs/promises';
 import { mkdtempSync, mkdirSync, existsSync, writeFileSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Engine, MergeRecoveryAction } from '../src/Engine.js';
 import { TaskState, Status, type TaskInfo } from '../src/TaskState.js';
 
 function setup() {
-  const dir = mkdtempSync(resolve('/tmp', 'eng-ts-'));
+  const dir = mkdtempSync(resolve(tmpdir(), 'eng-ts-'));
   for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
     mkdirSync(resolve(dir, s), { recursive: true });
   }

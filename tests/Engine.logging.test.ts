@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Engine } from '../src/Engine.js';
 import { Status, TaskState } from '../src/TaskState.js';
 
 function setup(): string {
-  const dir = mkdtempSync(resolve(process.cwd(), '.test-engine-logging-'));
+  const dir = mkdtempSync(resolve(tmpdir(), '.test-engine-logging-'));
   for (const shard of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
     mkdirSync(resolve(dir, shard), { recursive: true });
   }

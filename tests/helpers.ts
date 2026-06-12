@@ -1,9 +1,10 @@
 import { mkdtempSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { TaskState, Status } from '../src/TaskState.js';
 
 export function setupTestDir() {
-  const dir = mkdtempSync(resolve('/tmp', 'orch-test-'));
+  const dir = mkdtempSync(resolve(tmpdir(), 'orch-test-'));
   for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
     mkdirSync(resolve(dir, s), { recursive: true });
   }

@@ -1,12 +1,13 @@
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { rm } from 'node:fs/promises';
 import { mkdtempSync, existsSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { execFileSync, execSync } from 'node:child_process';
 import { Worktree, MergeConflictError } from '../src/Worktree.js';
 
 function setup() {
-  const dir = mkdtempSync(resolve('/tmp', 'wt-test-'));
+  const dir = mkdtempSync(resolve(tmpdir(), 'wt-test-'));
   // Init a git repo
   execSync('git init && git config user.email test@test && git config user.name test && git commit --allow-empty -m init', { cwd: dir });
   return dir;
@@ -160,7 +161,7 @@ describe('Worktree', () => {
   it('uses fallback when git config is unset', async () => {
     // Create a fresh repo without git user config
     const { mkdtempSync } = await import('node:fs');
-    const unsetRepo = mkdtempSync(resolve('/tmp', 'wt-noconfig-'));
+    const unsetRepo = mkdtempSync(resolve(tmpdir(), 'wt-noconfig-'));
     try {
       execSync('git init && git commit --allow-empty -m init', { cwd: unsetRepo });
       const wt = new Worktree(unsetRepo, { name: 'T01-test' });
@@ -181,7 +182,7 @@ describe('Worktree', () => {
 
   it('gitConfig returns empty for unset config', async () => {
     const { mkdtempSync } = await import('node:fs');
-    const bareRepo = mkdtempSync(resolve('/tmp', 'wt-bare-'));
+    const bareRepo = mkdtempSync(resolve(tmpdir(), 'wt-bare-'));
     try {
       execSync('git init && git commit --allow-empty -m init', { cwd: bareRepo });
       // Create a worktree which calls #gitConfig for user.name/user.email

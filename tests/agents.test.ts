@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createCodingAgent } from '../src/agents.js';
@@ -23,7 +24,7 @@ describe('createCodingAgent', () => {
   let dir = '';
 
   beforeEach(() => {
-    dir = mkdtempSync(resolve(process.cwd(), '.test-agents-'));
+    dir = mkdtempSync(resolve(tmpdir(), '.test-agents-'));
     mkdirSync(resolve(dir, 'pending'), { recursive: true });
     vi.mocked(spawnSync).mockReturnValue({ status: 0, stdout: '1.0.0\n', stderr: '' } as ReturnType<typeof spawnSync>);
   });
