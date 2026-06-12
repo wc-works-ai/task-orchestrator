@@ -357,13 +357,19 @@ try {
     });
     if (engine.environmentError) {
       await printRunSummary(dir, n);
-      console.error(`\n  ❌ Environment issue: ${engine.environmentError}`);
-      console.error('  Stopped without consuming any task retries. Fix the environment (e.g. set the API key) and rerun.\n');
+      console.error(`\n  ❌ Fatal: ${engine.environmentError}`);
+      console.error('  The loop stopped because this affects every task (not a single-task failure).');
+      console.error('  No task retries were consumed — fix the cause and rerun.\n');
       process.exit(1);
     }
     await printRunSummary(dir, n);
-    if (infinite) console.log(`\n🛑 stopped after ${n} ticks\n`);
-    else console.log(`\n🎉 ${n} ticks — all done\n`);
+    if (engine.stopReason === 'signal') {
+      console.log(`\n🛑 Stopped by stop signal (--stop / .stop) after ${n} ticks.\n`);
+    } else if (infinite) {
+      console.log(`\n🛑 stopped after ${n} ticks\n`);
+    } else {
+      console.log(`\n🎉 ${n} ticks — all done\n`);
+    }
   }
 } catch (e: unknown) {
   const message = e instanceof Error ? e.message : String(e);

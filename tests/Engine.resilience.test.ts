@@ -106,6 +106,7 @@ describe('Engine resilience', () => {
 
       expect(total).toBe(0);
       expect(engine.environmentError).toBeDefined();
+      expect(engine.stopReason).toBe('environment');
       expect(engine.environmentError).toContain('repeated tick failures');
       expect(engine.environmentError).toContain('10x');
       expect(engine.environmentError).toContain('persistent scan failure');

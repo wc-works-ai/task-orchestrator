@@ -18,6 +18,11 @@ const retryLimitLabel = (limit: number): string => Number.isFinite(limit) ? Stri
 type LogCategory = 'routine' | 'transition' | 'always';
 type SleepFn = (ms: number) => Promise<void>;
 
+/** Why loop() returned. 'signal' = --stop/.stop (intentional); 'environment' =
+ *  fatal, run-wide failure (e.g. auth, repeated tick errors); 'complete' = all
+ *  tasks reached a terminal state (non-infinite/keep-alive). */
+export type StopReason = 'signal' | 'environment' | 'complete';
+
 /** Result of attempting to merge a converged task back to its base branch. */
 type MergeOutcome = 'merged' | 'locked' | 'rework';
 
@@ -76,6 +81,7 @@ export class Engine {
   readonly #sleep: SleepFn;
   readonly #baseBranch: string;
   #environmentError?: string;
+  #stopReason?: StopReason;
   /** Track active worktrees by task number */
   readonly #worktrees = new Map<number, Worktree>();
   /** Track last failure time per task for retry cooldown */
@@ -108,6 +114,7 @@ export class Engine {
 
   get instanceId(): string { return this.#id; }
   get environmentError(): string | undefined { return this.#environmentError; }
+  get stopReason(): StopReason | undefined { return this.#stopReason; }
   get baseBranch(): string { return this.#baseBranch; }
 
   #detectBaseBranch(): string {
@@ -278,8 +285,11 @@ export class Engine {
         const results = await Promise.all(tickPromises);
         consecutiveErrors = 0;
 
-        // Check for stop signal
-        if (results.some(r => r.stopped)) break;
+        // Stop signal (.stop / --stop) or a fatal run-wide failure surfaced by a tick.
+        if (results.some(r => r.stopped)) {
+          this.#stopReason = this.#environmentError ? 'environment' : 'signal';
+          break;
+        }
 
         // Count tasks that completed and check if we're idle
         const tasksCompleted = results.filter(r => r.task !== null);
@@ -294,7 +304,7 @@ export class Engine {
             await sleepFn(idleSleepMs);
             continue;
           }
-          if (!keepAlive || await this.#isRunComplete()) break;
+          if (!keepAlive || await this.#isRunComplete()) { this.#stopReason = 'complete'; break; }
           await sleepFn(idleSleepMs);
           continue;
         }
@@ -312,6 +322,7 @@ export class Engine {
         this.#log(`tick error: ${this.#singleLine(msg)}`, 'always');
         if (consecutiveErrors >= MAX_CONSECUTIVE_TICK_ERRORS) {
           this.#environmentError = `repeated tick failures (${consecutiveErrors}x): ${this.#singleLine(lastErrorMsg)}`;
+          this.#stopReason = 'environment';
           break;
         }
         await sleepFn(idleSleepMs);

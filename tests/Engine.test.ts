@@ -211,6 +211,7 @@ describe('Engine', () => {
     expect(spawnCalls).toBe(1);
     expect(ticks).toBe(0);
     expect(engine.environmentError).toContain('No API key found');
+    expect(engine.stopReason).toBe('environment');
     const all = await TaskState.scan(dir);
     expect(all.get('1')!.status).toBe(Status.FAILED);
     expect(all.get('1')!.failureCount).toBe(0);
@@ -586,10 +587,21 @@ describe('Engine', () => {
     writeFileSync(resolve(dir, '.stop'), '');
     const sleep = vi.fn();
 
-    const total = await new Engine(dir, { benchmark: zero }).loop({ infinite: true, sleep });
+    const engine = new Engine(dir, { benchmark: zero });
+    const total = await engine.loop({ infinite: true, sleep });
 
     expect(total).toBe(0);
     expect(sleep).not.toHaveBeenCalled();
+    expect(engine.stopReason).toBe('signal');
+  });
+
+  it('reports stopReason=complete when a non-infinite run finishes', async () => {
+    make(dir, 1, 'a');
+    const engine = new Engine(dir, { benchmark: zero });
+
+    await engine.loop();
+
+    expect(engine.stopReason).toBe('complete');
   });
 
   it('resets worktree on failed task retry', async () => {
