@@ -221,6 +221,7 @@ export class Engine {
       }, 30_000);
       /* c8 ignore stop */
       try {
+        this.#log(`T${task.taskNumber} checking: ${this.#singleLine(task.goal)} (running benchmark…)`);
         let metric = await this.#run(task);
         this.#log(`T${task.taskNumber} check: metric=${metric}${metric === 0 ? ' (done)' : ' (needs work; target is 0)'}`);
 
