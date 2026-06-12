@@ -37,5 +37,6 @@ export const env = {
   get agentLogRaw()        { return bool(process.env.ORCH_AGENT_LOG_RAW); },
   get logLevel()           { return logLevel(process.env.ORCH_LOG_LEVEL); },
   get keepAlive()          { return bool(process.env.ORCH_KEEP_ALIVE); },
+  get infinite()           { return bool(process.env.ORCH_INFINITE); },
   get idleSleepMs()        { return ms(process.env.ORCH_IDLE_SLEEP_MS, 5000); },
 } as const;

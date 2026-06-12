@@ -4,6 +4,7 @@ import { env } from '../src/env.js';
 describe('env', () => {
   const originalMaxFailures = process.env.ORCH_MAX_FAILURES;
   const originalKeepAlive = process.env.ORCH_KEEP_ALIVE;
+  const originalInfinite = process.env.ORCH_INFINITE;
   const originalIdleSleepMs = process.env.ORCH_IDLE_SLEEP_MS;
   const originalAgent = process.env.ORCH_AGENT;
   const originalReasoning = process.env.ORCH_REASONING;
@@ -13,6 +14,8 @@ describe('env', () => {
     else process.env.ORCH_MAX_FAILURES = originalMaxFailures;
     if (originalKeepAlive === undefined) delete process.env.ORCH_KEEP_ALIVE;
     else process.env.ORCH_KEEP_ALIVE = originalKeepAlive;
+    if (originalInfinite === undefined) delete process.env.ORCH_INFINITE;
+    else process.env.ORCH_INFINITE = originalInfinite;
     if (originalIdleSleepMs === undefined) delete process.env.ORCH_IDLE_SLEEP_MS;
     else process.env.ORCH_IDLE_SLEEP_MS = originalIdleSleepMs;
     if (originalAgent === undefined) delete process.env.ORCH_AGENT;
@@ -36,6 +39,13 @@ describe('env', () => {
     process.env.ORCH_IDLE_SLEEP_MS = '25';
     expect(env.keepAlive).toBe(true);
     expect(env.idleSleepMs).toBe(25);
+  });
+
+  it('defaults infinite to false and reads override', () => {
+    delete process.env.ORCH_INFINITE;
+    expect(env.infinite).toBe(false);
+    process.env.ORCH_INFINITE = 'on';
+    expect(env.infinite).toBe(true);
   });
 
   it('defaults agent to pi and reasoning to undefined', () => {

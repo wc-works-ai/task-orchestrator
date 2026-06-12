@@ -57,6 +57,7 @@ export interface EngineOptions {
   readonly worktreesDir?: string; // override default .worktrees/ location
   readonly retryCooldownMs?: number; // min ms between spawn retries (0 = no cooldown, default 30000)
   readonly keepAlive?: boolean;
+  readonly infinite?: boolean;
   readonly idleSleepMs?: number;
   readonly sleep?: SleepFn;
   readonly onTick?: (result: TickResult | TickNull, total: number) => void | Promise<void>;
@@ -73,6 +74,7 @@ export class Engine {
   readonly #id: string;
   readonly #retryCooldownMs: number;
   readonly #keepAlive: boolean;
+  readonly #infinite: boolean;
   readonly #idleSleepMs: number;
   readonly #sleep: SleepFn;
   /** Track active worktrees by task number */
@@ -91,6 +93,7 @@ export class Engine {
     this.#id = opts.instanceId ?? `${process.pid}_${Date.now()}`;
     this.#retryCooldownMs = opts.retryCooldownMs ?? 0; // default: no cooldown
     this.#keepAlive = opts.keepAlive ?? env.keepAlive;
+    this.#infinite = opts.infinite ?? env.infinite;
     this.#idleSleepMs = opts.idleSleepMs ?? env.idleSleepMs;
     this.#sleep = opts.sleep ?? sleep;
   }
@@ -120,7 +123,7 @@ export class Engine {
   async tick(): Promise<TickResult | TickNull> {
     if (existsSync(this.#stopFile)) {
       try { rmSync(this.#stopFile); } catch {}
-      return { task: null, metric: 0, converged: false };
+      return { task: null, metric: 0, converged: false, stopped: true };
     }
     this.#recover();
     await TaskState.scan(this.#dir);
@@ -248,15 +251,27 @@ export class Engine {
   async loop(opts: EngineOptions = {}): Promise<number> {
     let total = 0;
     const keepAlive = opts.keepAlive ?? this.#keepAlive;
+    const infinite = opts.infinite ?? this.#infinite;
     const idleSleepMs = opts.idleSleepMs ?? this.#idleSleepMs;
     const sleepFn = opts.sleep ?? this.#sleep;
+    let announcedIdle = false;
     while (true) {
       const result = await this.tick();
+      if (result.stopped) break;
       if (!result.task) {
+        if (infinite) {
+          if (!announcedIdle) {
+            this.#log('idle: waiting for new tasks or for blocked/failed tasks to be addressed (infinite mode; --stop to exit)');
+            announcedIdle = true;
+          }
+          await sleepFn(idleSleepMs);
+          continue;
+        }
         if (!keepAlive || await this.#isRunComplete()) break;
         await sleepFn(idleSleepMs);
         continue;
       }
+      announcedIdle = false;
       total++;
       if (opts.onTick) await opts.onTick(result, total);
     }

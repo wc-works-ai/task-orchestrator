@@ -1,12 +1,14 @@
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { rm } from 'node:fs/promises';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { Engine } from '../src/Engine.js';
 import { TaskState, Status, CONVERGENCE_THRESHOLD, MAX_FAILURES } from '../src/TaskState.js';
 
 function setup() {
-  const dir = mkdtempSync(resolve('/tmp', 'eng-ts-'));
+  const root = resolve('test-artifacts');
+  mkdirSync(root, { recursive: true });
+  const dir = mkdtempSync(resolve(root, 'eng-ts-'));
   for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
     mkdirSync(resolve(dir, s), { recursive: true });
   }
@@ -418,6 +420,69 @@ describe('Engine', () => {
     writeFileSync(resolve(dir, '.stop'), '');
     const r = await new Engine(dir, { benchmark: zero }).tick();
     expect(r.task).toBeNull();
+    expect(r.stopped).toBe(true);
+    expect(existsSync(resolve(dir, '.stop'))).toBe(false);
+  });
+
+  it('infinite loop idles when all tasks are terminal until stopped', async () => {
+    make(dir, 1, 'done', { status: Status.CONVERGED });
+    make(dir, 2, 'blocked', { status: Status.BLOCKED });
+    let sleeps = 0;
+    const sleep = vi.fn(async () => {
+      sleeps++;
+      if (sleeps === 3) writeFileSync(resolve(dir, '.stop'), '');
+    });
+
+    const total = await new Engine(dir, { benchmark: zero }).loop({ infinite: true, idleSleepMs: 0, sleep });
+
+    expect(total).toBe(0);
+    expect(sleep).toHaveBeenCalledTimes(3);
+  });
+
+  it('keep-alive still stops immediately when complete without infinite mode', async () => {
+    make(dir, 1, 'done', { status: Status.CONVERGED });
+    make(dir, 2, 'blocked', { status: Status.BLOCKED });
+    const sleep = vi.fn();
+
+    const total = await new Engine(dir, { benchmark: zero }).loop({ keepAlive: true, infinite: false, sleep });
+
+    expect(total).toBe(0);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('infinite loop resumes work when a new task becomes ready', async () => {
+    const seen: number[] = [];
+    let sleeps = 0;
+    let processed = false;
+    const sleep = vi.fn(async () => {
+      sleeps++;
+      if (sleeps === 2) make(dir, 1, 'new-task');
+      if (processed) writeFileSync(resolve(dir, '.stop'), '');
+    });
+
+    const total = await new Engine(dir, { benchmark: zero }).loop({
+      infinite: true,
+      idleSleepMs: 0,
+      sleep,
+      onTick: (r) => {
+        seen.push(r.task!.number);
+        processed = true;
+      },
+    });
+
+    expect(total).toBe(CONVERGENCE_THRESHOLD);
+    expect(seen).toEqual([1, 1, 1]);
+    expect(sleep).toHaveBeenCalledTimes(3);
+  });
+
+  it('explicit stop breaks infinite loop promptly', async () => {
+    writeFileSync(resolve(dir, '.stop'), '');
+    const sleep = vi.fn();
+
+    const total = await new Engine(dir, { benchmark: zero }).loop({ infinite: true, sleep });
+
+    expect(total).toBe(0);
+    expect(sleep).not.toHaveBeenCalled();
   });
 
   it('resets worktree on failed task retry', async () => {

@@ -67,6 +67,7 @@ const { values, positionals } = await parseArgs({
     scope:  { type: 'string', default: '' },
     once:   { type: 'boolean', default: false },
     'keep-alive': { type: 'boolean', default: false },
+    infinite: { type: 'boolean', default: false },
     'auto-stash': { type: 'boolean', default: false },
     worktrees: { type: 'string', default: '' },
     help:   { type: 'boolean', short: 'h', default: false },
@@ -84,6 +85,8 @@ Task Orchestrator — autonomous task execution
   orchestrator --stop
   orchestrator --task <n>
   orchestrator --keep-alive  wait through transient idle/cooldown periods
+  orchestrator --infinite    daemon mode; wait for new/addressed tasks, stop with --stop
+  orchestrator --loop        alias for --infinite
   orchestrator --auto-stash  stash parent repo changes before merging
   orchestrator --repo <dir>     override target repo/folder (default: current directory)
   orchestrator --state-root <dir> override state root (default: <home>\\task-orchestrator)
@@ -109,7 +112,8 @@ Environment variables:
   ORCH_CONVERGE=<n>          zero-runs to converge (default: 3)
   ORCH_MAX_FAILURES=<n|infinite> failed attempts before BLOCKED (default: 5)
   ORCH_KEEP_ALIVE=1          wait through transient idle/cooldown periods
-  ORCH_IDLE_SLEEP_MS=<ms>    keep-alive idle sleep interval (default: 5000)
+  ORCH_INFINITE=1            never exit on idle; wait for new or addressed tasks
+  ORCH_IDLE_SLEEP_MS=<ms>    keep-alive/infinite idle sleep interval (default: 5000)
   ORCH_HEARTBEAT_MS=<ms>     stale claim timeout (default: 300000)
   ORCH_PROGRESS_TIMEOUT=<ms> kill agent after no output (default: 120000)
   ORCH_AGENT_LOG_MAX_BYTES=<bytes> cap agent.log size (default: 10485760)
@@ -138,6 +142,7 @@ const dir = paths.tasks;
 const worktreesDir = paths.worktrees;
 const autoStash = values['auto-stash'] || env.autoStash;
 const keepAlive = values['keep-alive'] || env.keepAlive;
+const infinite = values.infinite || values.loop || env.infinite;
 
 console.log(`repo: ${repo}`);
 console.log(`tasks: ${dir}`);
@@ -293,7 +298,7 @@ try {
       console.log('Nothing actionable.');
     }
   } else {
-    console.log('Running until tasks complete');
+    console.log(infinite ? 'Running in infinite mode; stop with --stop' : 'Running until tasks complete');
     const n = await engine.loop({
       onTick: async (r, total) => {
         if (r.task) {
@@ -304,9 +309,11 @@ try {
         await printOverview(dir, total);
       },
       keepAlive,
+      infinite,
     });
     await printRunSummary(dir, n);
-    console.log(`\n🎉 ${n} ticks — all done\n`);
+    if (infinite) console.log(`\n🛑 stopped after ${n} ticks\n`);
+    else console.log(`\n🎉 ${n} ticks — all done\n`);
   }
 } catch (e: unknown) {
   const message = e instanceof Error ? e.message : String(e);

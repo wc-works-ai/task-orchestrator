@@ -37,12 +37,14 @@ export interface TickResult {
   readonly task: TaskInfo;
   readonly metric: number;
   readonly converged: boolean;
+  readonly stopped?: false;
 }
 
 export interface TickNull {
   readonly task: null;
   readonly metric: 0;
   readonly converged: false;
+  readonly stopped?: boolean;
 }
 
 // ── Claim types ─────────────────────────────────────────────────────────────

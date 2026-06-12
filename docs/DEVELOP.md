@@ -28,7 +28,8 @@ TDD + SOLID. Read `TESTING.md` first for test conventions.
 | `ORCH_CONVERGE` | `3` | Zero-runs to converge |
 | `ORCH_MAX_FAILURES` | `5` | Failed attempts before BLOCKED; integer >= 1 or `infinite` |
 | `ORCH_KEEP_ALIVE` | unset | Keep looping through transient idle/cooldown periods |
-| `ORCH_IDLE_SLEEP_MS` | `5000` | Sleep interval between keep-alive idle ticks |
+| `ORCH_INFINITE` | unset | Never exit on idle; wait for new or addressed tasks until stopped |
+| `ORCH_IDLE_SLEEP_MS` | `5000` | Sleep interval between keep-alive/infinite idle ticks |
 | `ORCH_WORKTREES` | `<state-root>\<repo-slug>\worktrees` | Worktree directory override |
 | `ORCH_HEARTBEAT_MS` | `300000` | Stale claim timeout |
 | `ORCH_AGENT_LOG_MAX_BYTES` | `10485760` | Maximum `agent.log` size before older output is truncated |
@@ -37,7 +38,7 @@ TDD + SOLID. Read `TESTING.md` first for test conventions.
 
 CLI flags override env vars. See `orchestrator --help`.
 
-Loop mode prints an `Overview:` counts line after each tick and a final `Summary:` with one line per task.
+Loop mode prints an `Overview:` counts line after each tick and a final `Summary:` with one line per task. Infinite/daemon mode (`--infinite`, `--loop`, or `ORCH_INFINITE`) never exits on idle; it polls every `ORCH_IDLE_SLEEP_MS` for new tasks or for BLOCKED/FAILED tasks to be addressed, and exits only after `--stop`.
 
 Unrecoverable merge failures park the task as BLOCKED, keep its worktree, and let the run continue.
 

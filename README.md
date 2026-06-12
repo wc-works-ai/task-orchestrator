@@ -5,7 +5,7 @@ Autonomous task execution engine. Spawns AI agents to complete tasks defined in 
 ```
 $ orchestrator add "fix-auth-bug" --goal "Fix authentication timeout" --metric "pass_count" --scope "src/auth.ts tests/auth.test.ts"
 $ orchestrator               # run one task
-$ orchestrator --loop         # run until all tasks converge
+$ orchestrator --loop         # daemon mode: wait forever until --stop
 $ orchestrator --status       # show dashboard
 ```
 
@@ -42,6 +42,7 @@ If merge-back is blocked, the task is marked BLOCKED and the worktree is kept fo
 Agent summaries include total token usage when the spawned agent reports usage data. `agent.log` is summary-only by default for `pi`; set `ORCH_AGENT_LOG_RAW=1` to also write raw spawned-agent stdout/stderr. Raw logs are capped at 10 MiB by default and keep the latest output when truncated.
 
 Long loop runs print an `Overview:` counts line after each tick and a final `Summary:` with one icon-prefixed line per task.
+Infinite/daemon mode (`--infinite`, `--loop`, or `ORCH_INFINITE`) never exits on idle. It polls every `ORCH_IDLE_SLEEP_MS` for new tasks or for BLOCKED/FAILED tasks to be addressed; stop it with `orchestrator --stop`.
 
 ## CLI
 
@@ -55,6 +56,7 @@ Long loop runs print an `Overview:` counts line after each tick and a final `Sum
 | `orchestrator --task <n>` | Force-pick specific task |
 | `orchestrator --auto-stash` | Stash parent repo changes before merging |
 | `orchestrator --keep-alive` | Keep looping through transient idle/cooldown periods |
+| `orchestrator --infinite` / `--loop` | Never exit on idle; wait for new or addressed tasks until `--stop` |
 | `orchestrator --agent <name>` | Coding agent: `pi` (default) or `copilot` |
 | `orchestrator --model <model>` | Model override passed to the coding agent |
 | `orchestrator --reasoning <level>` | Reasoning effort override for supported agents |
@@ -87,7 +89,8 @@ Explicit `--tasks` and `--worktrees` paths override those derived locations.
 | `ORCH_CONVERGE` | `3` | Zero-runs to converge |
 | `ORCH_MAX_FAILURES` | `5` | Failed attempts before BLOCKED; integer >= 1 or `infinite` |
 | `ORCH_KEEP_ALIVE` | unset | Keep looping through transient idle/cooldown periods when set to `1`, `true`, `yes`, or `on` |
-| `ORCH_IDLE_SLEEP_MS` | `5000` | Sleep interval between keep-alive idle ticks |
+| `ORCH_INFINITE` | unset | Never exit on idle; wait for new or addressed tasks until `--stop` |
+| `ORCH_IDLE_SLEEP_MS` | `5000` | Sleep interval between keep-alive/infinite idle ticks |
 | `ORCH_HEARTBEAT_MS` | `300000` | Stale claim timeout |
 | `ORCH_AGENT_LOG_MAX_BYTES` | `10485760` | Maximum `agent.log` size before older output is truncated |
 | `ORCH_AGENT_LOG_RAW` | unset | Write raw spawned-agent stdout/stderr to `agent.log` when set to `1`, `true`, `yes`, or `on` |
