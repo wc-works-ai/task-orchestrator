@@ -1,6 +1,16 @@
 # Developing for Task Orchestrator
 
-TDD + SOLID. Read `TESTING.md` first for test conventions.
+**Test-first (TDD) is mandatory: write a failing test before the implementation it covers.** Then SOLID. Read `TESTING.md` first for test conventions.
+
+## Core workflow — Red → Green → Refactor
+
+```
+1. RED   — Write the test first. Run it and watch it FAIL:   npm run t
+2. GREEN — Write the minimum code to make it pass:           npm run t
+3. REFAC — Clean up with the tests green:                    npm run all
+```
+
+**Rule: never write production code before there is a failing test that demands it.** The only exceptions (no RED needed): pure interfaces/types, constants/enums, and type-only fixes already caught by `tsc`.
 
 **Setup:** `git config core.hooksPath .githooks` (enables pre-commit + pre-push hooks)
 Maintenance: When adding new docs relevant to coding agent behavior, update `docs/INDEX.md`; avoid adding direct links to `AGENTS.md` unless absolutely required.
@@ -50,21 +60,42 @@ Both interact with orchestrator ONLY through `CodingAgent` interface (`checkPrer
 
 ### Adding a new coding agent
 
-1. Create `src/<Name>Agent.ts` implementing `CodingAgent` interface
-2. Register in `src/agents.ts` `REGISTRY`
-3. Run `npm run all`
+1. Write `tests/<Name>Agent.test.ts` first (prerequisites + spawn behavior) — RED
+2. Create `src/<Name>Agent.ts` implementing `CodingAgent` interface — GREEN
+3. Register in `src/agents.ts` `REGISTRY`
+4. Run `npm run all`
 
 ---
 
-## TDD: Red → Green → Refactor
+## TDD in practice — a worked example
+
+Adding `TaskState.unblock()` test-first:
+
+```ts
+// 1. RED — write the test before the method exists; it fails to compile/run.
+it('unblock resets a blocked task to pending with cleared claim and failures', () => {
+  const t = make(dir, 1, 'a');
+  t.claim('A'); for (let i = 0; i < MAX_FAILURES; i++) t.incrementFailures();
+  t.markBlocked();
+  t.unblock();                       // ← method does not exist yet → RED
+  expect(t.status).toBe(Status.PENDING);
+  expect(t.failureCount).toBe(0);
+  expect(t.isClaimed).toBe(false);
+});
+```
+
+```ts
+// 2. GREEN — minimum implementation to pass.
+unblock(): void {
+  try { rmSync(join(this.#dir, F_FAILURES)); } catch {}
+  this.resetConvergence();
+  this.release(Status.PENDING);
+}
+```
 
 ```
-1. RED   — Write test first. Watch it fail:     npm run t
-2. GREEN — Minimum code to pass:                npm run t
-3. REFAC — Clean up, keep tests green:          npm run all
+// 3. REFACTOR — tidy, keep green: npm run all
 ```
-
-**Skip RED only for**: pure interfaces/types, constants/enums, type-only fixes (caught by `tsc`).
 
 ## Before writing tests — map every branch
 
@@ -100,8 +131,8 @@ describe('TaskState.pick', () => {
 - [ ] Isolated filesystem, mocked at module boundary?
 - [ ] `npm run all` passes?
 
-## Adding a new file
+## Adding a new file (test-first)
 
-`src/X.ts` → `tests/X.test.ts` → export from `src/index.ts` → `npm run all`
+`tests/X.test.ts` (write failing tests first) → `src/X.ts` (implement to green) → export from `src/index.ts` → `npm run all`
 
 For test patterns (mocks, branch coverage, isolated filesystem), see `TESTING.md`.
