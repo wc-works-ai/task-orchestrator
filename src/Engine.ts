@@ -5,7 +5,6 @@ import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { TaskState, Status, type BenchmarkFn, type TaskInfo, type TickResult, type TickNull } from './TaskState.js';
 import { Worktree, MergeConflictError } from './Worktree.js';
-import { TaskOwnership } from './TaskOwnership.js';
 import { env } from './env.js';
 import type { SpawnFn, TokenUsage } from './CodingAgent.js';
 
@@ -81,8 +80,10 @@ export class Engine {
   readonly #worktrees = new Map<number, Worktree>();
   /** Track last failure time per task for retry cooldown */
   readonly #retryCooldowns = new Map<number, number>();
-  /** In-process guard: a task number is processed by at most one worker at a time */
-  readonly #ownership = new TaskOwnership();
+  /** In-process guard: task numbers currently being processed by a worker.
+   *  Ensures one process never runs the same task's lifecycle twice at once.
+   *  Not a lock — a busy task is simply skipped this cycle. */
+  readonly #owned = new Set<number>();
   #currentLockToken: string | null = null;
 
   constructor(tasksDir: string, opts: EngineOptions = {}) {
@@ -182,9 +183,10 @@ export class Engine {
     // In-process guard: if another worker in this process already owns this
     // task number (e.g. two concurrent ticks both received our own in-progress
     // claim), skip it here. The owning worker will carry it to completion.
-    if (!this.#ownership.acquire(task.taskNumber)) {
+    if (this.#owned.has(task.taskNumber)) {
       return { task: null, metric: 0, converged: false };
     }
+    this.#owned.add(task.taskNumber);
     try {
       // Check retry cooldown — if this task failed recently, skip it
       const lastFail = this.#retryCooldowns.get(task.taskNumber);
@@ -245,7 +247,7 @@ export class Engine {
     } finally {
       // Release only after the lifecycle and any shard transition have fully
       // settled, so a later cycle cannot re-pick a half-moved task.
-      this.#ownership.release(task.taskNumber);
+      this.#owned.delete(task.taskNumber);
     }
   }
 
