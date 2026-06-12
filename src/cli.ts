@@ -13,6 +13,7 @@ import { Prerequisites } from './Prerequisites.js';
 import { env } from './env.js';
 import { resolveStatePaths } from './StatePaths.js';
 import { printOverview, printRunSummary } from './RunReport.js';
+import { parseMetrics, unmetSummary } from './metrics.js';
 
 function isPathInside(child: string, parent: string): boolean {
   const rel = relative(parent, child);
@@ -269,7 +270,9 @@ const engine = new Engine(dir, {
         timeout: 30_000, encoding: 'utf-8',
         cwd: isPathInside(t.directory, effectiveWorktreesDir) ? t.cwd : repo,
       });
-      return parseInt(out.match(/METRIC\s+\w+=(\d+)/)?.[1] ?? '1', 10);
+      const r = parseMetrics(out);
+      if (r.total > 0 && r.criteria.length > 1) console.log(`T${t.number} unmet: ${unmetSummary(r)}`);
+      return r.total;
     } catch { return 1; }
   },
 });
@@ -282,7 +285,7 @@ if (values.task) {
   if (!task) { console.error(`T${tn} not found`); process.exit(1); }
   try {
     const out = execSync(`node ${task.directory}/benchmark.js`, { timeout: 30_000, encoding: 'utf-8', cwd: repo });
-    const metric = parseInt(out.match(/METRIC\s+\w+=(\d+)/)?.[1] ?? '1', 10);
+    const metric = parseMetrics(out).total;
     console.log(`${metric === 0 ? '⏳' : '❌'} T${tn}: ${task.goal.slice(0, 60)} (metric=${metric})`);
   } catch { console.log(`❌ T${tn}: benchmark failed`); }
   process.exit(0);

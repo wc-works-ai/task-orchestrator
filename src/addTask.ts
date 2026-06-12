@@ -29,10 +29,11 @@ export function addTask(tasksDir: string, name: string, opts: AddTaskOptions = {
     '## Goal', goal,
     '## Metric', `\`${metric}\` (lower is better) — Target: 0`,
     '## Scope', ...scope.map(f => `- ${f}`),
-    '## Acceptance', `- ${metric}=0 for 3 consecutive runs`,
+    '## Acceptance', '- Every `METRIC <name>=<value>` criterion must be 0 for the convergence window',
   ].join('\n'));
   writeFileSync(resolve(d, 'benchmark.js'), [
     '#!/usr/bin/env node',
+    '// Multiple METRIC lines are allowed; all must reach 0 before merge.',
     'let g = 1; // TODO: add real checks — reduce g to 0 when done',
     `console.log('METRIC ${metric}=' + g);`,
   ].join('\n'));
