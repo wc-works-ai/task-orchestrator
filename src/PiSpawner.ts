@@ -186,6 +186,7 @@ export class PiSpawner implements CodingAgent {
         cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
         timeout: 600_000, // 10 min
+        env: process.env,
         /* v8 ignore next 1 -- non-Windows only */
         ...(process.platform !== 'win32' ? { detached: true } : {}),
       });

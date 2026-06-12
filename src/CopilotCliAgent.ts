@@ -105,6 +105,7 @@ export class CopilotCliAgent implements CodingAgent {
         cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
         timeout: 600_000,
+        env: process.env,
       });
 
       let aborted = false;
