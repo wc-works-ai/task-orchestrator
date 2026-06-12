@@ -42,11 +42,8 @@ async function dirtyMergeScenario(dir: string): Promise<{
   const worktreesDir = resolve(dir, 'worktrees');
   mk(repoDir, { recursive: true });
   execSync('git init && git config user.email test@test && git config user.name test', { cwd: repoDir });
-  writeFileSync(join(repoDir, 'tracked.txt'), 'master');
-  execSync('git add tracked.txt && git commit -m "master tracked"', { cwd: repoDir });
-  execSync('git checkout -b dev', { cwd: repoDir });
-  writeFileSync(join(repoDir, 'tracked.txt'), 'dev');
-  execSync('git add tracked.txt && git commit -m "dev tracked"', { cwd: repoDir });
+  writeFileSync(join(repoDir, 'shared.txt'), 'base');
+  execSync('git add shared.txt && git commit -m "base"', { cwd: repoDir });
 
   for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
     mk(resolve(tasksDir, s), { recursive: true });
@@ -56,11 +53,15 @@ async function dirtyMergeScenario(dir: string): Promise<{
   mk(d, { recursive: true });
   writeFileSync(resolve(d, '.status'), 'PENDING\n');
 
+  // Spawn modifies a file in the worktree and commits, then modifies the same file
+  // in the main repo and commits → merge conflict when merging back
   const spawn = vi.fn().mockImplementation(async (_task: TaskState, wtPath?: string) => {
     if (!wtPath) throw new Error('missing worktree path');
-    writeFileSync(join(wtPath, 'work.txt'), 'worktree');
-    execSync('git add work.txt && git commit -m "work"', { cwd: wtPath });
-    writeFileSync(join(repoDir, 'tracked.txt'), 'dirty dev');
+    writeFileSync(join(wtPath, 'shared.txt'), 'worktree change');
+    execSync('git add shared.txt && git commit -m "wt change"', { cwd: wtPath });
+    // Create conflicting change in main repo
+    writeFileSync(join(repoDir, 'shared.txt'), 'main change');
+    execSync('git add shared.txt && git commit -m "main change"', { cwd: repoDir });
     return { success: true, iterations: 1 };
   });
   const benchmark = vi.fn()
@@ -276,11 +277,14 @@ describe('Engine agent spawning', () => {
     const worktreesDir = resolve(dir, 'worktrees');
     mk(repoDir, { recursive: true });
     execSync('git init && git config user.email test@test && git config user.name test', { cwd: repoDir });
-    writeFileSync(join(repoDir, 'tracked.txt'), 'master');
-    execSync('git add tracked.txt && git commit -m "master tracked"', { cwd: repoDir });
+    writeFileSync(join(repoDir, 'tracked.txt'), 'base');
+    execSync('git add tracked.txt && git commit -m "base"', { cwd: repoDir });
+    // Create dev branch so we can switch to it after Engine construction
     execSync('git checkout -b dev', { cwd: repoDir });
     writeFileSync(join(repoDir, 'tracked.txt'), 'dev');
-    execSync('git add tracked.txt && git commit -m "dev tracked"', { cwd: repoDir });
+    execSync('git add tracked.txt && git commit -m "dev"', { cwd: repoDir });
+    // Engine will detect 'dev' as base branch
+    // The spawn will switch to master and dirty the file, causing checkout-to-dev to fail
 
     for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
       mk(resolve(tasksDir, s), { recursive: true });
@@ -294,7 +298,9 @@ describe('Engine agent spawning', () => {
       if (!wtPath) throw new Error('missing worktree path');
       writeFileSync(join(wtPath, 'work.txt'), 'worktree');
       execSync('git add work.txt && git commit -m "work"', { cwd: wtPath });
-      writeFileSync(join(repoDir, 'tracked.txt'), 'dirty dev');
+      // Switch main repo to master and dirty tracked.txt → checkout to dev will fail
+      execSync('git checkout master', { cwd: repoDir });
+      writeFileSync(join(repoDir, 'tracked.txt'), 'dirty master');
       return { success: true, iterations: 1 };
     });
     const recover = vi.fn().mockResolvedValue(MergeRecoveryAction.StashAndRetry);
@@ -318,7 +324,7 @@ describe('Engine agent spawning', () => {
       task: expect.objectContaining({ number: 1 }),
       worktreePath: join(worktreesDir, 'T01-x'),
       branch: 'orchestrator/T01-x',
-      error: expect.stringContaining('Unable to switch to master'),
+      error: expect.stringContaining('Unable to switch to dev'),
     }));
     const all = await TaskState.scan(tasksDir);
     expect(all.get('1')!.status).toBe(Status.CONVERGED);
@@ -338,11 +344,13 @@ describe('Engine agent spawning', () => {
     const worktreesDir = resolve(dir, 'worktrees');
     mk(repoDir, { recursive: true });
     execSync('git init && git config user.email test@test && git config user.name test', { cwd: repoDir });
-    writeFileSync(join(repoDir, 'tracked.txt'), 'master');
-    execSync('git add tracked.txt && git commit -m "master tracked"', { cwd: repoDir });
+    writeFileSync(join(repoDir, 'tracked.txt'), 'base');
+    execSync('git add tracked.txt && git commit -m "base"', { cwd: repoDir });
+    // Create dev branch so we can switch to it after Engine construction
     execSync('git checkout -b dev', { cwd: repoDir });
     writeFileSync(join(repoDir, 'tracked.txt'), 'dev');
-    execSync('git add tracked.txt && git commit -m "dev tracked"', { cwd: repoDir });
+    execSync('git add tracked.txt && git commit -m "dev"', { cwd: repoDir });
+    // Engine will detect 'dev' as base branch
 
     for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
       mk(resolve(tasksDir, s), { recursive: true });
@@ -356,7 +364,10 @@ describe('Engine agent spawning', () => {
       if (!wtPath) throw new Error('missing worktree path');
       writeFileSync(join(wtPath, 'work.txt'), 'worktree');
       execSync('git add work.txt && git commit -m "work"', { cwd: wtPath });
-      writeFileSync(join(repoDir, 'tracked.txt'), 'dirty dev');
+      // Switch main repo to master and dirty tracked.txt → checkout to dev will fail
+      // autoStashBeforeMerge should handle this
+      execSync('git checkout master', { cwd: repoDir });
+      writeFileSync(join(repoDir, 'tracked.txt'), 'dirty master');
       return { success: true, iterations: 1 };
     });
     const recover = vi.fn().mockRejectedValue(new Error('recovery should not run'));

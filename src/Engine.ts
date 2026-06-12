@@ -1,5 +1,6 @@
 import { statSync, readFileSync, readdirSync, existsSync, rmSync, appendFileSync, cpSync } from 'node:fs';
 import { resolve, join, dirname, relative } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { TaskState, Status, type BenchmarkFn, type TaskInfo, type TickResult, type TickNull } from './TaskState.js';
 import { Worktree, MergeConflictError } from './Worktree.js';
 import { env } from './env.js';
@@ -9,6 +10,7 @@ import type { SpawnFn, TokenUsage } from './CodingAgent.js';
 export type { SpawnResult, SpawnFn, TokenUsage } from './CodingAgent.js';
 
 const HEARTBEAT_MAX_MS = env.heartbeatMs;
+const MAX_CONSECUTIVE_TICK_ERRORS = 10;
 
 const retryLimitLabel = (limit: number): string => Number.isFinite(limit) ? String(limit) : 'infinite';
 
@@ -62,6 +64,7 @@ export class Engine {
   readonly #infinite: boolean;
   readonly #idleSleepMs: number;
   readonly #sleep: SleepFn;
+  readonly #baseBranch: string;
   #environmentError?: string;
   /** Track active worktrees by task number */
   readonly #worktrees = new Map<number, Worktree>();
@@ -82,10 +85,22 @@ export class Engine {
     this.#infinite = opts.infinite ?? env.infinite;
     this.#idleSleepMs = opts.idleSleepMs ?? env.idleSleepMs;
     this.#sleep = opts.sleep ?? sleep;
+    this.#baseBranch = this.#detectBaseBranch();
   }
 
   get instanceId(): string { return this.#id; }
   get environmentError(): string | undefined { return this.#environmentError; }
+  get baseBranch(): string { return this.#baseBranch; }
+
+  #detectBaseBranch(): string {
+    try {
+      const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: this.#repo, encoding: 'utf-8' }).trim();
+      if (!branch || branch === 'HEAD') return 'master';
+      return branch;
+    } catch {
+      return 'master';
+    }
+  }
 
   #log(msg: string, category: LogCategory = 'routine'): void {
     const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
@@ -173,28 +188,29 @@ export class Engine {
 
     if (this.#spawn) {
       let wt = this.#worktrees.get(task.taskNumber) ?? null;
-      if (!wt && existsSync(resolve(this.#repo, '.git'))) {
-        wt = new Worktree(this.#repo, { name: task.taskName, ...(this.#worktreesDir ? { worktreesDir: this.#worktreesDir } : {}) });
-        await wt.create();
-        this.#worktrees.set(task.taskNumber, wt);
-      }
       let spawnTask = task;
-      if (wt) {
-        // Copy task directory into worktree (tasks/ not tracked in git)
-        const wtTaskDir = this.#taskDirectoryInWorktree(task, wt.path);
-        try {
-          cpSync(task.directory, wtTaskDir, { recursive: true, filter: (f: string) => !f.endsWith('agent.log') });
-          spawnTask = new TaskState(wtTaskDir);
-        } catch {}
-        // Copy node_modules for isolated npm commands (no symlink — avoids circular chain risk)
-        const wtNm = join(wt.path, 'node_modules');
-        if (!existsSync(wtNm)) {
-          try { cpSync(join(this.#repo, 'node_modules'), wtNm, { recursive: true }); } catch {}
-        }
-      }
       const ac = new AbortController();
       let hb: ReturnType<typeof setInterval> | undefined;
       try {
+        // Create worktree if needed
+        if (!wt && existsSync(resolve(this.#repo, '.git'))) {
+          wt = new Worktree(this.#repo, { name: task.taskName, baseBranch: this.#baseBranch, ...(this.#worktreesDir ? { worktreesDir: this.#worktreesDir } : {}) });
+          await wt.create();
+          this.#worktrees.set(task.taskNumber, wt);
+        }
+        if (wt) {
+          // Copy task directory into worktree (tasks/ not tracked in git)
+          const wtTaskDir = this.#taskDirectoryInWorktree(task, wt.path);
+          try {
+            cpSync(task.directory, wtTaskDir, { recursive: true, filter: (f: string) => !f.endsWith('agent.log') });
+            spawnTask = new TaskState(wtTaskDir);
+          } catch {}
+          // Copy node_modules for isolated npm commands (no symlink — avoids circular chain risk)
+          const wtNm = join(wt.path, 'node_modules');
+          if (!existsSync(wtNm)) {
+            try { cpSync(join(this.#repo, 'node_modules'), wtNm, { recursive: true }); } catch {}
+          }
+        }
         this.#log(`T${task.taskNumber} action: starting agent because metric is ${metric}`);
         /* c8 ignore start */
         hb = setInterval(() => {
@@ -224,6 +240,8 @@ export class Engine {
           task.status = Status.FAILED;
           this.#retryCooldowns.set(task.taskNumber, Date.now());
           console.error(`  ⚠️  T${task.taskNumber}: merge conflict — task FAILED, worktree kept for inspection`);
+        } else {
+          this.#log(`T${task.taskNumber} unexpected error during spawn/worktree setup: ${this.#singleLine(msg)}; releasing task`, 'transition');
         }
       } finally {
         if (hb) clearInterval(hb);
@@ -242,8 +260,25 @@ export class Engine {
     const idleSleepMs = opts.idleSleepMs ?? this.#idleSleepMs;
     const sleepFn = opts.sleep ?? this.#sleep;
     let announcedIdle = false;
+    let consecutiveErrors = 0;
+    let lastErrorMsg = '';
     while (true) {
-      const result = await this.tick();
+      let result: TickResult | TickNull;
+      try {
+        result = await this.tick();
+        consecutiveErrors = 0;
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        lastErrorMsg = msg;
+        consecutiveErrors++;
+        this.#log(`tick error: ${this.#singleLine(msg)}`, 'always');
+        if (consecutiveErrors >= MAX_CONSECUTIVE_TICK_ERRORS) {
+          this.#environmentError = `repeated tick failures (${consecutiveErrors}x): ${this.#singleLine(lastErrorMsg)}`;
+          break;
+        }
+        await sleepFn(idleSleepMs);
+        continue;
+      }
       if (result.stopped) break;
       if (!result.task) {
         if (infinite) {
@@ -431,6 +466,7 @@ export class Engine {
 
   #recover(): void {
     const dir = resolve(this.#dir, 'in_progress');
+    const claimMaxMs = env.claimMaxMs;
     let entries: string[];
     try { entries = readdirSync(dir); } catch { return; }
 
@@ -443,7 +479,13 @@ export class Engine {
         // Process alive — respect heartbeat timeout
         const age = this.#heartbeatAge(task);
         if (age !== null && age < HEARTBEAT_MAX_MS) continue;
-        // Stale heartbeat but alive PID — skip (long-running op)
+        // Hard ceiling: if age >= claimMaxMs, release even if PID alive (stuck/hung owner)
+        if (age !== null && age >= claimMaxMs) {
+          task.release(Status.FAILED);
+          this.#log(`STALE: ${task.taskName} claim released (hard timeout ${claimMaxMs}ms exceeded; convergence=${task.convergenceCount})`);
+          continue;
+        }
+        // Stale heartbeat but alive PID and under hard ceiling — skip (long-running op)
         continue;
       }
       // Owner dead or unknown — release immediately, preserve convergence

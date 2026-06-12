@@ -8,6 +8,7 @@ describe('env', () => {
   const originalIdleSleepMs = process.env.ORCH_IDLE_SLEEP_MS;
   const originalAgent = process.env.ORCH_AGENT;
   const originalReasoning = process.env.ORCH_REASONING;
+  const originalClaimMaxMs = process.env.ORCH_CLAIM_MAX_MS;
 
   afterEach(() => {
     if (originalMaxFailures === undefined) delete process.env.ORCH_MAX_FAILURES;
@@ -22,6 +23,8 @@ describe('env', () => {
     else process.env.ORCH_AGENT = originalAgent;
     if (originalReasoning === undefined) delete process.env.ORCH_REASONING;
     else process.env.ORCH_REASONING = originalReasoning;
+    if (originalClaimMaxMs === undefined) delete process.env.ORCH_CLAIM_MAX_MS;
+    else process.env.ORCH_CLAIM_MAX_MS = originalClaimMaxMs;
   });
 
   it('defaults maxFailures to 5', () => {
@@ -60,5 +63,12 @@ describe('env', () => {
     process.env.ORCH_REASONING = 'high';
     expect(env.agent).toBe('copilot');
     expect(env.reasoning).toBe('high');
+  });
+
+  it('defaults claimMaxMs to 1800000 (30 min) and reads override', () => {
+    delete process.env.ORCH_CLAIM_MAX_MS;
+    expect(env.claimMaxMs).toBe(1800000);
+    process.env.ORCH_CLAIM_MAX_MS = '60000';
+    expect(env.claimMaxMs).toBe(60000);
   });
 });
