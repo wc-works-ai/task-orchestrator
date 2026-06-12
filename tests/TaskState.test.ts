@@ -234,6 +234,50 @@ describe('TaskState', () => {
     expect(t.directory).toBe(resolve(dir, 'blocked', 'T01-a'));
   });
 
+  // ── Corruption resilience ───────────────────────────────────────────
+
+  it('recovers a corrupted/unknown .status as PENDING', () => {
+    const t = make(dir, 1, 'a');
+    writeFileSync(join(t.directory, '.status'), 'GARBAGE\n');
+    expect(t.status).toBe(Status.PENDING);
+    expect(t.isActionable).toBe(true);
+  });
+
+  it('treats an empty .status as PENDING', () => {
+    const t = make(dir, 1, 'a');
+    writeFileSync(join(t.directory, '.status'), '   \n');
+    expect(t.status).toBe(Status.PENDING);
+  });
+
+  it('clamps a negative or garbage convergence count to 0', () => {
+    const t = make(dir, 1, 'a');
+    writeFileSync(join(t.directory, '.convergence_count'), '-5\n');
+    expect(t.convergenceCount).toBe(0);
+    writeFileSync(join(t.directory, '.convergence_count'), 'not-a-number\n');
+    expect(t.convergenceCount).toBe(0);
+    expect(t.hasConverged).toBe(false);
+  });
+
+  it('clamps a negative or garbage failure count to 0', () => {
+    const t = make(dir, 1, 'a');
+    writeFileSync(join(t.directory, '.failure_count'), '-3\n');
+    expect(t.failureCount).toBe(0);
+    writeFileSync(join(t.directory, '.failure_count'), 'xyz\n');
+    expect(t.failureCount).toBe(0);
+  });
+
+  it('keeps a valid positive counter value', () => {
+    const t = make(dir, 1, 'a');
+    writeFileSync(join(t.directory, '.failure_count'), '4\n');
+    expect(t.failureCount).toBe(4);
+  });
+
+  it('drops corrupted/non-positive dependency entries', () => {
+    const t = make(dir, 1, 'a');
+    writeFileSync(join(t.directory, '.dependencies'), '2\nabc\n0\n-1\n3\n');
+    expect(t.dependencies).toEqual([2, 3]);
+  });
+
   it('unblock resets a blocked task to pending with cleared claim and failures', () => {
     const t = make(dir, 1, 'a');
     t.claim('A');

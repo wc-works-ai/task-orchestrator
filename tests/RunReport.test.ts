@@ -61,7 +61,12 @@ describe('RunReport', () => {
 
   it('falls back to unknown icon and status for unexpected task states', async () => {
     dir = setup();
-    make(dir, 1, 'mystery', 'BROKEN');
+    // A CONVERGED status lingering in an active shard (status/shard mismatch,
+    // e.g. from an interrupted move) is the realistic "unexpected state": it
+    // survives status normalization but matches none of the active-shard states.
+    const taskDir = resolve(dir, 'in_progress', 'T01-mystery');
+    mkdirSync(taskDir, { recursive: true });
+    writeFileSync(join(taskDir, '.status'), `${Status.CONVERGED}\n`);
 
     await expect(formatRunSummary(dir, 3)).resolves.toEqual([
       'Summary: converged=0 failed=0 blocked=0 pending=0 in_progress=0 (3 ticks)',

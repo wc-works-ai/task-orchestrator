@@ -108,10 +108,17 @@ export class TaskState {
 
   // ── Status ──────────────────────────────────────────────────────────
   get status(): Status {
+    let raw: string;
     try {
-      const raw = readFileSync(join(this.#dir, F_STATUS), 'utf-8').trim();
-      return (raw || Status.PENDING) as Status;
+      raw = readFileSync(join(this.#dir, F_STATUS), 'utf-8').trim();
     } catch { return Status.PENDING; }
+    if (isInProgress(raw)) return raw as Status;
+    if (raw === Status.PENDING || raw === Status.FAILED || raw === Status.BLOCKED || raw === Status.CONVERGED) {
+      return raw as Status;
+    }
+    // Empty, unknown, or corrupted value — recover as PENDING so the task is
+    // re-processed instead of being silently stranded in an unrecognized state.
+    return Status.PENDING;
   }
 
   set status(v: Status | string) {
@@ -154,7 +161,7 @@ export class TaskState {
 
   // ── Convergence ─────────────────────────────────────────────────────
   get convergenceCount(): number {
-    try { return parseInt(readFileSync(join(this.#dir, F_COUNTER), 'utf-8').trim(), 10) || 0; }
+    try { return TaskState.#nonNegInt(readFileSync(join(this.#dir, F_COUNTER), 'utf-8')); }
     catch { return 0; }
   }
   incrementConvergence(): number {
@@ -170,7 +177,7 @@ export class TaskState {
   // ── Failures ────────────────────────────────────────────────────────
   get failureCount(): number {
     try {
-      return parseInt(readFileSync(join(this.#dir, F_FAILURES), 'utf-8').trim(), 10) || 0;
+      return TaskState.#nonNegInt(readFileSync(join(this.#dir, F_FAILURES), 'utf-8'));
     } catch {
       return 0;
     }
@@ -184,8 +191,13 @@ export class TaskState {
   // ── Dependencies ────────────────────────────────────────────────────
   get dependencies(): readonly number[] {
     try {
+      // Tolerate corrupted/garbage lines: keep only valid positive task
+      // numbers so a malformed entry can't become a NaN dependency that
+      // never resolves (deadlocking the task).
       return readFileSync(join(this.#dir, F_DEPS), 'utf-8')
-        .trim().split('\n').filter(Boolean).map(Number);
+        .trim().split('\n')
+        .map(s => parseInt(s.trim(), 10))
+        .filter(n => Number.isInteger(n) && n > 0);
     } catch { return []; }
   }
   set dependencies(nums: readonly number[]) {
@@ -208,6 +220,14 @@ export class TaskState {
       if (depTask?.status === Status.BLOCKED) return true;
     }
     return false;
+  }
+
+  /** Parse a counter file's contents into a non-negative integer; any
+   *  corrupted/garbage/negative value is treated as 0 so it cannot push a task
+   *  into a bogus converged/blocked state. */
+  static #nonNegInt(raw: string): number {
+    const n = parseInt(raw.trim(), 10);
+    return Number.isInteger(n) && n > 0 ? n : 0;
   }
 
   static #findByNumber(tasksDir: string, num: number): TaskState | null {
