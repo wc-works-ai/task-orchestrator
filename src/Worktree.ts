@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 
 function gitErrorMessage(e: unknown): string {
@@ -43,7 +43,15 @@ export class Worktree {
   async create(): Promise<string> {
     if (this.exists) return this.#path;
 
-    this.#git('worktree', 'add', '-b', this.#branch, this.#path, this.#base);
+    try {
+      this.#add();
+    } catch {
+      // Self-heal leftovers from a crashed run: prune stale worktree
+      // registrations and drop a partial path, then retry once.
+      try { this.#git('worktree', 'prune'); } catch {}
+      try { rmSync(this.#path, { recursive: true, force: true }); } catch {}
+      this.#add();
+    }
     // Configure git user in worktree (needed for commits)
     const name = this.#gitConfig('user.name') || 'Orchestrator';
     const email = this.#gitConfig('user.email') || 'orchestrator@local';
@@ -51,6 +59,25 @@ export class Worktree {
     this.#gitInWT('config', 'user.email', email);
 
     return this.#path;
+  }
+
+  /** Add the worktree, reusing the branch if a prior run already created it
+   *  (preserves its commits) instead of failing on "branch already exists". */
+  #add(): void {
+    if (this.#branchExists()) {
+      this.#git('worktree', 'add', this.#path, this.#branch);
+    } else {
+      this.#git('worktree', 'add', '-b', this.#branch, this.#path, this.#base);
+    }
+  }
+
+  #branchExists(): boolean {
+    try {
+      this.#git('rev-parse', '--verify', '--quiet', `refs/heads/${this.#branch}`);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**

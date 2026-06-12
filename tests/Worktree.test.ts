@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach, expect } from 'vitest';
 import { rm } from 'node:fs/promises';
-import { mkdtempSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, existsSync, readFileSync, rmSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { execFileSync, execSync } from 'node:child_process';
 import { Worktree, MergeConflictError } from '../src/Worktree.js';
@@ -241,5 +241,30 @@ describe('Worktree', () => {
     // Aborted cleanly: no MERGE_HEAD left, branch kept
     expect(() => execSync('git rev-parse -q --verify MERGE_HEAD', { cwd: wt.path, encoding: 'utf-8' })).toThrow();
     expect(execSync('git branch --show-current', { cwd: wt.path, encoding: 'utf-8' }).trim()).toBe('orchestrator/T01-test');
+  });
+
+  it('create reuses a branch left behind by a crashed run (preserves work)', async () => {
+    const { writeFileSync } = await import('node:fs');
+    // Simulate a crash that left the task branch (with work) but no worktree.
+    execSync('git worktree add .crashwt -b orchestrator/T01-test master', { cwd: repo });
+    writeFileSync(join(repo, '.crashwt', 'prior.txt'), 'prior work');
+    execSync('git add prior.txt && git commit -m "prior work"', { cwd: join(repo, '.crashwt') });
+    execSync('git worktree remove --force .crashwt', { cwd: repo });
+
+    const wt = new Worktree(repo, { name: 'T01-test', baseBranch: 'master' });
+    const path = await wt.create(); // must not fail on "branch already exists"
+    expect(existsSync(join(path, '.git'))).toBe(true);
+    expect(existsSync(join(path, 'prior.txt'))).toBe(true); // reused branch → prior work kept
+  });
+
+  it('create self-heals a stale worktree registration left by a crash', async () => {
+    const wt1 = new Worktree(repo, { name: 'T01-test', baseBranch: 'master' });
+    const p = await wt1.create();
+    // Crash: directory vanishes but git keeps the registration + branch.
+    rmSync(p, { recursive: true, force: true });
+
+    const wt2 = new Worktree(repo, { name: 'T01-test', baseBranch: 'master' });
+    const path = await wt2.create(); // first add fails → prune → retry succeeds
+    expect(existsSync(join(path, '.git'))).toBe(true);
   });
 });
