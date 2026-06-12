@@ -12,6 +12,7 @@ import { PiSpawner } from './PiSpawner.js';
 import { Prerequisites } from './Prerequisites.js';
 import { env } from './env.js';
 import { resolveStatePaths } from './StatePaths.js';
+import { printOverview, printRunSummary } from './RunReport.js';
 
 function isPathInside(child: string, parent: string): boolean {
   const rel = relative(parent, child);
@@ -24,7 +25,7 @@ async function promptMergeRecovery(failure: MergeRecoveryFailure): Promise<Merge
   console.error(`  worktree: ${failure.worktreePath}`);
   console.error(`  reason: ${failure.error}`);
   if (!input.isTTY) {
-    console.error('  Non-interactive shell: leaving the task failed so you can clean up and retry.');
+    console.error('  Non-interactive shell: blocking the task and keeping the worktree for inspection.');
     return MergeRecoveryAction.Stop;
   }
 
@@ -63,6 +64,7 @@ const { values, positionals } = await parseArgs({
     metric: { type: 'string', default: '' },
     scope:  { type: 'string', default: '' },
     once:   { type: 'boolean', default: false },
+    'keep-alive': { type: 'boolean', default: false },
     'auto-stash': { type: 'boolean', default: false },
     worktrees: { type: 'string', default: '' },
     help:   { type: 'boolean', short: 'h', default: false },
@@ -79,6 +81,7 @@ Task Orchestrator — autonomous task execution
   orchestrator --check
   orchestrator --stop
   orchestrator --task <n>
+  orchestrator --keep-alive  wait through transient idle/cooldown periods
   orchestrator --auto-stash  stash parent repo changes before merging
   orchestrator --repo <dir>     override target repo/folder (default: current directory)
   orchestrator --state-root <dir> override state root (default: <home>\\task-orchestrator)
@@ -97,9 +100,14 @@ Environment variables:
   ORCH_MODEL=<model>         model override (uses pi default when unset)
   ORCH_AUTO_STASH=1          stash parent repo changes before merging
   ORCH_CONVERGE=<n>          zero-runs to converge (default: 3)
-  ORCH_MAX_FAILURES=<n>      failures before BLOCKED (default: 5)
+  ORCH_MAX_FAILURES=<n|infinite> failed attempts before BLOCKED (default: 5)
+  ORCH_KEEP_ALIVE=1          wait through transient idle/cooldown periods
+  ORCH_IDLE_SLEEP_MS=<ms>    keep-alive idle sleep interval (default: 5000)
   ORCH_HEARTBEAT_MS=<ms>     stale claim timeout (default: 300000)
   ORCH_PROGRESS_TIMEOUT=<ms> kill agent after no output (default: 120000)
+  ORCH_AGENT_LOG_MAX_BYTES=<bytes> cap agent.log size (default: 10485760)
+  ORCH_AGENT_LOG_RAW=1      write raw spawned-agent output to agent.log
+  ORCH_LOG_LEVEL=<quiet|normal|verbose> console verbosity (default: normal)
 `);
   process.exit(0);
 }
@@ -122,6 +130,7 @@ const repo = paths.repo;
 const dir = paths.tasks;
 const worktreesDir = paths.worktrees;
 const autoStash = values['auto-stash'] || env.autoStash;
+const keepAlive = values['keep-alive'] || env.keepAlive;
 
 console.log(`repo: ${repo}`);
 console.log(`tasks: ${dir}`);
@@ -278,14 +287,17 @@ try {
   } else {
     console.log('Running until tasks complete');
     const n = await engine.loop({
-      onTick: (r) => {
+      onTick: async (r, total) => {
         if (r.task) {
           const icon = r.converged ? '✅' : r.metric === 0 ? '⏳' : '❌';
           const status = r.converged ? 'converged' : r.metric === 0 ? 'convergence pending' : `metric=${r.metric}`;
           console.log(`  ${icon} T${r.task.number}: ${status} — ${r.task.goal.slice(0, 60)}`);
         }
+        await printOverview(dir, total);
       },
+      keepAlive,
     });
+    await printRunSummary(dir, n);
     console.log(`\n🎉 ${n} ticks — all done\n`);
   }
 } catch (e: unknown) {

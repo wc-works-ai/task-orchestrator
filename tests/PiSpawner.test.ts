@@ -45,8 +45,19 @@ function joinedCalls(spy: { mock: { calls: readonly (readonly unknown[])[] } }):
 
 describe('PiSpawner', () => {
   let dir = '';
-  beforeEach(() => { dir = setup(); vi.clearAllMocks(); delete process.env.ORCH_MODEL; });
-  afterEach(async () => { delete process.env.ORCH_MODEL; await rm(dir, { recursive: true, force: true }); });
+  beforeEach(() => {
+    dir = setup();
+    vi.clearAllMocks();
+    delete process.env.ORCH_MODEL;
+    delete process.env.ORCH_AGENT_LOG_MAX_BYTES;
+    delete process.env.ORCH_AGENT_LOG_RAW;
+  });
+  afterEach(async () => {
+    delete process.env.ORCH_MODEL;
+    delete process.env.ORCH_AGENT_LOG_MAX_BYTES;
+    delete process.env.ORCH_AGENT_LOG_RAW;
+    await rm(dir, { recursive: true, force: true });
+  });
 
   it('uses model from task metadata', () => {
     const t = make(dir, 1, 'a', '- **Model:** custom-model\n## Goal\nTest');
@@ -208,7 +219,7 @@ describe('PiSpawner', () => {
     }
   });
 
-  it('captures stderr output', async () => {
+  it('omits raw stderr output from agent log by default', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
     t.status = Status.PENDING;
     const mock = mockChild();
@@ -221,9 +232,29 @@ describe('PiSpawner', () => {
     }, 5);
     const r = await p;
     expect(r.success).toBe(true);
-    // Agent log should contain stderr output
     const log = readFileSync(join(t.directory, 'agent.log'), 'utf-8');
+    expect(log).toContain('agent log mode: summary');
+    expect(log).toContain('raw output bytes=23 omitted');
+    expect(log).not.toContain('warning: something bad');
+  });
+
+  it('captures raw stderr output when raw agent logging is enabled', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiSpawner({ agentLogRaw: true }).spawn(t, dir);
+    setTimeout(() => {
+      mock.stderr!.emit('data', Buffer.from('warning: something bad\n'));
+      mock.emit('close', 0);
+    }, 5);
+    const r = await p;
+    expect(r.success).toBe(true);
+    const log = readFileSync(join(t.directory, 'agent.log'), 'utf-8');
+    expect(log).toContain('agent log mode: raw');
     expect(log).toContain('warning: something bad');
+    expect(log).toContain('raw output bytes=23 logged');
   });
 
   it('captures stdout and counts iterations', async () => {
@@ -296,6 +327,51 @@ describe('PiSpawner', () => {
     });
     const log = readFileSync(join(t.directory, 'agent.log'), 'utf-8');
     expect(log).toContain('=== token usage total=130 input=13 output=6 cacheRead=105 cacheWrite=6 ===');
+  });
+
+  it('caps large agent output in the log without breaking scanners', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const p = new PiSpawner({ agentLogMaxBytes: 4096, agentLogRaw: true }).spawn(t, dir);
+      setTimeout(() => {
+        mock.stdout!.emit('data', Buffer.from('x'.repeat(1_100_000)));
+        mock.stdout!.emit('data', Buffer.from('log_'));
+        mock.stdout!.emit('data', Buffer.from('experiment\n'));
+        mock.stdout!.emit('data', Buffer.from(JSON.stringify({
+          type: 'message_end',
+          message: {
+            role: 'assistant',
+            usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, totalTokens: 10 },
+          },
+        }) + '\n'));
+        mock.stderr!.emit('data', Buffer.from('No API key found for azure-openai-responses.\n'));
+        mock.emit('close', 1);
+      }, 5);
+
+      const r = await p;
+      expect(r.success).toBe(false);
+      expect(r.authFailure).toBe(true);
+      expect(r.error).toBe('No API key found for azure-openai-responses');
+      expect(r.iterations).toBe(1);
+      expect(r.tokenUsage).toEqual({
+        input: 1,
+        output: 2,
+        cacheRead: 3,
+        cacheWrite: 4,
+        totalTokens: 10,
+      });
+      const log = readFileSync(join(t.directory, 'agent.log'), 'utf-8');
+      expect(Buffer.byteLength(log)).toBeLessThanOrEqual(4096);
+      expect(log).toContain('agent.log truncated; keeping latest output only');
+      expect(log).toContain('=== token usage total=10 input=1 output=2 cacheRead=3 cacheWrite=4 ===');
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it('handles spawn error gracefully', async () => {

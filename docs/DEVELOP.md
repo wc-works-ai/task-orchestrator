@@ -24,11 +24,28 @@ TDD + SOLID. Read `TESTING.md` first for test conventions.
 | `ORCH_MODEL` | pi default | Model override passed to `pi` |
 | `ORCH_AUTO_STASH` | unset | Stash parent repo changes before merging |
 | `ORCH_CONVERGE` | `3` | Zero-runs to converge |
-| `ORCH_MAX_FAILURES` | `5` | Failures before BLOCKED |
+| `ORCH_MAX_FAILURES` | `5` | Failed attempts before BLOCKED; integer >= 1 or `infinite` |
+| `ORCH_KEEP_ALIVE` | unset | Keep looping through transient idle/cooldown periods |
+| `ORCH_IDLE_SLEEP_MS` | `5000` | Sleep interval between keep-alive idle ticks |
 | `ORCH_WORKTREES` | `<state-root>\<repo-slug>\worktrees` | Worktree directory override |
 | `ORCH_HEARTBEAT_MS` | `300000` | Stale claim timeout |
+| `ORCH_AGENT_LOG_MAX_BYTES` | `10485760` | Maximum `agent.log` size before older output is truncated |
+| `ORCH_AGENT_LOG_RAW` | unset | Write raw spawned-agent stdout/stderr to `agent.log` |
+| `ORCH_LOG_LEVEL` | `normal` | Console verbosity: `quiet`, `normal`, or `verbose`; quiet still writes full `orchestrator.log` |
 
 CLI flags override env vars. See `orchestrator --help`.
+
+Loop mode prints an `Overview:` counts line after each tick and a final `Summary:` with one line per task.
+
+Unrecoverable merge failures park the task as BLOCKED, keep its worktree, and let the run continue.
+
+### Task metadata
+
+| Field | Values | What it controls |
+|---|---|---|
+| `**Retry limit:**` | integer >= 1, `infinite`, `unlimited`, or `inf` | Failed attempts before BLOCKED; falls back to `ORCH_MAX_FAILURES` |
+
+Dependencies wait for all referenced tasks to converge; if any dependency is terminally BLOCKED, dependents are automatically BLOCKED transitively, while still-retrying FAILED dependencies keep dependents waiting.
 
 ---
 

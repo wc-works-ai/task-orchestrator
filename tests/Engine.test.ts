@@ -1,7 +1,7 @@
-import { describe, it, beforeEach, afterEach, expect } from 'vitest';
+import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { rm } from 'node:fs/promises';
-import { mkdtempSync, mkdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { resolve, join } from 'node:path';
 import { Engine } from '../src/Engine.js';
 import { TaskState, Status, CONVERGENCE_THRESHOLD, MAX_FAILURES } from '../src/TaskState.js';
 
@@ -91,6 +91,42 @@ describe('Engine', () => {
     expect((await engine.tick()).task).toBeNull();
   });
 
+  it('blocks after one failed attempt when retry limit is 1', async () => {
+    const t = make(dir, 1, 'a');
+    writeFileSync(join(t.directory, 'autoresearch.md'), '- **Retry limit:** 1\n');
+    const engine = new Engine(dir, {
+      benchmark: one,
+      spawn: async () => ({ success: false, iterations: 0 }),
+    });
+
+    const r = await engine.tick();
+    expect(r.task).not.toBeNull();
+
+    const all = await TaskState.scan(dir);
+    const task = all.get('1')!;
+    expect(task.failureCount).toBe(1);
+    expect(task.status).toBe(Status.BLOCKED);
+  });
+
+  it('keeps retrying when retry limit is infinite', async () => {
+    const t = make(dir, 1, 'a');
+    writeFileSync(join(t.directory, 'autoresearch.md'), '- **Retry limit:** infinite\n');
+    const engine = new Engine(dir, {
+      benchmark: one,
+      spawn: async () => ({ success: false, iterations: 0 }),
+    });
+
+    for (let i = 0; i < 7; i++) {
+      const r = await engine.tick();
+      expect(r.task).not.toBeNull();
+    }
+
+    const all = await TaskState.scan(dir);
+    const task = all.get('1')!;
+    expect(task.failureCount).toBe(7);
+    expect(task.status).toBe(Status.FAILED);
+  });
+
   it('blocks immediately when spawn reports auth failure', async () => {
     make(dir, 1, 'auth');
     const engine = new Engine(dir, {
@@ -119,6 +155,76 @@ describe('Engine', () => {
     expect(r.task!.number).toBe(2);
   });
 
+  it('blocks a task whose dependency is blocked', async () => {
+    make(dir, 1, 'blocked', { status: Status.BLOCKED });
+    make(dir, 2, 'dependent', { deps: [1] });
+
+    const r = await new Engine(dir, { benchmark: zero }).tick();
+
+    expect(r.task).toBeNull();
+    const all = await TaskState.scan(dir);
+    expect(all.get('2')!.status).toBe(Status.BLOCKED);
+  });
+
+  it('blocks transitive dependents in one tick', async () => {
+    make(dir, 1, 'blocked', { status: Status.BLOCKED });
+    make(dir, 2, 'middle', { deps: [1] });
+    make(dir, 3, 'end', { deps: [2] });
+
+    const r = await new Engine(dir, { benchmark: zero }).tick();
+
+    expect(r.task).toBeNull();
+    const all = await TaskState.scan(dir);
+    expect(all.get('2')!.status).toBe(Status.BLOCKED);
+    expect(all.get('3')!.status).toBe(Status.BLOCKED);
+  });
+
+  it('does not block dependents of a failed dependency', async () => {
+    make(dir, 1, 'failed', { status: Status.FAILED });
+    make(dir, 2, 'dependent', { deps: [1] });
+
+    await new Engine(dir, { benchmark: zero }).tick();
+
+    const all = await TaskState.scan(dir);
+    expect(all.get('2')!.status).toBe(Status.PENDING);
+  });
+
+  it('blocks dependents when a failed dependency runs out of retries', async () => {
+    const failed = make(dir, 1, 'failed', { status: Status.FAILED });
+    for (let i = 0; i < MAX_FAILURES; i++) failed.incrementFailures();
+    make(dir, 2, 'dependent', { deps: [1] });
+
+    const r = await new Engine(dir, { benchmark: zero }).tick();
+
+    expect(r.task).toBeNull();
+    const all = await TaskState.scan(dir);
+    expect(all.get('1')!.status).toBe(Status.BLOCKED);
+    expect(all.get('2')!.status).toBe(Status.BLOCKED);
+  });
+
+  it('does not block dependents of a converged dependency', async () => {
+    make(dir, 1, 'done', { status: Status.CONVERGED });
+    make(dir, 2, 'dependent', { deps: [1] });
+
+    const r = await new Engine(dir, { benchmark: zero }).tick();
+
+    expect(r.task!.number).toBe(2);
+    const all = await TaskState.scan(dir);
+    expect(all.get('2')!.status).not.toBe(Status.BLOCKED);
+  });
+
+  it('blocks a task when any dependency in a diamond is blocked', async () => {
+    make(dir, 1, 'blocked', { status: Status.BLOCKED });
+    make(dir, 2, 'done', { status: Status.CONVERGED });
+    make(dir, 3, 'dependent', { deps: [1, 2] });
+
+    const r = await new Engine(dir, { benchmark: zero }).tick();
+
+    expect(r.task).toBeNull();
+    const all = await TaskState.scan(dir);
+    expect(all.get('3')!.status).toBe(Status.BLOCKED);
+  });
+
   it('second instance does not steal claim', async () => {
     make(dir, 1, 'a');
     // Instance A claims
@@ -145,6 +251,54 @@ describe('Engine', () => {
       onTick: (r) => { ticks.push(r.task!.number); },
     });
     expect(ticks).toEqual([1, 1, 1]); // 3 ticks on T1
+  });
+
+  it('keep-alive off by default breaks on the first null tick', async () => {
+    make(dir, 1, 'cooldown');
+    const engine = new Engine(dir, {
+      benchmark: one,
+      spawn: async () => ({ success: false, iterations: 0 }),
+      retryCooldownMs: 60000,
+    });
+    await engine.tick();
+    const sleep = vi.fn();
+
+    const total = await engine.loop({ idleSleepMs: 0, sleep });
+
+    expect(total).toBe(0);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('keep-alive waits through transient idle until remaining tasks are terminal', async () => {
+    make(dir, 1, 'cooldown');
+    const engine = new Engine(dir, {
+      benchmark: one,
+      spawn: async () => ({ success: false, iterations: 0 }),
+      retryCooldownMs: 60000,
+    });
+    await engine.tick();
+    const sleep = vi.fn(async () => {
+      const all = await TaskState.scan(dir);
+      all.get('1')!.markBlocked();
+    });
+
+    const total = await engine.loop({ keepAlive: true, idleSleepMs: 0, sleep });
+
+    expect(total).toBe(0);
+    expect(sleep).toHaveBeenCalledTimes(1);
+    const all = await TaskState.scan(dir);
+    expect(all.get('1')!.status).toBe(Status.BLOCKED);
+  });
+
+  it('keep-alive stops immediately when every task is converged or blocked', async () => {
+    make(dir, 1, 'done', { status: Status.CONVERGED });
+    make(dir, 2, 'blocked', { status: Status.BLOCKED });
+    const sleep = vi.fn();
+
+    const total = await new Engine(dir, { benchmark: zero }).loop({ keepAlive: true, sleep });
+
+    expect(total).toBe(0);
+    expect(sleep).not.toHaveBeenCalled();
   });
 
   // ── Recovery ───────────────────────────────────────────────────────

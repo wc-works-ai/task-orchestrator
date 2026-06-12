@@ -261,6 +261,34 @@ describe('TaskState', () => {
     expect(t.dependenciesMet(dir)).toBe(true);
   });
 
+  it('hasBlockedDependency returns true when a dep is blocked', () => {
+    make(dir, 2, 'b', { status: Status.BLOCKED });
+    const t = make(dir, 1, 'a', { deps: [2] });
+    expect(t.hasBlockedDependency(dir)).toBe(true);
+  });
+
+  it('hasBlockedDependency returns false when a dep is converged', () => {
+    make(dir, 2, 'b', { status: Status.CONVERGED });
+    const t = make(dir, 1, 'a', { deps: [2] });
+    expect(t.hasBlockedDependency(dir)).toBe(false);
+  });
+
+  it('hasBlockedDependency returns false when a dep is failed', () => {
+    make(dir, 2, 'b', { status: Status.FAILED });
+    const t = make(dir, 1, 'a', { deps: [2] });
+    expect(t.hasBlockedDependency(dir)).toBe(false);
+  });
+
+  it('hasBlockedDependency returns false when a dep is missing', () => {
+    const t = make(dir, 1, 'a', { deps: [99] });
+    expect(t.hasBlockedDependency(dir)).toBe(false);
+  });
+
+  it('hasBlockedDependency returns false when there are no deps', () => {
+    const t = make(dir, 1, 'a');
+    expect(t.hasBlockedDependency(dir)).toBe(false);
+  });
+
   it('scan skips entries that are not directories', async () => {
     const { writeFileSync } = await import('node:fs');
     // Create a file that matches T-pattern but is not a directory
@@ -408,6 +436,29 @@ describe('TaskState', () => {
     writeFileSync(t.directory + '/autoresearch.md', '- **Model:** gpt-5\n## Goal\nTest');
     const fresh = new TaskState(t.directory);
     expect(fresh.model).toBe('gpt-5');
+  });
+
+  it('maxFailures parses **Retry limit:** integer metadata', () => {
+    const t = make(dir, 1, 'a', { status: Status.PENDING });
+    writeFileSync(join(t.directory, 'autoresearch.md'), '- **Retry limit:** 3\n## Goal\nTest');
+    expect(new TaskState(t.directory).maxFailures).toBe(3);
+  });
+
+  it.each(['infinite', 'unlimited', 'inf'])('maxFailures parses %s as Infinity', (value) => {
+    const t = make(dir, 1, 'a', { status: Status.PENDING });
+    writeFileSync(join(t.directory, 'autoresearch.md'), `- **Retry limit:** ${value}\n## Goal\nTest`);
+    expect(new TaskState(t.directory).maxFailures).toBe(Infinity);
+  });
+
+  it('maxFailures falls back to global default when missing', () => {
+    const t = make(dir, 1, 'a');
+    expect(t.maxFailures).toBe(MAX_FAILURES);
+  });
+
+  it.each(['0', '-2', 'abc'])('maxFailures falls back to global default for invalid value %s', (value) => {
+    const t = make(dir, 1, 'a', { status: Status.PENDING });
+    writeFileSync(join(t.directory, 'autoresearch.md'), `- **Retry limit:** ${value}\n## Goal\nTest`);
+    expect(new TaskState(t.directory).maxFailures).toBe(MAX_FAILURES);
   });
 
   // ── Claim details ──────────────────────────────────────────────────

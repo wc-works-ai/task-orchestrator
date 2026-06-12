@@ -1,10 +1,12 @@
 import { statSync, readFileSync, readdirSync, existsSync, rmSync, appendFileSync, cpSync } from 'node:fs';
 import { resolve, join, dirname, relative } from 'node:path';
-import { TaskState, Status, MAX_FAILURES, type BenchmarkFn, type TaskInfo, type TickResult, type TickNull } from './TaskState.js';
-import { Worktree } from './Worktree.js';
+import { TaskState, Status, type BenchmarkFn, type TaskInfo, type TickResult, type TickNull } from './TaskState.js';
+import { Worktree, MergeConflictError } from './Worktree.js';
 import { env } from './env.js';
 
 const HEARTBEAT_MAX_MS = env.heartbeatMs;
+
+const retryLimitLabel = (limit: number): string => Number.isFinite(limit) ? String(limit) : 'infinite';
 
 export interface SpawnResult {
   readonly success: boolean;
@@ -25,7 +27,10 @@ export interface TokenUsage {
   readonly totalTokens: number;
 }
 
-class MergeFailureError extends Error {}
+type LogCategory = 'routine' | 'transition' | 'always';
+type SleepFn = (ms: number) => Promise<void>;
+
+const sleep: SleepFn = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 export const MergeRecoveryAction = {
   Stop: 'stop',
@@ -51,6 +56,9 @@ export interface EngineOptions {
   readonly repoDir?: string;     // for worktree creation
   readonly worktreesDir?: string; // override default .worktrees/ location
   readonly retryCooldownMs?: number; // min ms between spawn retries (0 = no cooldown, default 30000)
+  readonly keepAlive?: boolean;
+  readonly idleSleepMs?: number;
+  readonly sleep?: SleepFn;
   readonly onTick?: (result: TickResult | TickNull, total: number) => void | Promise<void>;
 }
 
@@ -64,6 +72,9 @@ export class Engine {
   readonly #autoStashBeforeMerge: boolean;
   readonly #id: string;
   readonly #retryCooldownMs: number;
+  readonly #keepAlive: boolean;
+  readonly #idleSleepMs: number;
+  readonly #sleep: SleepFn;
   /** Track active worktrees by task number */
   readonly #worktrees = new Map<number, Worktree>();
   /** Track last failure time per task for retry cooldown */
@@ -79,13 +90,16 @@ export class Engine {
     this.#autoStashBeforeMerge = opts.autoStashBeforeMerge ?? false;
     this.#id = opts.instanceId ?? `${process.pid}_${Date.now()}`;
     this.#retryCooldownMs = opts.retryCooldownMs ?? 0; // default: no cooldown
+    this.#keepAlive = opts.keepAlive ?? env.keepAlive;
+    this.#idleSleepMs = opts.idleSleepMs ?? env.idleSleepMs;
+    this.#sleep = opts.sleep ?? sleep;
   }
 
   get instanceId(): string { return this.#id; }
 
-  #log(msg: string): void {
+  #log(msg: string, category: LogCategory = 'routine'): void {
     const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
-    console.log(`[${ts}] ${msg}`);
+    if (env.logLevel !== 'quiet' || category !== 'routine') console.log(`[${ts}] ${msg}`);
     try { appendFileSync(resolve(this.#dir, 'orchestrator.log'), `[${ts}] ${msg}\n`); } catch {}
   }
 
@@ -110,9 +124,11 @@ export class Engine {
     }
     this.#recover();
     await TaskState.scan(this.#dir);
+    this.#blockTasksWithBlockedDependencies();
 
     const task = await TaskState.pick(this.#dir, this.#id);
     if (!task) {
+      this.#blockTasksWithBlockedDependencies();
       // Diagnostic: show why nothing was picked
       for (const shard of ['pending', 'in_progress', 'failed', 'blocked'] as const) {
         let entries: string[];
@@ -213,7 +229,6 @@ export class Engine {
         this.#log(`T${task.taskNumber} check after agent: metric=${metric}${metric === 0 ? ' (done)' : ' (still needs work)'}`);
         if (metric === 0) return await this.#handleZero(task, metric, wt);
       } catch (e: unknown) {
-        if (e instanceof MergeFailureError) throw e;
         const msg = e instanceof Error ? e.message : String(e);
         if (msg.includes('conflict')) {
           task.status = Status.FAILED;
@@ -232,9 +247,16 @@ export class Engine {
 
   async loop(opts: EngineOptions = {}): Promise<number> {
     let total = 0;
+    const keepAlive = opts.keepAlive ?? this.#keepAlive;
+    const idleSleepMs = opts.idleSleepMs ?? this.#idleSleepMs;
+    const sleepFn = opts.sleep ?? this.#sleep;
     while (true) {
       const result = await this.tick();
-      if (!result.task) break;
+      if (!result.task) {
+        if (!keepAlive || await this.#isRunComplete()) break;
+        await sleepFn(idleSleepMs);
+        continue;
+      }
       total++;
       if (opts.onTick) await opts.onTick(result, total);
     }
@@ -252,11 +274,19 @@ export class Engine {
         try {
           await this.#mergeAndRemove(task, tree);
         } catch (e: unknown) {
-          await this.#recoverMergeFailure(task, tree, e);
+          if (e instanceof MergeConflictError) {
+            // Park the task as-is: keep its branch, do not rerun. The fleet keeps
+            // going; the branch can be merged once the block is released.
+            task.markBlocked();
+            this.#log(`T${task.taskNumber} merge conflict; task BLOCKED; branch ${tree.branch} kept to merge after release`, 'transition');
+            return { task: task.info, metric, converged: false };
+          }
+          const recovered = await this.#recoverMergeFailure(task, tree, e);
+          if (!recovered) return { task: task.info, metric, converged: false };
         }
       }
       task.status = Status.CONVERGED;
-      this.#log(`T${task.taskNumber} CONVERGED`);
+      this.#log(`T${task.taskNumber} CONVERGED`, 'transition');
       return { task: task.info, metric, converged: true };
     }
     return { task: task.info, metric, converged: false };
@@ -267,43 +297,58 @@ export class Engine {
       const stashed = await wt.stashParentChanges(`orchestrator ${task.taskName} pre-merge`);
       if (stashed) this.#log(`T${task.taskNumber} stashed parent repo changes before merge`);
     }
-    await wt.merge(task.scope);
+    await wt.merge();
     await wt.remove();
     this.#worktrees.delete(task.taskNumber);
   }
 
-  async #recoverMergeFailure(task: TaskState, wt: Worktree, e: unknown): Promise<void> {
+  async #recoverMergeFailure(task: TaskState, wt: Worktree, e: unknown): Promise<boolean> {
     const detail = this.#singleLine(e instanceof Error ? e.message : String(e));
-    const action = this.#mergeRecovery
-      ? await this.#mergeRecovery({
-        task: task.info,
-        worktreePath: wt.path,
-        branch: wt.branch,
-        error: detail,
-      })
-      : MergeRecoveryAction.Stop;
+    let action: MergeRecoveryAction;
+    try {
+      action = this.#mergeRecovery
+        ? await this.#mergeRecovery({
+          task: task.info,
+          worktreePath: wt.path,
+          branch: wt.branch,
+          error: detail,
+        })
+        : MergeRecoveryAction.Stop;
+    } catch (recoveryError: unknown) {
+      this.#handleMergeFailure(task, recoveryError, 'merge recovery failed');
+      return false;
+    }
 
     if (action === MergeRecoveryAction.StashAndRetry) {
-      const stashed = await wt.stashParentChanges(`orchestrator ${task.taskName} merge recovery`);
-      this.#log(`T${task.taskNumber} ${stashed ? 'stashed parent repo changes' : 'found no parent repo changes to stash'}; retrying merge`);
       try {
+        const stashed = await wt.stashParentChanges(`orchestrator ${task.taskName} merge recovery`);
+        this.#log(`T${task.taskNumber} ${stashed ? 'stashed parent repo changes' : 'found no parent repo changes to stash'}; retrying merge`);
         await this.#mergeAndRemove(task, wt);
-        return;
+        return true;
       } catch (retryError: unknown) {
         this.#handleMergeFailure(task, retryError, 'after auto-stash');
+        return false;
       }
     }
 
     this.#handleMergeFailure(task, e);
+    return false;
   }
 
-  #handleMergeFailure(task: TaskState, e: unknown, context = ''): never {
+  #handleMergeFailure(task: TaskState, e: unknown, context = ''): void {
     const detail = this.#singleLine(e instanceof Error ? e.message : String(e));
     const reason = context ? `${context}: ${detail}` : detail;
-    task.release(Status.FAILED);
+    task.markBlocked();
     this.#retryCooldowns.set(task.taskNumber, Date.now());
-    this.#log(`T${task.taskNumber} merge failed: ${reason}; task FAILED; worktree kept for inspection`);
-    throw new MergeFailureError(`T${task.taskNumber} merge failed; worktree kept for inspection. ${reason}`);
+    this.#log(`T${task.taskNumber} merge failed: ${reason}; task BLOCKED; worktree kept for inspection`, 'transition');
+  }
+
+  async #isRunComplete(): Promise<boolean> {
+    const all = await TaskState.scan(this.#dir);
+    for (const task of all.values()) {
+      if (!task.isConverged && !task.isBlocked) return false;
+    }
+    return true;
   }
 
   #taskDirectoryInWorktree(task: TaskState, worktreePath: string): string {
@@ -312,22 +357,45 @@ export class Engine {
 
   #handleFailure(task: TaskState, metric: number): TickResult {
     const failures = task.incrementFailures();
+    const limit = task.maxFailures;
+    const limitLabel = retryLimitLabel(limit);
     this.#retryCooldowns.set(task.taskNumber, Date.now());
-    if (failures >= MAX_FAILURES) {
+    if (failures >= limit) {
       task.markBlocked();
-      this.#log(`T${task.taskNumber} stopping: metric is still ${metric} after ${failures}/${MAX_FAILURES} failed attempts; no retries left`);
+      this.#log(`T${task.taskNumber} stopping: metric is still ${metric} after ${failures}/${limitLabel} failed attempts; no retries left`, 'transition');
     } else {
       task.release(Status.FAILED);
-      this.#log(`T${task.taskNumber} retrying: metric is still ${metric} (failed attempt ${failures}/${MAX_FAILURES})`);
+      this.#log(`T${task.taskNumber} retrying: metric is still ${metric} (failed attempt ${failures}/${limitLabel})`);
     }
     return { task: task.info, metric, converged: false };
   }
 
+  #blockTasksWithBlockedDependencies(): void {
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const shard of ['pending', 'failed'] as const) {
+        let entries: string[];
+        try { entries = readdirSync(resolve(this.#dir, shard)); } catch { continue; }
+        for (const e of entries) {
+          if (!e.startsWith('T')) continue;
+          const task = new TaskState(resolve(this.#dir, shard, e));
+          if (task.isConverged || task.isBlocked || task.isInProgress) continue;
+          if (!task.hasBlockedDependency(this.#dir)) continue;
+          task.markBlocked();
+          this.#log(`T${task.taskNumber} BLOCKED — dependency is blocked; cannot converge`, 'transition');
+          changed = true;
+        }
+      }
+    }
+  }
+
   #handleBlocked(task: TaskState, metric: number, reason: string): TickResult {
     const failures = task.incrementFailures();
+    const limitLabel = retryLimitLabel(task.maxFailures);
     task.markBlocked();
     this.#retryCooldowns.set(task.taskNumber, Date.now());
-    this.#log(`T${task.taskNumber} stopping: ${this.#singleLine(reason)} (failed attempt ${failures}/${MAX_FAILURES}, metric=${metric})`);
+    this.#log(`T${task.taskNumber} stopping: ${this.#singleLine(reason)} (failed attempt ${failures}/${limitLabel}, metric=${metric})`, 'transition');
     return { task: task.info, metric, converged: false };
   }
 

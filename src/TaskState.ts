@@ -177,6 +177,15 @@ export class TaskState {
     return true;
   }
 
+  hasBlockedDependency(tasksDir: string): boolean {
+    for (const d of this.dependencies) {
+      // Missing deps still wait; only terminal BLOCKED deps cascade.
+      const depTask = TaskState.#findByNumber(tasksDir, d);
+      if (depTask?.status === Status.BLOCKED) return true;
+    }
+    return false;
+  }
+
   static #findByNumber(tasksDir: string, num: number): TaskState | null {
     for (const shard of SHARDS) {
       const shardDir = resolve(tasksDir, shard);
@@ -256,6 +265,17 @@ export class TaskState {
     } catch { return ''; }
   }
 
+  get maxFailures(): number {
+    try {
+      const raw = readFileSync(join(this.#dir, 'autoresearch.md'), 'utf-8')
+        .match(/\*\*Retry limit:\*\*\s*(.+)/i)?.[1]?.trim() ?? '';
+      if (/^(infinite|unlimited|inf)$/i.test(raw)) return Infinity;
+      if (!/^\d+$/.test(raw)) return MAX_FAILURES;
+      const n = Number(raw);
+      return n >= 1 ? n : MAX_FAILURES;
+    } catch { return MAX_FAILURES; }
+  }
+
   // ── Static ──────────────────────────────────────────────────────────
 
   /** Scan all shards and return a Map of task number → TaskState */
@@ -299,7 +319,7 @@ export class TaskState {
         const t = new TaskState(resolve(tasksDir, shard, dirName));
 
         if (t.isConverged || t.isBlocked) continue;
-        if (t.isFailed && t.failureCount >= MAX_FAILURES) { t.markBlocked(); continue; }
+        if (t.isFailed && t.failureCount >= t.maxFailures) { t.markBlocked(); continue; }
         if (t.isInProgress) {
           if (!t.isClaimed) { t.release(Status.FAILED); continue; }
           if (t.claimOwnerId !== instanceId) continue;

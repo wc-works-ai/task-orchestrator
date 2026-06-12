@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { writeFileSync, appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { TaskState } from './TaskState.js';
 import { env } from './env.js';
@@ -13,7 +13,17 @@ const F_AGENT_LOG = 'agent.log';
 const AUTH_FAILURE_RE = /No API key found for ([^\s.]+)\./g;
 const SUMMARY_MAX = 120;
 const PROGRESS_STATUS_INTERVAL = 30_000;
+const DEFAULT_AGENT_LOG_MAX_BYTES = 10 * 1024 * 1024;
+const MAX_JSON_LINE_BUFFER = 1_000_000;
+const AUTH_SCAN_TAIL = 512;
+const ITERATION_MARKER = 'log_experiment';
+const LOG_TRUNCATED_MARKER = '\n=== agent.log truncated; keeping latest output only ===\n';
 type MutableTokenUsage = { -readonly [K in keyof TokenUsage]: TokenUsage[K] };
+interface AgentLog {
+  readonly path: string;
+  readonly maxBytes: number;
+  bytes: number;
+}
 
 export interface PiSpawnerOptions {
   /** Optional model override when task doesn't specify one */
@@ -28,6 +38,10 @@ export interface PiSpawnerOptions {
   readonly progressCheckInterval?: number;
   /** Min silent time (ms) before quiet running status lines (default: 30_000). Only overridden in tests. */
   readonly progressStatusInterval?: number;
+  /** Max agent.log size in bytes (default: 10 MiB). */
+  readonly agentLogMaxBytes?: number;
+  /** Write raw spawned-agent stdout/stderr to agent.log (default: false). */
+  readonly agentLogRaw?: boolean;
 }
 
 export class PiSpawner {
@@ -37,6 +51,8 @@ export class PiSpawner {
   readonly #progressTimeout: number;
   readonly #progressCheckInterval: number;
   readonly #progressStatusInterval: number;
+  readonly #agentLogMaxBytes: number;
+  readonly #agentLogRaw: boolean;
 
   constructor(opts: PiSpawnerOptions = {}) {
     this.#model = opts.model || env.model;
@@ -45,6 +61,8 @@ export class PiSpawner {
     this.#progressTimeout = opts.progressTimeout ?? env.progressTimeoutMs;
     this.#progressCheckInterval = opts.progressCheckInterval ?? 10_000;
     this.#progressStatusInterval = opts.progressStatusInterval ?? PROGRESS_STATUS_INTERVAL;
+    this.#agentLogMaxBytes = PiSpawner.#positiveInt(opts.agentLogMaxBytes ?? env.agentLogMaxBytes, DEFAULT_AGENT_LOG_MAX_BYTES);
+    this.#agentLogRaw = opts.agentLogRaw ?? env.agentLogRaw;
   }
 
   /** Resolve the model for a task: metadata → constructor → env → pi default */
@@ -124,19 +142,29 @@ export class PiSpawner {
       /* c8 ignore next 1 */
       signal?.addEventListener('abort', () => { aborted = true; child.kill(); }, { once: true });
 
-      let output = '';
+      let iterations = 0;
       let lineBuf = '';
+      let iterationTail = '';
+      let authTail = '';
+      const authProviders = new Set<string>();
       const tokenUsage = PiSpawner.#emptyTokenUsage();
       let lastProgress = Date.now();
       let lastStatus = Date.now();
+      let rawBytes = 0;
       const result = (r: Omit<SpawnResult, 'tokenUsage'>): SpawnResult =>
         PiSpawner.#hasTokenUsage(tokenUsage)
           ? { ...r, tokenUsage: { ...tokenUsage } }
           : r;
 
       const logPath = join(task.directory, F_AGENT_LOG);
-      // Append header with separator (don't truncate — preserve history across spawns)
-      try { appendFileSync(logPath, `\n=== agent session started at ${new Date().toISOString()} ===\n`); } catch {}
+      const agentLog = PiSpawner.#openAgentLog(logPath, this.#agentLogMaxBytes);
+      try {
+        PiSpawner.#appendAgentLog(agentLog, [
+          `=== agent session started at ${new Date().toISOString()} ===`,
+          `=== agent log mode: ${this.#agentLogRaw ? 'raw' : 'summary'}${this.#agentLogRaw ? '' : ' (set ORCH_AGENT_LOG_RAW=1 for raw pi stream)'} ===`,
+          '',
+        ].join('\n'));
+      } catch {}
 
       // Auto-generate autoresearch.sh — overwrites agent-modified versions on every spawn
       // Must NOT cd to another dir; runs from worktree root where node_modules lives
@@ -150,20 +178,20 @@ export class PiSpawner {
       } catch {}
 
       const handleData = (txt: string) => {
-        output += txt;
-        try { appendFileSync(logPath, txt); } catch {}
-
-        lineBuf += txt;
-        const lines = lineBuf.split('\n');
-        lineBuf = lines.pop() ?? '';
-        for (const raw of lines) {
-          if (!raw.trim()) continue;
-          try {
-            const obj = JSON.parse(raw) as Record<string, unknown>;
-            const usage = PiSpawner.#usageFromEvent(obj);
-            if (usage) PiSpawner.#addTokenUsage(tokenUsage, usage);
-          } catch {}
+        rawBytes += Buffer.byteLength(txt);
+        if (this.#agentLogRaw) {
+          try { PiSpawner.#appendAgentLog(agentLog, txt); } catch {}
         }
+
+        const iterationScan = `${iterationTail}${txt}`;
+        iterations += PiSpawner.#countOccurrences(iterationScan, ITERATION_MARKER);
+        iterationTail = PiSpawner.#tail(iterationScan, ITERATION_MARKER.length - 1);
+
+        const authScan = `${authTail}${txt}`;
+        PiSpawner.#collectAuthProviders(authScan, authProviders);
+        authTail = PiSpawner.#tail(authScan, AUTH_SCAN_TAIL);
+
+        lineBuf = PiSpawner.#processJsonLines(txt, lineBuf, tokenUsage);
       };
 
       child.stdout?.on('data', (d: Buffer) => { lastProgress = Date.now(); handleData(d.toString()); });
@@ -194,12 +222,23 @@ export class PiSpawner {
 
       child.on('close', (code: number | null) => {
         clearInterval(progressTimer);
-        const iterations = (output.match(/log_experiment/g) || []).length;
+        const authError = PiSpawner.#authError(authProviders);
+        const failure = aborted
+          ? 'pi spawn aborted'
+          : code !== 0 && !authError
+            ? `pi exited with code ${code ?? 'unknown'}`
+            : '';
         // Append footer and close — previous chunks already streamed
         try {
-          appendFileSync(logPath, `=== agent session ended (exit ${code}) ===
-${PiSpawner.#hasTokenUsage(tokenUsage) ? `=== token usage ${PiSpawner.#formatTokenUsage(tokenUsage)} ===\n` : ''}
-`);
+          PiSpawner.#appendAgentLog(agentLog, [
+            `=== agent session ended (exit ${code}) ===`,
+            `=== raw output bytes=${rawBytes} ${this.#agentLogRaw ? 'logged' : 'omitted'} ===`,
+            `=== iterations=${iterations} ===`,
+            authError ? `=== auth failure ${authError} ===` : '',
+            failure ? `=== failure ${failure} ===` : '',
+            PiSpawner.#hasTokenUsage(tokenUsage) ? `=== token usage ${PiSpawner.#formatTokenUsage(tokenUsage)} ===` : '',
+            '',
+          ].filter(Boolean).join('\n'));
         /* c8 ignore start */
         } catch (e: unknown) {
           console.error(`[PiSpawner] failed to finalize ${F_AGENT_LOG}: ${e instanceof Error ? e.message : String(e)}`);
@@ -207,7 +246,6 @@ ${PiSpawner.#hasTokenUsage(tokenUsage) ? `=== token usage ${PiSpawner.#formatTok
         /* c8 ignore stop */
         // If the signal was aborted, the kill may have triggered this close;
         // report as a failure regardless of exit code.
-        const authError = PiSpawner.#authError(output);
         if (!aborted && code !== 0 && authError) {
           done(result({ success: false, iterations, authFailure: true, error: authError, logPath }));
         } else if (aborted) {
@@ -227,13 +265,15 @@ ${PiSpawner.#hasTokenUsage(tokenUsage) ? `=== token usage ${PiSpawner.#formatTok
   }
 
   /** Extract provider auth failures from pi output. */
-  static #authError(output: string): string {
-    const providers: string[] = [];
+  static #authError(providers: ReadonlySet<string>): string {
+    return providers.size > 0 ? `No API key found for ${[...providers].join(', ')}` : '';
+  }
+
+  static #collectAuthProviders(output: string, providers: Set<string>): void {
     for (const match of output.matchAll(AUTH_FAILURE_RE)) {
       const provider = match[1];
-      if (provider && !providers.includes(provider)) providers.push(provider);
+      if (provider) providers.add(provider);
     }
-    return providers.length > 0 ? `No API key found for ${providers.join(', ')}` : '';
   }
 
   static #modelLabel(model: string | undefined): string {
@@ -249,6 +289,92 @@ ${PiSpawner.#hasTokenUsage(tokenUsage) ? `=== token usage ${PiSpawner.#formatTok
 
   static #formatDuration(ms: number): string {
     return ms < 1000 ? `${ms}ms` : `${Math.round(ms / 1000)}s`;
+  }
+
+  static #positiveInt(value: number, fallback: number): number {
+    return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+  }
+
+  static #openAgentLog(path: string, maxBytes: number): AgentLog {
+    try { writeFileSync(path, ''); } catch {}
+    return { path, maxBytes, bytes: 0 };
+  }
+
+  static #appendAgentLog(log: AgentLog, text: string): void {
+    const chunk = Buffer.from(text);
+    if (log.bytes + chunk.length <= log.maxBytes) {
+      appendFileSync(log.path, chunk);
+      log.bytes += chunk.length;
+      return;
+    }
+
+    const marker = Buffer.from(LOG_TRUNCATED_MARKER);
+    const available = log.maxBytes - marker.length;
+    if (available <= 0) {
+      const next = marker.subarray(0, log.maxBytes);
+      writeFileSync(log.path, next);
+      log.bytes = next.length;
+      return;
+    }
+
+    const chunkBytes = Math.min(chunk.length, available);
+    const existingBytes = available - chunkBytes;
+    const existing = existingBytes > 0
+      ? readFileSync(log.path).subarray(Math.max(0, log.bytes - existingBytes))
+      : Buffer.alloc(0);
+    const next = Buffer.concat([
+      marker,
+      existing,
+      chunk.subarray(chunk.length - chunkBytes),
+    ]);
+    writeFileSync(log.path, next);
+    log.bytes = next.length;
+  }
+
+  static #countOccurrences(text: string, needle: string): number {
+    let count = 0;
+    let index = text.indexOf(needle);
+    while (index !== -1) {
+      count++;
+      index = text.indexOf(needle, index + needle.length);
+    }
+    return count;
+  }
+
+  static #tail(text: string, length: number): string {
+    return length > 0 && text.length > length ? text.slice(-length) : text;
+  }
+
+  static #processJsonLines(txt: string, lineBuf: string, tokenUsage: MutableTokenUsage): string {
+    let start = 0;
+    while (true) {
+      const newline = txt.indexOf('\n', start);
+      if (newline === -1) break;
+      const segment = txt.slice(start, newline);
+      if (lineBuf.length + segment.length <= MAX_JSON_LINE_BUFFER) {
+        PiSpawner.#parseJsonLine(`${lineBuf}${segment}`, tokenUsage);
+      }
+      lineBuf = '';
+      start = newline + 1;
+    }
+
+    const remainder = txt.slice(start);
+    return remainder ? PiSpawner.#appendBounded(lineBuf, remainder, MAX_JSON_LINE_BUFFER) : lineBuf;
+  }
+
+  static #appendBounded(current: string, next: string, maxLength: number): string {
+    if (next.length >= maxLength) return next.slice(-maxLength);
+    const overflow = current.length + next.length - maxLength;
+    return overflow > 0 ? `${current.slice(overflow)}${next}` : `${current}${next}`;
+  }
+
+  static #parseJsonLine(raw: string, tokenUsage: MutableTokenUsage): void {
+    if (!raw.trim()) return;
+    try {
+      const obj = JSON.parse(raw) as Record<string, unknown>;
+      const usage = PiSpawner.#usageFromEvent(obj);
+      if (usage) PiSpawner.#addTokenUsage(tokenUsage, usage);
+    } catch {}
   }
 
   static #emptyTokenUsage(): MutableTokenUsage {

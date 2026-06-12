@@ -6,6 +6,9 @@ function gitErrorMessage(e: unknown): string {
   return e instanceof Error ? e.message.replace(/\s+/g, ' ').trim() : String(e);
 }
 
+/** Thrown when merging the task branch into the base branch hits a conflict. */
+export class MergeConflictError extends Error {}
+
 export interface WorktreeOptions {
   readonly name: string;
   readonly baseBranch?: string;
@@ -50,7 +53,7 @@ export class Worktree {
     return this.#path;
   }
 
-  async merge(taskScope: string[] = []): Promise<void> {
+  async merge(): Promise<void> {
     const prevBranch = this.#git('rev-parse', '--abbrev-ref', 'HEAD').trim();
     try {
       this.#git('checkout', this.#base);
@@ -61,15 +64,14 @@ export class Worktree {
 
     try {
       this.#git('merge', '--no-ff', this.#branch, '-m', `Merge ${this.#branch}`);
-    } catch {
-      // Conflict — try auto-resolution
-      try { this.#autoResolve(taskScope); } catch (e: unknown) {
-        /* c8 ignore start */
-        try { this.#git('merge', '--abort'); } catch {}
-        try { this.#git('checkout', prevBranch); } catch {}
-        throw new Error(`Merge conflict in ${this.#name} — manual resolution required: ${gitErrorMessage(e)}`);
-        /* c8 ignore stop */
-      }
+    } catch (e: unknown) {
+      // Conflict: do not auto-resolve — never silently discard anyone's work.
+      // Abort the merge, restore the previous branch so the main checkout stays
+      // clean, and keep this branch as-is so it can be merged after the block is
+      // released.
+      try { this.#git('merge', '--abort'); } catch {}
+      try { this.#git('checkout', prevBranch); } catch {}
+      throw new MergeConflictError(`Merge conflict in ${this.#name}; branch ${this.#branch} kept to merge after the block is released: ${gitErrorMessage(e)}`);
     }
   }
 
@@ -77,28 +79,6 @@ export class Worktree {
     if (!this.#git('status', '--porcelain').trim()) return false;
     this.#git('stash', 'push', '-u', '-m', message);
     return true;
-  }
-
-  /** Auto-resolve: accept worktree version for scoped files, main version for rest */
-  #autoResolve(scopeFiles: string[]): void {
-    const conflicted = this.#git('diff', '--name-only', '--diff-filter=U')
-      .trim().split('\n').filter(Boolean);
-    if (conflicted.length === 0) {
-      throw new Error('merge failed without conflicted files to auto-resolve');
-    }
-
-    for (const file of conflicted) {
-      const isScoped = scopeFiles.some(sf => file.includes(sf));
-      if (isScoped) {
-        // Accept worktree version (theirs) for task's own scope
-        this.#git('checkout', '--theirs', file);
-      } else {
-        // Accept main version (ours) for files outside scope
-        this.#git('checkout', '--ours', file);
-      }
-      this.#git('add', file);
-    }
-    this.#git('commit', '--no-edit');
   }
 
   /** Discard all worktree changes — agent starts fresh on retry */

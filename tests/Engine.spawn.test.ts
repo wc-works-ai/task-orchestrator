@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { rm } from 'node:fs/promises';
-import { mkdtempSync, mkdirSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, existsSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { Engine, MergeRecoveryAction } from '../src/Engine.js';
 import { TaskState, Status, type TaskInfo } from '../src/TaskState.js';
@@ -27,6 +27,48 @@ function make(dir: string, n: number, name: string, opts?: {
 
 function joinedCalls(spy: { mock: { calls: readonly (readonly unknown[])[] } }): string {
   return spy.mock.calls.map((call: readonly unknown[]) => call.map(String).join(' ')).join('\n');
+}
+
+async function dirtyMergeScenario(dir: string): Promise<{
+  engine: Engine;
+  tasksDir: string;
+  worktreesDir: string;
+}> {
+  const { execSync } = await import('node:child_process');
+  const { mkdirSync: mk } = await import('node:fs');
+
+  const repoDir = resolve(dir, 'repo');
+  const tasksDir = resolve(dir, 'tasks');
+  const worktreesDir = resolve(dir, 'worktrees');
+  mk(repoDir, { recursive: true });
+  execSync('git init && git config user.email test@test && git config user.name test', { cwd: repoDir });
+  writeFileSync(join(repoDir, 'tracked.txt'), 'master');
+  execSync('git add tracked.txt && git commit -m "master tracked"', { cwd: repoDir });
+  execSync('git checkout -b dev', { cwd: repoDir });
+  writeFileSync(join(repoDir, 'tracked.txt'), 'dev');
+  execSync('git add tracked.txt && git commit -m "dev tracked"', { cwd: repoDir });
+
+  for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
+    mk(resolve(tasksDir, s), { recursive: true });
+  }
+
+  const d = resolve(tasksDir, 'pending', 'T01-x');
+  mk(d, { recursive: true });
+  writeFileSync(resolve(d, '.status'), 'PENDING\n');
+
+  const spawn = vi.fn().mockImplementation(async (_task: TaskState, wtPath?: string) => {
+    if (!wtPath) throw new Error('missing worktree path');
+    writeFileSync(join(wtPath, 'work.txt'), 'worktree');
+    execSync('git add work.txt && git commit -m "work"', { cwd: wtPath });
+    writeFileSync(join(repoDir, 'tracked.txt'), 'dirty dev');
+    return { success: true, iterations: 1 };
+  });
+  const benchmark = vi.fn()
+    .mockResolvedValueOnce(1).mockResolvedValueOnce(0)
+    .mockResolvedValue(0);
+  const engine = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir });
+
+  return { engine, tasksDir, worktreesDir };
 }
 
 describe('Engine agent spawning', () => {
@@ -201,47 +243,27 @@ describe('Engine agent spawning', () => {
     expect(r.metric).toBe(0);
   });
 
-  it('does not mark converged or remove worktree when merge back fails', async () => {
-    const { execSync } = await import('node:child_process');
-    const { mkdirSync: mk } = await import('node:fs');
-
-    const repoDir = resolve(dir, 'repo');
-    const tasksDir = resolve(dir, 'tasks');
-    const worktreesDir = resolve(dir, 'worktrees');
-    mk(repoDir, { recursive: true });
-    execSync('git init && git config user.email test@test && git config user.name test', { cwd: repoDir });
-    writeFileSync(join(repoDir, 'tracked.txt'), 'master');
-    execSync('git add tracked.txt && git commit -m "master tracked"', { cwd: repoDir });
-    execSync('git checkout -b dev', { cwd: repoDir });
-    writeFileSync(join(repoDir, 'tracked.txt'), 'dev');
-    execSync('git add tracked.txt && git commit -m "dev tracked"', { cwd: repoDir });
-
-    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
-      mk(resolve(tasksDir, s), { recursive: true });
-    }
-
-    const d = resolve(tasksDir, 'pending', 'T01-x');
-    mk(d, { recursive: true });
-    writeFileSync(resolve(d, '.status'), 'PENDING\n');
-
-    const spawn = vi.fn().mockImplementation(async (_task: TaskState, wtPath?: string) => {
-      if (!wtPath) throw new Error('missing worktree path');
-      writeFileSync(join(wtPath, 'work.txt'), 'worktree');
-      execSync('git add work.txt && git commit -m "work"', { cwd: wtPath });
-      writeFileSync(join(repoDir, 'tracked.txt'), 'dirty dev');
-      return { success: true, iterations: 1 };
-    });
-    const benchmark = vi.fn()
-      .mockResolvedValueOnce(1).mockResolvedValueOnce(0)
-      .mockResolvedValue(0);
-    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir });
-
+  it('blocks the task and keeps the worktree when merge back fails (no crash)', async () => {
+    const { engine, tasksDir, worktreesDir } = await dirtyMergeScenario(dir);
     await engine.tick();
     await engine.tick();
-    await expect(engine.tick()).rejects.toThrow(/merge failed/);
+    const r = await engine.tick();
+
+    expect(r.converged).toBe(false);
+    const all = await TaskState.scan(tasksDir);
+    expect(all.get('1')!.status).toBe(Status.BLOCKED);
+    expect(existsSync(join(worktreesDir, 'T01-x', '.git'))).toBe(true);
+  });
+
+  it('loop blocks a task on merge failure and continues without throwing', async () => {
+    const { engine, tasksDir, worktreesDir } = await dirtyMergeScenario(dir);
+    await engine.tick();
+    await engine.tick();
+
+    await expect(engine.loop()).resolves.toBe(1);
 
     const all = await TaskState.scan(tasksDir);
-    expect(all.get('1')!.status).toBe(Status.FAILED);
+    expect(all.get('1')!.status).toBe(Status.BLOCKED);
     expect(existsSync(join(worktreesDir, 'T01-x', '.git'))).toBe(true);
   });
 
@@ -361,6 +383,53 @@ describe('Engine agent spawning', () => {
     expect(execSync('git status --porcelain', { cwd: repoDir, encoding: 'utf-8' })).toBe('');
     expect(execSync('git stash list', { cwd: repoDir, encoding: 'utf-8' }))
       .toContain('orchestrator T01-x pre-merge');
+  });
+
+  it('blocks the task and keeps the branch when merge-back conflicts', async () => {
+    const { execSync } = await import('node:child_process');
+    const { mkdirSync: mk } = await import('node:fs');
+
+    const repoDir = resolve(dir, 'repo');
+    const tasksDir = resolve(dir, 'tasks');
+    const worktreesDir = resolve(dir, 'worktrees');
+    mk(repoDir, { recursive: true });
+    execSync('git init && git config user.email test@test && git config user.name test', { cwd: repoDir });
+    writeFileSync(join(repoDir, 'shared.txt'), 'base');
+    execSync('git add shared.txt && git commit -m "base"', { cwd: repoDir });
+
+    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
+      mk(resolve(tasksDir, s), { recursive: true });
+    }
+    const d = resolve(tasksDir, 'pending', 'T01-x');
+    mk(d, { recursive: true });
+    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+
+    // Worktree changes shared.txt; main changes the same file differently →
+    // merge-back conflict.
+    const spawn = vi.fn().mockImplementation(async (_task: TaskState, wtPath?: string) => {
+      if (!wtPath) throw new Error('missing worktree path');
+      writeFileSync(join(wtPath, 'shared.txt'), 'worktree');
+      execSync('git add shared.txt && git commit -m "wt change"', { cwd: wtPath });
+      writeFileSync(join(repoDir, 'shared.txt'), 'main change');
+      execSync('git add shared.txt && git commit -m "main change"', { cwd: repoDir });
+      return { success: true, iterations: 1 };
+    });
+    const benchmark = vi.fn()
+      .mockResolvedValueOnce(1).mockResolvedValueOnce(0)
+      .mockResolvedValue(0);
+    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir });
+
+    await engine.tick();
+    await engine.tick();
+    const r = await engine.tick();
+
+    expect(r.converged).toBe(false);
+    const all = await TaskState.scan(tasksDir);
+    expect(all.get('1')!.status).toBe(Status.BLOCKED);
+    // Branch kept for later merge; main untouched and clean — no rerun, no discard
+    expect(existsSync(join(worktreesDir, 'T01-x', '.git'))).toBe(true);
+    expect(readFileSync(join(repoDir, 'shared.txt'), 'utf-8')).toBe('main change');
+    expect(execSync('git status --porcelain', { cwd: repoDir, encoding: 'utf-8' })).toBe('');
   });
 
   it('handles merge conflict error from spawn', async () => {

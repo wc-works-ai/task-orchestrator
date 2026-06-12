@@ -3,7 +3,7 @@ import { rm } from 'node:fs/promises';
 import { mkdtempSync, existsSync, readFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { execFileSync, execSync } from 'node:child_process';
-import { Worktree } from '../src/Worktree.js';
+import { Worktree, MergeConflictError } from '../src/Worktree.js';
 
 function setup() {
   const dir = mkdtempSync(resolve('/tmp', 'wt-test-'));
@@ -99,35 +99,22 @@ describe('Worktree', () => {
     expect(execSync('git stash list', { cwd: repo, encoding: 'utf-8' })).toContain('dirty stash');
   });
 
-  it('auto-resolves conflict in unscoped files', async () => {
+  it('throws MergeConflictError and keeps the branch when merge conflicts', async () => {
     const wt = new Worktree(repo, { name: 'T01-test' });
     await wt.create();
     const { writeFileSync } = await import('node:fs');
-    // Main: creates file
+    // Main and worktree change the same file differently → conflict on merge
     writeFileSync(join(repo, 'shared.txt'), 'main content');
     execSync('git add shared.txt && git commit -m "main change"', { cwd: repo });
-    // Worktree: conflicting change
     writeFileSync(join(wt.path, 'shared.txt'), 'worktree content');
     execSync('git add shared.txt && git commit -m "wt change"', { cwd: wt.path });
-    // Merge with empty scope → auto-resolve: accept main (ours)
-    await wt.merge([]);
-    // Main version should win (ours for unscoped files)
-    const content = readFileSync(join(repo, 'shared.txt'), 'utf-8');
-    expect(content).toBe('main content');
-  });
 
-  it('auto-resolves conflict: worktree wins for scoped files', async () => {
-    const { writeFileSync } = await import('node:fs');
-    const wt = new Worktree(repo, { name: 'T01-test' });
-    await wt.create();
-    // Main creates file AFTER worktree → triggers conflict on merge
-    writeFileSync(join(repo, 'scoped.txt'), 'main version');
-    execSync('git add scoped.txt && git commit -m "main"', { cwd: repo });
-    // Worktree creates same file differently → both sides modify = conflict
-    writeFileSync(join(wt.path, 'scoped.txt'), 'worktree version');
-    execSync('git add scoped.txt && git commit -m "wt"', { cwd: wt.path });
-    await wt.merge(['scoped.txt']);
-    expect(readFileSync(join(repo, 'scoped.txt'), 'utf-8')).toBe('worktree version');
+    await expect(wt.merge()).rejects.toThrow(MergeConflictError);
+
+    // No silent resolution: main file untouched, branch kept, merge aborted cleanly
+    expect(readFileSync(join(repo, 'shared.txt'), 'utf-8')).toBe('main content');
+    expect(execSync('git branch', { cwd: repo, encoding: 'utf-8' })).toContain('orchestrator/T01-test');
+    expect(() => execSync('git rev-parse -q --verify MERGE_HEAD', { cwd: repo, encoding: 'utf-8' })).toThrow();
   });
 
   it('remove deletes worktree and branch', async () => {
@@ -148,26 +135,6 @@ describe('Worktree', () => {
     // resetForRetry may fail silently if base branch is in use elsewhere
     // It must never throw
     await expect(wt.resetForRetry()).resolves.toBeUndefined();
-  });
-
-  it('merge error path throws when auto-resolve fails', async () => {
-    // Create two worktrees that conflict on the same file
-    const wt = new Worktree(repo, { name: 'T01-test' });
-    await wt.create();
-    const { writeFileSync } = await import('node:fs');
-
-    writeFileSync(join(repo, 'shared.txt'), 'main');
-    execSync('git add shared.txt && git commit -m "main"', { cwd: repo });
-    writeFileSync(join(wt.path, 'shared.txt'), 'worktree');
-    execSync('git add shared.txt && git commit -m "wt"', { cwd: wt.path });
-
-    // Merge with empty scope — auto-resolve uses --ours for unscoped files
-    // This path exercises the outer catch (line 48) and #autoResolve (lines 59-76)
-    await wt.merge([]);
-
-    // Verify ours won (main content preserved)
-    const content = readFileSync(join(repo, 'shared.txt'), 'utf-8');
-    expect(content).toBe('main');
   });
 
   it('reuses existing worktree without error', async () => {

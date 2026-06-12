@@ -37,9 +37,11 @@ npm run tick
 3. **Agent iterates** — reads the task, runs experiments, edits files in an isolated git worktree
 4. **Convergence** — when the benchmark reaches its target for 3 consecutive runs, the task is merged back
 
-If merge-back is blocked, the task is not marked converged. Interactive runs ask whether to manually clean up and retry later or auto-stash parent repo changes and retry the merge immediately. Non-interactive runs fail closed and keep the worktree for inspection.
+If merge-back is blocked, the task is marked BLOCKED and the worktree is kept for inspection while the run continues. Interactive runs may auto-stash parent repo changes and retry the merge immediately.
 
-Agent summaries include total token usage when the spawned `pi` run reports usage data. The same total is written to `agent.log`.
+Agent summaries include total token usage when the spawned `pi` run reports usage data. `agent.log` is summary-only by default; set `ORCH_AGENT_LOG_RAW=1` to also write raw spawned-agent stdout/stderr. Raw logs are capped at 10 MiB by default and keep the latest output when truncated.
+
+Long loop runs print an `Overview:` counts line after each tick and a final `Summary:` with one icon-prefixed line per task.
 
 ## CLI
 
@@ -52,6 +54,7 @@ Agent summaries include total token usage when the spawned `pi` run reports usag
 | `orchestrator --stop` | Signal running instances to stop |
 | `orchestrator --task <n>` | Force-pick specific task |
 | `orchestrator --auto-stash` | Stash parent repo changes before merging |
+| `orchestrator --keep-alive` | Keep looping through transient idle/cooldown periods |
 | `orchestrator add <name>` | Scaffold a new task |
 | `orchestrator edit <n>` | Edit task metadata |
 
@@ -77,8 +80,13 @@ Explicit `--tasks` and `--worktrees` paths override those derived locations.
 | `ORCH_WORKTREES` | `<state-root>\<repo-slug>\worktrees` | Worktree directory override |
 | `ORCH_AUTO_STASH` | unset | Stash parent repo changes before merging when set to `1`, `true`, `yes`, or `on` |
 | `ORCH_CONVERGE` | `3` | Zero-runs to converge |
-| `ORCH_MAX_FAILURES` | `5` | Failures before BLOCKED |
+| `ORCH_MAX_FAILURES` | `5` | Failed attempts before BLOCKED; integer >= 1 or `infinite` |
+| `ORCH_KEEP_ALIVE` | unset | Keep looping through transient idle/cooldown periods when set to `1`, `true`, `yes`, or `on` |
+| `ORCH_IDLE_SLEEP_MS` | `5000` | Sleep interval between keep-alive idle ticks |
 | `ORCH_HEARTBEAT_MS` | `300000` | Stale claim timeout |
+| `ORCH_AGENT_LOG_MAX_BYTES` | `10485760` | Maximum `agent.log` size before older output is truncated |
+| `ORCH_AGENT_LOG_RAW` | unset | Write raw spawned-agent stdout/stderr to `agent.log` when set to `1`, `true`, `yes`, or `on` |
+| `ORCH_LOG_LEVEL` | `normal` | Console verbosity: `quiet`, `normal`, or `verbose`; quiet still writes full `orchestrator.log` |
 
 ## Task structure
 
@@ -88,6 +96,14 @@ tasks/pending/T01-my-task/
 ├── autoresearch.sh   # Auto-generated experiment runner
 └── benchmark.js      # Measures metric, outputs "METRIC <name>=<value>"
 ```
+
+Optional `autoresearch.md` metadata:
+
+| Field | Values | Controls |
+|---|---|---|
+| `**Retry limit:**` | integer >= 1, `infinite`, `unlimited`, or `inf` | Failed attempts before BLOCKED; falls back to `ORCH_MAX_FAILURES` |
+
+Dependencies wait for all referenced tasks to converge; if any dependency is terminally BLOCKED, dependents are automatically BLOCKED transitively, while still-retrying FAILED dependencies keep dependents waiting.
 
 ## Development
 
