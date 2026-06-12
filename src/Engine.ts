@@ -476,6 +476,18 @@ export class Engine {
       wt = new Worktree(this.#repo, { name: task.taskName, baseBranch: this.#baseBranch, ...(this.#worktreesDir ? { worktreesDir: this.#worktreesDir } : {}) });
       await wt.create();
       this.#worktrees.set(task.taskNumber, wt);
+    } else if (wt) {
+      // Existing worktree from a previous tick — sync with the latest base so
+      // the agent always works on current code. If the sync fails (uncommitted
+      // agent changes or a genuine conflict), reset the worktree to the current
+      // base so the agent starts fresh instead of being stuck on stale code.
+      try {
+        await wt.syncWithBase();
+        this.#log(`T${task.taskNumber} worktree synced with ${this.#baseBranch}`);
+      } catch {
+        await wt.resetForRetry();
+        this.#log(`T${task.taskNumber} worktree reset to ${this.#baseBranch} (sync conflict; agent starts fresh)`, 'transition');
+      }
     }
     if (wt) {
       // Copy node_modules for isolated npm commands (no symlink — avoids circular chain risk)

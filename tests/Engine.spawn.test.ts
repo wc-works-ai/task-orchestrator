@@ -621,6 +621,59 @@ describe('Engine agent spawning', () => {
     expect(benchmarkCwds[1]).toBe(worktreePath);   // post-agent check → worktree
   });
 
+  it('syncs existing worktree with base before spawn; resets on conflict', async () => {
+    const { execSync } = await import('node:child_process');
+    const { mkdirSync: mk, writeFileSync } = await import('node:fs');
+    const { Worktree } = await import('../src/Worktree.js');
+
+    const repoDir = resolve(dir, 'repo');
+    const tasksDir = resolve(repoDir, 'tasks');
+    mk(repoDir, { recursive: true });
+    execSync('git init && git config user.email test@test && git config user.name test && git commit --allow-empty -m init', { cwd: repoDir });
+
+    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
+      mk(resolve(tasksDir, s), { recursive: true });
+    }
+    const d = resolve(tasksDir, 'pending', 'T01-a');
+    mk(d, { recursive: true });
+    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+
+    let tickCount = 0;
+    const benchmark = vi.fn(() => {
+      tickCount++;
+      // First two calls: metric=1 (initial check fails, agent runs)
+      // Third call (post-agent on tick 1): metric=1 (still needs work, keeps worktree alive)
+      // Fourth call (tick 2 initial check in worktree): metric=1
+      return 1;
+    });
+    const spawn = vi.fn(async () => ({ success: true, iterations: 1 }));
+
+    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir });
+    // First tick creates the worktree
+    await engine.tick();
+
+    // Simulate syncWithBase throwing on the second tick (conflict)
+    const syncSpy = vi.spyOn(Worktree.prototype, 'syncWithBase').mockImplementation(() => { throw new Error('conflict'); });
+    const resetSpy = vi.spyOn(Worktree.prototype, 'resetForRetry').mockResolvedValue(undefined);
+
+    try {
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      try {
+        await engine.tick();
+        const output = logSpy.mock.calls.map(c => String(c[0] ?? '')).join('\n');
+        // The conflict path was hit and the worktree was reset
+        expect(output).toContain('worktree reset to');
+        expect(output).toContain('sync conflict; agent starts fresh');
+        expect(resetSpy).toHaveBeenCalled();
+      } finally {
+        logSpy.mockRestore();
+      }
+    } finally {
+      syncSpy.mockRestore();
+      resetSpy.mockRestore();
+    }
+  });
+
   it('handles node_modules already existing in worktree (covers line 133 else)', async () => {
     const { execSync } = await import('node:child_process');
     const { mkdirSync: mk, writeFileSync } = await import('node:fs');

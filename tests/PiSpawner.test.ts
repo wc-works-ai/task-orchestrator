@@ -1079,13 +1079,13 @@ describe('PiSpawner', () => {
     try {
       const p = new PiSpawner({
         progressTimeout: 2000,
-        progressCheckInterval: 15,
-        progressStatusInterval: 40,
+        progressCheckInterval: 10,
+        progressStatusInterval: 30,
       }).spawn(t, dir);
 
       // One large chunk to hit MB formatting
       mock.stdout!.emit('data', Buffer.from('x'.repeat(1_200_000)));
-      await new Promise(r => setTimeout(r, 60));
+      await new Promise(r => setTimeout(r, 80));
       mock.emit('close', 0);
       await p;
 

@@ -22,6 +22,7 @@ async function promptMergeRecovery(failure: MergeRecoveryFailure): Promise<Merge
   console.error(`  ⚠️  T${failure.task.number} could not merge ${failure.branch}`);
   console.error(`  worktree: ${failure.worktreePath}`);
   console.error(`  reason: ${failure.error}`);
+  console.error('  NOTE: "Your local changes" refers to uncommitted edits in the WORKTREE (the agent\'s work), not the main repo.');
   if (!input.isTTY) {
     console.error('  Non-interactive shell: blocking the task and keeping the worktree for inspection.');
     return MergeRecoveryAction.Stop;
@@ -31,7 +32,7 @@ async function promptMergeRecovery(failure: MergeRecoveryFailure): Promise<Merge
   try {
     while (true) {
       const answer = (await rl.question(
-        '  How should orchestrator proceed? [1] manual cleanup/retry (default), [2] auto-stash parent changes and retry merge: ',
+        '  How should orchestrator proceed? [1] manual cleanup/retry (default), [2] auto-stash worktree changes and retry merge: ',
       )).trim().toLowerCase();
       if (answer === '' || answer === '1' || answer === 'm' || answer === 'manual') {
         return MergeRecoveryAction.Stop;
