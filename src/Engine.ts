@@ -480,24 +480,19 @@ export class Engine {
       this.#worktrees.set(task.taskNumber, wt);
     }
     if (wt) {
-      // Sync with the latest base so the agent always works on current code.
-      // This covers both reused worktrees from a previous tick AND worktrees
-      // that already existed on disk from a prior loop process (where the
-      // in-memory map was empty but Worktree.create() reused the directory).
-      // If sync fails (uncommitted agent changes or conflict), reset so the
-      // agent starts fresh instead of being stuck on stale code.
+      // Clean any uncommitted agent changes from a prior run, then sync with
+      // the latest base so the agent always works on current, clean code.
+      wt.cleanWorktree();
       try {
         await wt.syncWithBase();
         this.#log(`T${task.taskNumber} worktree synced with ${this.#baseBranch}`);
       } catch {
         await wt.resetForRetry();
-        this.#log(`T${task.taskNumber} worktree reset to ${this.#baseBranch} (sync conflict; agent starts fresh)`, 'transition');
+        this.#log(`T${task.taskNumber} worktree reset to ${this.#baseBranch} (sync failed; agent starts fresh)`, 'transition');
       }
       // Copy node_modules for isolated npm commands (no symlink — avoids circular chain risk)
       const wtNm = join(wt.path, 'node_modules');
-      if (!existsSync(wtNm)) {
-        try { cpSync(join(this.#repo, 'node_modules'), wtNm, { recursive: true }); } catch {}
-      }
+      try { cpSync(join(this.#repo, 'node_modules'), wtNm, { recursive: true }); } catch {}
     }
     return wt;
   }

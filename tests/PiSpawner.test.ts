@@ -170,12 +170,11 @@ describe('PiSpawner', () => {
       const r = await p;
       expect(r.success).toBe(true);
       const output = joinedCalls(logSpy);
-      expect(output).toContain('T1 using test-model');
-      expect(output).toContain('started: ');
+      expect(output).toContain('T1 agent: test-model');
       expect(output).toContain('task: Review Azure DevOps PR 981660 for FabricSparkCST and write a concise report');
       expect(output).toContain(`worktree: ${dir}`);
       expect(output).toMatch(RUN_LOG_LINE);
-      expect(output).toContain('status: agent running; details in the log file above');
+      expect(output).not.toContain('status: agent running');
       expect(output).not.toContain('npm run t');
       expect(output).not.toContain('METRIC branch_gap=42.5');
       expect(output).not.toContain('Logged #1: keep');
@@ -238,7 +237,7 @@ describe('PiSpawner', () => {
 
       // Wait 55ms: safely within one interval [40, 80) so exactly 1 status line fires
       await new Promise(r => setTimeout(r, 55));
-      const statusLines = joinedCalls(logSpy).split('\n').filter(line => line.includes('still running:'));
+      const statusLines = joinedCalls(logSpy).split('\n').filter(line => line.includes('WARN still running:'));
       expect(statusLines.length).toBe(1);
 
       mock.emit('close', 0);
@@ -264,7 +263,7 @@ describe('PiSpawner', () => {
 
       await new Promise(r => setTimeout(r, 90));
       const output = joinedCalls(logSpy);
-      expect(output).toContain('still running: no agent output for');
+      expect(output).toContain('WARN still running: no output for');
       expect(output).toContain('(auto-stop at 500ms)');
       expect(output).not.toContain('running: last agent output');
       expect(output).toMatch(RUN_LOG_LINE);
@@ -334,7 +333,7 @@ describe('PiSpawner', () => {
       expect(r.authFailure).toBe(true);
       expect(r.error).toBe('No API key found for azure-openai-responses');
       expect(spawn).toHaveBeenCalledTimes(1);
-      expect(errorSpy).toHaveBeenCalledWith('  ❌ No API key found for azure-openai-responses');
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('ERROR auth: No API key found for azure-openai-responses'));
     } finally {
       errorSpy.mockRestore();
     }
@@ -1063,7 +1062,7 @@ describe('PiSpawner', () => {
       expect(output).toContain('elapsed');
       expect(output).toContain('waiting for first LLM response');
       // Should NOT show the silence warning (agent was active)
-      expect(output).not.toContain('still running: no agent output');
+      expect(output).not.toContain('WARN still running');
     } finally {
       logSpy.mockRestore();
     }

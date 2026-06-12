@@ -128,11 +128,20 @@ export class Worktree {
     return true;
   }
 
-  /** Discard all worktree changes — agent starts fresh on retry */
+  /** Discard all uncommitted worktree changes so the agent starts clean. */
+  cleanWorktree(): void {
+    try {
+      // Reset tracked files; --quiet suppresses errors for empty repos
+      this.#gitInWT('checkout', '--', '.');
+    } catch { /* no tracked files to reset */ }
+    try { this.#gitInWT('clean', '-fd'); } catch {}
+  }
+
+  /** Discard all worktree changes and reset the branch to the current base */
   resetForRetry(): void {
     try {
-      this.#gitInWT('checkout', this.#base);          // detach from branch
-      this.#gitInWT('checkout', '-B', this.#branch);   // recreate branch at base
+      this.cleanWorktree();
+      this.#gitInWT('reset', '--hard', this.#base);
     } catch { /* best-effort */ }
   }
 

@@ -663,7 +663,7 @@ describe('Engine agent spawning', () => {
         const output = logSpy.mock.calls.map(c => String(c[0] ?? '')).join('\n');
         // The conflict path was hit and the worktree was reset
         expect(output).toContain('worktree reset to');
-        expect(output).toContain('sync conflict; agent starts fresh');
+        expect(output).toContain('sync failed; agent starts fresh');
         expect(resetSpy).toHaveBeenCalled();
       } finally {
         logSpy.mockRestore();

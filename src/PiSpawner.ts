@@ -140,12 +140,9 @@ export class PiSpawner implements CodingAgent {
       : [primaryModel];
     const logPath = join(task.directory, runLogName());
 
-    console.log(`T${task.taskNumber} using ${models.map(PiSpawner.#modelLabel).join(', ')}`);
-    console.log(`  started: ${PiSpawner.#now()}`);
-    console.log(`  task: ${PiSpawner.#shortText(task.goal)}`);
-    console.log(`  worktree: ${cwd}`);
-    console.log(`  log: ${logPath}`);
-    console.log('  status: agent running; details in the log file above');
+    console.log(`[${PiSpawner.#now()}] T${task.taskNumber} agent: ${models.map(PiSpawner.#modelLabel).join(', ')} | task: ${PiSpawner.#shortText(task.goal)}`);
+    console.log(`[${PiSpawner.#now()}] T${task.taskNumber} worktree: ${cwd}`);
+    console.log(`[${PiSpawner.#now()}] T${task.taskNumber} log: ${logPath}`);
     const authErrors: string[] = [];
     const tokenUsage = PiSpawner.#emptyTokenUsage();
     let lastResult: SpawnResult | undefined;
@@ -161,7 +158,7 @@ export class PiSpawner implements CodingAgent {
         /* v8 ignore next -- #run always supplies an auth error string when authFailure is true */
         const error = result.error ?? 'coding agent authentication failed';
         authErrors.push(error);
-        console.error(`  ❌ ${error}`);
+        console.error(`[${PiSpawner.#now()}] T${task.taskNumber} ERROR auth: ${error}`);
       } else {
         sawNonAuthFailure = true;
       }
@@ -351,11 +348,12 @@ export class PiSpawner implements CodingAgent {
   #checkProgress(state: RunState, logPath: string, escalateTermination: (error: string) => void): void {
     if (state.progressStale) return;
     const now = Date.now();
+    const ts = PiSpawner.#now();
     const quietFor = now - state.lastProgress;
     if (quietFor >= this.#progressTimeout) {
       state.progressStale = true;
       const error = `No agent output for ${PiSpawner.#formatDuration(quietFor)}; stopped pi`;
-      console.error(`  ❌ ${error}. See ${logPath}`);
+      console.error(`[${ts}] ERROR ${error}. See ${logPath}`);
       escalateTermination(error);
       return;
     }
@@ -363,7 +361,7 @@ export class PiSpawner implements CodingAgent {
     if (quietFor >= this.#progressStatusInterval && now - state.lastStatus >= this.#progressStatusInterval) {
       state.lastStatus = now;
       console.log(
-        `  still running: no agent output for ${PiSpawner.#formatDuration(quietFor)} ` +
+        `[${ts}] WARN still running: no output for ${PiSpawner.#formatDuration(quietFor)} ` +
         `(auto-stop at ${PiSpawner.#formatDuration(this.#progressTimeout)})`,
       );
       return;
@@ -376,7 +374,7 @@ export class PiSpawner implements CodingAgent {
       const tokens = PiSpawner.#hasTokenUsage(t)
         ? `tokens: ${t.totalTokens} (input=${t.input} output=${t.output} cached=${t.cacheRead})`
         : 'waiting for first LLM response';
-      console.log(`  agent working: ${elapsed} elapsed, ${tokens}`);
+      console.log(`[${ts}] agent working: ${elapsed} elapsed, ${tokens}`);
     }
   }
 
