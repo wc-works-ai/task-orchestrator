@@ -59,6 +59,7 @@ export interface EngineOptions {
   readonly keepAlive?: boolean;
   readonly infinite?: boolean;
   readonly idleSleepMs?: number;
+  readonly envBackoffMs?: number; // wait after a task-agnostic (environment) failure (default 60000)
   readonly sleep?: SleepFn;
   readonly onTick?: (result: TickResult | TickNull, total: number) => void | Promise<void>;
 }
@@ -76,11 +77,14 @@ export class Engine {
   readonly #keepAlive: boolean;
   readonly #infinite: boolean;
   readonly #idleSleepMs: number;
+  readonly #envBackoffMs: number;
   readonly #sleep: SleepFn;
   /** Track active worktrees by task number */
   readonly #worktrees = new Map<number, Worktree>();
   /** Track last failure time per task for retry cooldown */
   readonly #retryCooldowns = new Map<number, number>();
+  /** Track last task-agnostic (environment) failure time per task for backoff */
+  readonly #envCooldowns = new Map<number, number>();
 
   constructor(tasksDir: string, opts: EngineOptions = {}) {
     this.#dir = tasksDir;
@@ -95,6 +99,7 @@ export class Engine {
     this.#keepAlive = opts.keepAlive ?? env.keepAlive;
     this.#infinite = opts.infinite ?? env.infinite;
     this.#idleSleepMs = opts.idleSleepMs ?? env.idleSleepMs;
+    this.#envBackoffMs = opts.envBackoffMs ?? env.envBackoffMs;
     this.#sleep = opts.sleep ?? sleep;
   }
 
@@ -168,6 +173,16 @@ export class Engine {
       return { task: null, metric: 0, converged: false };
     }
 
+    // Environment backoff — a prior task-agnostic failure (e.g. missing API key)
+    // did not consume a retry; wait before retrying so a persistent environment
+    // issue does not spin the loop. Always applies (independent of retry cooldown).
+    const lastEnvFail = this.#envCooldowns.get(task.taskNumber);
+    if (lastEnvFail !== undefined && Date.now() - lastEnvFail < this.#envBackoffMs) {
+      task.release(Status.FAILED);
+      this.#log(`T${task.taskNumber}: environment backoff (${this.#envBackoffMs - (Date.now() - lastEnvFail)}ms left); retry not yet due`);
+      return { task: null, metric: 0, converged: false };
+    }
+
     // Reset worktree on retry so agent starts fresh (discard conflicting changes)
     /* istanbul ignore next: dead code — pick() always sets IN_PROGRESS */
     if (task.isFailed) {
@@ -226,7 +241,7 @@ export class Engine {
           `${spawnResult.logPath ? `; details: ${spawnResult.logPath}` : ''})`,
         );
         if (spawnResult.authFailure) {
-          return this.#handleBlocked(task, metric, spawnResult.error ?? 'pi authentication failed');
+          return this.#handleEnvironmentalFailure(task, metric, spawnResult.error ?? 'coding agent authentication failed');
         }
         metric = await this.#run(task, wt?.path);
         this.#log(`T${task.taskNumber} check after agent: metric=${metric}${metric === 0 ? ' (done)' : ' (still needs work)'}`);
@@ -405,12 +420,16 @@ export class Engine {
     }
   }
 
-  #handleBlocked(task: TaskState, metric: number, reason: string): TickResult {
-    const failures = task.incrementFailures();
-    const limitLabel = retryLimitLabel(task.maxFailures);
-    task.markBlocked();
-    this.#retryCooldowns.set(task.taskNumber, Date.now());
-    this.#log(`T${task.taskNumber} stopping: ${this.#singleLine(reason)} (failed attempt ${failures}/${limitLabel}, metric=${metric})`, 'transition');
+  /**
+   * Task-agnostic / environment failure (e.g. missing API key). The task itself
+   * is fine, so do NOT consume a retry and do NOT block dependents. Release the
+   * task so it retries once the environment is fixed, with a backoff so a
+   * persistent issue does not spin the loop.
+   */
+  #handleEnvironmentalFailure(task: TaskState, metric: number, reason: string): TickResult {
+    this.#envCooldowns.set(task.taskNumber, Date.now());
+    task.release(Status.FAILED);
+    this.#log(`T${task.taskNumber} paused: ${this.#singleLine(reason)} — environment issue, not counted against retries (metric=${metric}); will retry after backoff`, 'transition');
     return { task: task.info, metric, converged: false };
   }
 

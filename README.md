@@ -91,6 +91,7 @@ Explicit `--tasks` and `--worktrees` paths override those derived locations.
 | `ORCH_KEEP_ALIVE` | unset | Keep looping through transient idle/cooldown periods when set to `1`, `true`, `yes`, or `on` |
 | `ORCH_INFINITE` | unset | Never exit on idle; wait for new or addressed tasks until `--stop` |
 | `ORCH_IDLE_SLEEP_MS` | `5000` | Sleep interval between keep-alive/infinite idle ticks |
+| `ORCH_ENV_BACKOFF_MS` | `60000` | Wait before retrying after a task-agnostic (environment) failure, e.g. a missing API key; such failures do not consume a retry |
 | `ORCH_HEARTBEAT_MS` | `300000` | Stale claim timeout |
 | `ORCH_AGENT_LOG_MAX_BYTES` | `10485760` | Maximum `agent.log` size before older output is truncated |
 | `ORCH_AGENT_LOG_RAW` | unset | Write raw spawned-agent stdout/stderr to `agent.log` when set to `1`, `true`, `yes`, or `on` |

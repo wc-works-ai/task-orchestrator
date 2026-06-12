@@ -114,6 +114,7 @@ Environment variables:
   ORCH_KEEP_ALIVE=1          wait through transient idle/cooldown periods
   ORCH_INFINITE=1            never exit on idle; wait for new or addressed tasks
   ORCH_IDLE_SLEEP_MS=<ms>    keep-alive/infinite idle sleep interval (default: 5000)
+  ORCH_ENV_BACKOFF_MS=<ms>   wait before retrying after an env failure, e.g. missing API key (default: 60000)
   ORCH_HEARTBEAT_MS=<ms>     stale claim timeout (default: 300000)
   ORCH_PROGRESS_TIMEOUT=<ms> kill agent after no output (default: 120000)
   ORCH_AGENT_LOG_MAX_BYTES=<bytes> cap agent.log size (default: 10485760)
