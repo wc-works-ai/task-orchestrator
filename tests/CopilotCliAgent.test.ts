@@ -92,6 +92,24 @@ describe('CopilotCliAgent', () => {
     expect(spawn).toHaveBeenCalledWith('copilot', expect.any(Array), expect.objectContaining({ cwd: 'Q:\\work-dir' }));
   });
 
+  it('includes AGENTS/docs guidance and local env policy in the spawned prompt', async () => {
+    const task = make(dir);
+    const child = mockChild();
+    vi.mocked(spawn).mockReturnValue(child);
+
+    const promise = new CopilotCliAgent().spawn(task, dir);
+    setTimeout(() => child.emit('close', 0), 5);
+    const result = await promise;
+
+    expect(result.success).toBe(true);
+    const args = vi.mocked(spawn).mock.calls[0]?.[1];
+    const prompt = args?.[args.indexOf('-p') + 1];
+    expect(prompt).toContain(`Step 1: Read ${task.directory.slice(dir.length + 1)}/autoresearch.md.`);
+    expect(prompt).toContain('Step 2: From the current worktree/repo root, read AGENTS.md if present.');
+    expect(prompt).toContain('Step 3: Read docs/DEVELOP.md and docs/TESTING.md if present.');
+    expect(prompt).toContain('Step 5: Respect local worktree environment/configuration');
+  });
+
   it('omits model and reasoning args when unset', async () => {
     const child = mockChild();
     vi.mocked(spawn).mockReturnValue(child);

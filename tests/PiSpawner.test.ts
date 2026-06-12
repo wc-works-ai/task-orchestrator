@@ -618,7 +618,11 @@ describe('PiSpawner', () => {
     const r = await p;
     expect(r.success).toBe(true);
     const args = vi.mocked(spawn).mock.calls.at(-1)?.[1];
-    expect(args?.some(arg => String(arg).includes(`Task: read ${t.directory}/autoresearch.md, then run the experiment loop.`))).toBe(true);
+    const prompt = args?.[args.indexOf('-p') + 1];
+    expect(String(prompt)).toContain(`Step 1: Read ${t.directory}/autoresearch.md.`);
+    expect(String(prompt)).toContain('Step 2: From the current worktree/repo root, read AGENTS.md if present.');
+    expect(String(prompt)).toContain('Step 3: Read docs/DEVELOP.md and docs/TESTING.md if present.');
+    expect(String(prompt)).toContain('Step 5: Respect local worktree environment/configuration');
   });
 
   it('ignores invalid pids when killing a tree', () => {

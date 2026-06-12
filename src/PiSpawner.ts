@@ -500,6 +500,12 @@ export class PiSpawner implements CodingAgent {
     return [
       `You are an autonomous task agent. Working directory: ${cwd}.`,
       '',
+      `Step 1: Read ${arPath}/autoresearch.md.`,
+      'Step 2: From the current worktree/repo root, read AGENTS.md if present.',
+      'Step 3: Read docs/DEVELOP.md and docs/TESTING.md if present.',
+      'Step 4: Follow the above guidance files strictly for implementation and tests.',
+      'Step 5: Respect local worktree environment/configuration (package scripts, Node/toolchain version, and existing environment variables).',
+      '',
       `Task: read ${arPath}/autoresearch.md, then run the experiment loop.`,
       `Use init_experiment, run_experiment (with ${arPath}/autoresearch.sh),`,
       `and log_experiment. Edit only files listed in the task's scope.`,

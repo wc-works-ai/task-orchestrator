@@ -32,6 +32,7 @@ npm run tick
 1. Define a task in `tasks/pending/<name>/autoresearch.md`
 2. Run orchestrator → picks task, runs benchmark, spawns AI agent
 3. Agent iterates in isolated git worktree
+   - Spawned agent prompts instruct agents to read worktree-local guidance (`AGENTS.md`, `docs/DEVELOP.md`, `docs/TESTING.md`) and follow local environment/tooling policy.
 4. Task merges when benchmark reports all metrics = 0 for 3 consecutive runs
 
 ## Core concepts

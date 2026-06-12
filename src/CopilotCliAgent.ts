@@ -171,7 +171,12 @@ export class CopilotCliAgent implements CodingAgent {
     return [
       `You are an autonomous coding agent. Working directory: ${cwd}.`,
       '',
-      `Read ${taskDir}/autoresearch.md.`,
+      `Step 1: Read ${taskDir}/autoresearch.md.`,
+      'Step 2: From the current worktree/repo root, read AGENTS.md if present.',
+      'Step 3: Read docs/DEVELOP.md and docs/TESTING.md if present.',
+      'Step 4: Follow the above guidance files strictly for implementation and tests.',
+      'Step 5: Respect local worktree environment/configuration (package scripts, Node/toolchain version, and existing environment variables).',
+      '',
       `Run the benchmark with: node ${taskDir}/benchmark.js`,
       'Read the printed "METRIC <name>=<value>" line.',
       'Edit only files listed in the task scope.',
