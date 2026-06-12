@@ -221,8 +221,11 @@ export class Engine {
       }, 30_000);
       /* c8 ignore stop */
       try {
+        // Use the existing worktree (from a previous tick) if available, so
+        // convergence checks measure the agent's work — not the main repo.
+        const existingWt = this.#worktrees.get(task.taskNumber);
         this.#log(`T${task.taskNumber} checking: ${this.#singleLine(task.goal)} (running benchmark…)`);
-        let metric = await this.#run(task);
+        let metric = await this.#run(task, existingWt?.path);
         this.#log(`T${task.taskNumber} check: metric=${metric}${metric === 0 ? ' (done)' : ' (needs work; target is 0)'}`);
 
         if (metric === 0) return await this.#handleZero(task, metric);
