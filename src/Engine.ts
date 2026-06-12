@@ -428,8 +428,8 @@ export class Engine {
 
     if (action === MergeRecoveryAction.StashAndRetry) {
       try {
-        const stashed = await wt.stashParentChanges(`orchestrator ${task.taskName} merge recovery`);
-        this.#log(`T${task.taskNumber} ${stashed ? 'stashed parent repo changes' : 'found no parent repo changes to stash'}; retrying merge`);
+        await wt.stashParentChanges(`orchestrator ${task.taskName} merge recovery`);
+        this.#log(`T${task.taskNumber} retrying merge after stashing parent repo changes`);
         return (await this.#mergeAndRemove(task, wt)) === 'merged';
       } catch (retryError: unknown) {
         this.#handleMergeFailure(task, retryError, 'after auto-stash');
@@ -478,11 +478,14 @@ export class Engine {
       wt = new Worktree(this.#repo, { name: task.taskName, baseBranch: this.#baseBranch, ...(this.#worktreesDir ? { worktreesDir: this.#worktreesDir } : {}) });
       await wt.create();
       this.#worktrees.set(task.taskNumber, wt);
-    } else if (wt) {
-      // Existing worktree from a previous tick — sync with the latest base so
-      // the agent always works on current code. If the sync fails (uncommitted
-      // agent changes or a genuine conflict), reset the worktree to the current
-      // base so the agent starts fresh instead of being stuck on stale code.
+    }
+    if (wt) {
+      // Sync with the latest base so the agent always works on current code.
+      // This covers both reused worktrees from a previous tick AND worktrees
+      // that already existed on disk from a prior loop process (where the
+      // in-memory map was empty but Worktree.create() reused the directory).
+      // If sync fails (uncommitted agent changes or conflict), reset so the
+      // agent starts fresh instead of being stuck on stale code.
       try {
         await wt.syncWithBase();
         this.#log(`T${task.taskNumber} worktree synced with ${this.#baseBranch}`);
@@ -490,8 +493,6 @@ export class Engine {
         await wt.resetForRetry();
         this.#log(`T${task.taskNumber} worktree reset to ${this.#baseBranch} (sync conflict; agent starts fresh)`, 'transition');
       }
-    }
-    if (wt) {
       // Copy node_modules for isolated npm commands (no symlink — avoids circular chain risk)
       const wtNm = join(wt.path, 'node_modules');
       if (!existsSync(wtNm)) {
