@@ -64,6 +64,7 @@ orchestrator --parallel 2     # Run up to 2 tasks concurrently
 ```
 
 Full CLI reference: `orchestrator --help` or `docs/DEVELOP.md`.
+Documentation entrypoint: `docs/INDEX.md`.
 
 ## Fleet orchestration
 

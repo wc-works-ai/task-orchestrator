@@ -1,10 +1,10 @@
 # AGENTS.md
 
 > **⚠️ REQUIRED READING BEFORE ANY CODE CHANGE**
-> 1. **`docs/DEVELOP.md`** — TDD + SOLID, branch mapping, code review checklist
-> 2. **`docs/TESTING.md`** — test conventions, mock rules, coverage targets
+> 1. **`AGENTS.md`** — working rules for coding behavior
+> 2. **`docs/INDEX.md`** — canonical documentation index (includes required docs)
 >
-> Run `npm run c && npm run t` before every commit. Violating DEVELOP.md or TESTING.md is a defect.
+> Run `npm run c && npm run t` before every commit.
 
 Behavioral guidelines to reduce common LLM coding mistakes.
 

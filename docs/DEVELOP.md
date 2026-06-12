@@ -3,6 +3,7 @@
 TDD + SOLID. Read `TESTING.md` first for test conventions.
 
 **Setup:** `git config core.hooksPath .githooks` (enables pre-commit + pre-push hooks)
+Maintenance: When adding new docs relevant to coding agent behavior, update `docs/INDEX.md`; avoid adding direct links to `AGENTS.md` unless absolutely required.
 
 **TypeScript strict:**
 - `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noUnusedLocals`
