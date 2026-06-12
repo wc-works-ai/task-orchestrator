@@ -195,6 +195,8 @@ export class Engine {
     }
     this.#owned.add(task.taskNumber);
     try {
+      this.#log(`T${task.taskNumber} picked up: ${this.#singleLine(task.goal)}`, 'transition');
+
       // Check retry cooldown — if this task failed recently, skip it
       const lastFail = this.#retryCooldowns.get(task.taskNumber);
       if (this.#retryCooldownMs > 0 && lastFail && Date.now() - lastFail < this.#retryCooldownMs) {
