@@ -3,8 +3,12 @@ export type { EngineOptions, MergeRecoveryFailure, MergeRecoveryFn, TokenUsage }
 export { TaskState, Status, inProgress, isInProgress, CONVERGENCE_THRESHOLD } from './TaskState.js';
 export type { TaskInfo, BenchmarkFn, TickResult } from './TaskState.js';
 export { addTask } from './addTask.js';
-export { piCommand } from './PiCommand.js';
+export { piCommand, resolveCliCommand } from './PiCommand.js';
 export type { PiCommand } from './PiCommand.js';
+export { PiSpawner } from './PiSpawner.js';
+export type { PiSpawnerOptions } from './PiSpawner.js';
+export { CopilotCliAgent } from './CopilotCliAgent.js';
+export type { CopilotCliAgentOptions } from './CopilotCliAgent.js';
 export type { CodingAgent } from './CodingAgent.js';
 export { createCodingAgent } from './agents.js';
 export { defaultStateRoot, repoSlug, resolveStatePaths } from './StatePaths.js';

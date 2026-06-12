@@ -1,9 +1,10 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { TaskState } from './TaskState.js';
 import { env } from './env.js';
 import { piCommand } from './PiCommand.js';
+import { appendAgentLog, openAgentLog } from './AgentLog.js';
 import type { SpawnResult, TokenUsage } from './Engine.js';
 import type { CodingAgent } from './CodingAgent.js';
 
@@ -18,17 +19,13 @@ const DEFAULT_AGENT_LOG_MAX_BYTES = 10 * 1024 * 1024;
 const MAX_JSON_LINE_BUFFER = 1_000_000;
 const AUTH_SCAN_TAIL = 512;
 const ITERATION_MARKER = 'log_experiment';
-const LOG_TRUNCATED_MARKER = '\n=== agent.log truncated; keeping latest output only ===\n';
 type MutableTokenUsage = { -readonly [K in keyof TokenUsage]: TokenUsage[K] };
-interface AgentLog {
-  readonly path: string;
-  readonly maxBytes: number;
-  bytes: number;
-}
 
 export interface PiSpawnerOptions {
   /** Optional model override when task doesn't specify one */
   readonly model?: string;
+  /** Optional reasoning-effort override when task doesn't specify one */
+  readonly reasoning?: string;
   /** Optional fallback model if primary fails */
   readonly fallbackModel?: string;
   /** Working directory for the agent */
@@ -48,6 +45,7 @@ export interface PiSpawnerOptions {
 export class PiSpawner implements CodingAgent {
   readonly name = 'pi';
   readonly #model: string | undefined;
+  readonly #reasoning: string | undefined;
   readonly #fallback: string | undefined;
   readonly #workDir: string;
   readonly #progressTimeout: number;
@@ -58,6 +56,7 @@ export class PiSpawner implements CodingAgent {
 
   constructor(opts: PiSpawnerOptions = {}) {
     this.#model = opts.model || env.model;
+    this.#reasoning = opts.reasoning || env.reasoning;
     this.#fallback = opts.fallbackModel || undefined;
     this.#workDir = opts.workDir ?? process.cwd();
     this.#progressTimeout = opts.progressTimeout ?? env.progressTimeoutMs;
@@ -74,6 +73,10 @@ export class PiSpawner implements CodingAgent {
 
   resolveModel(task: TaskState): string | undefined {
     return this.modelFor(task);
+  }
+
+  resolveReasoning(task: TaskState): string | undefined {
+    return task.reasoning || this.#reasoning;
   }
 
   async spawn(task: TaskState, worktreePath?: string, signal?: AbortSignal): Promise<SpawnResult> {
@@ -163,9 +166,9 @@ export class PiSpawner implements CodingAgent {
           : r;
 
       const logPath = join(task.directory, F_AGENT_LOG);
-      const agentLog = PiSpawner.#openAgentLog(logPath, this.#agentLogMaxBytes);
+      const agentLog = openAgentLog(logPath, this.#agentLogMaxBytes);
       try {
-        PiSpawner.#appendAgentLog(agentLog, [
+        appendAgentLog(agentLog, [
           `=== agent session started at ${new Date().toISOString()} ===`,
           `=== agent log mode: ${this.#agentLogRaw ? 'raw' : 'summary'}${this.#agentLogRaw ? '' : ' (set ORCH_AGENT_LOG_RAW=1 for raw pi stream)'} ===`,
           '',
@@ -186,7 +189,7 @@ export class PiSpawner implements CodingAgent {
       const handleData = (txt: string) => {
         rawBytes += Buffer.byteLength(txt);
         if (this.#agentLogRaw) {
-          try { PiSpawner.#appendAgentLog(agentLog, txt); } catch {}
+          try { appendAgentLog(agentLog, txt); } catch {}
         }
 
         const iterationScan = `${iterationTail}${txt}`;
@@ -236,7 +239,7 @@ export class PiSpawner implements CodingAgent {
             : '';
         // Append footer and close — previous chunks already streamed
         try {
-          PiSpawner.#appendAgentLog(agentLog, [
+          appendAgentLog(agentLog, [
             `=== agent session ended (exit ${code}) ===`,
             `=== raw output bytes=${rawBytes} ${this.#agentLogRaw ? 'logged' : 'omitted'} ===`,
             `=== iterations=${iterations} ===`,
@@ -299,42 +302,6 @@ export class PiSpawner implements CodingAgent {
 
   static #positiveInt(value: number, fallback: number): number {
     return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
-  }
-
-  static #openAgentLog(path: string, maxBytes: number): AgentLog {
-    try { writeFileSync(path, ''); } catch {}
-    return { path, maxBytes, bytes: 0 };
-  }
-
-  static #appendAgentLog(log: AgentLog, text: string): void {
-    const chunk = Buffer.from(text);
-    if (log.bytes + chunk.length <= log.maxBytes) {
-      appendFileSync(log.path, chunk);
-      log.bytes += chunk.length;
-      return;
-    }
-
-    const marker = Buffer.from(LOG_TRUNCATED_MARKER);
-    const available = log.maxBytes - marker.length;
-    if (available <= 0) {
-      const next = marker.subarray(0, log.maxBytes);
-      writeFileSync(log.path, next);
-      log.bytes = next.length;
-      return;
-    }
-
-    const chunkBytes = Math.min(chunk.length, available);
-    const existingBytes = available - chunkBytes;
-    const existing = existingBytes > 0
-      ? readFileSync(log.path).subarray(Math.max(0, log.bytes - existingBytes))
-      : Buffer.alloc(0);
-    const next = Buffer.concat([
-      marker,
-      existing,
-      chunk.subarray(chunk.length - chunkBytes),
-    ]);
-    writeFileSync(log.path, next);
-    log.bytes = next.length;
   }
 
   static #countOccurrences(text: string, needle: string): number {

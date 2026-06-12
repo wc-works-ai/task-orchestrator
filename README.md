@@ -18,7 +18,7 @@ npm install
 git config core.hooksPath .githooks   # enable pre-commit + pre-push hooks
 ```
 
-Requires Node.js >= 22 and [pi](https://github.com/earendil-works/pi) CLI installed.
+Requires Node.js >= 22 and a configured coding agent CLI.
 
 ## Quick start
 
@@ -39,7 +39,7 @@ npm run tick
 
 If merge-back is blocked, the task is marked BLOCKED and the worktree is kept for inspection while the run continues. Interactive runs may auto-stash parent repo changes and retry the merge immediately.
 
-Agent summaries include total token usage when the spawned `pi` run reports usage data. `agent.log` is summary-only by default; set `ORCH_AGENT_LOG_RAW=1` to also write raw spawned-agent stdout/stderr. Raw logs are capped at 10 MiB by default and keep the latest output when truncated.
+Agent summaries include total token usage when the spawned agent reports usage data. `agent.log` is summary-only by default for `pi`; set `ORCH_AGENT_LOG_RAW=1` to also write raw spawned-agent stdout/stderr. Raw logs are capped at 10 MiB by default and keep the latest output when truncated.
 
 Long loop runs print an `Overview:` counts line after each tick and a final `Summary:` with one icon-prefixed line per task.
 
@@ -55,6 +55,9 @@ Long loop runs print an `Overview:` counts line after each tick and a final `Sum
 | `orchestrator --task <n>` | Force-pick specific task |
 | `orchestrator --auto-stash` | Stash parent repo changes before merging |
 | `orchestrator --keep-alive` | Keep looping through transient idle/cooldown periods |
+| `orchestrator --agent <name>` | Coding agent: `pi` (default) or `copilot` |
+| `orchestrator --model <model>` | Model override passed to the coding agent |
+| `orchestrator --reasoning <level>` | Reasoning effort override for supported agents |
 | `orchestrator add <name>` | Scaffold a new task |
 | `orchestrator edit <n>` | Edit task metadata |
 
@@ -76,7 +79,9 @@ Explicit `--tasks` and `--worktrees` paths override those derived locations.
 | `ORCH_REPO` | current directory | Target repo/folder override |
 | `ORCH_STATE_ROOT` | `<home>\task-orchestrator` | Orchestrator state root override |
 | `ORCH_TASKS` | `<state-root>\<repo-slug>\tasks` | Task directory override |
-| `ORCH_MODEL` | pi default | Model override passed to `pi` |
+| `ORCH_AGENT` | `pi` | Coding agent: `pi` or `copilot` |
+| `ORCH_MODEL` | agent default | Model override passed to the coding agent |
+| `ORCH_REASONING` | unset | Reasoning effort override for supported agents |
 | `ORCH_WORKTREES` | `<state-root>\<repo-slug>\worktrees` | Worktree directory override |
 | `ORCH_AUTO_STASH` | unset | Stash parent repo changes before merging when set to `1`, `true`, `yes`, or `on` |
 | `ORCH_CONVERGE` | `3` | Zero-runs to converge |
@@ -101,9 +106,18 @@ Optional `autoresearch.md` metadata:
 
 | Field | Values | Controls |
 |---|---|---|
+| `**Model:**` | agent-specific model name | Task-level model override; falls back to `--model` / `ORCH_MODEL` |
+| `**Reasoning:**` | agent-specific effort level | Task-level reasoning override; falls back to `--reasoning` / `ORCH_REASONING` |
 | `**Retry limit:**` | integer >= 1, `infinite`, `unlimited`, or `inf` | Failed attempts before BLOCKED; falls back to `ORCH_MAX_FAILURES` |
 
 Dependencies wait for all referenced tasks to converge; if any dependency is terminally BLOCKED, dependents are automatically BLOCKED transitively, while still-retrying FAILED dependencies keep dependents waiting.
+
+## Coding agents
+
+- `pi` is the default. It uses pi's experiment tools and accepts `--model` / `ORCH_MODEL`; reasoning is resolved but not passed because pi has no documented reasoning flag here.
+- `copilot` uses the standalone GitHub Copilot CLI: `copilot -p "<prompt>" -s --allow-all-tools --no-ask-user [--model <model>] [--reasoning-effort <level>]`.
+
+Copilot limitations: install the `copilot` CLI and authenticate with `COPILOT_GITHUB_TOKEN` (or gh/GITHUB_TOKEN). Token usage is not reported in `-p -s` mode. Copilot runs a shell-based benchmark loop (`node <taskDir>\benchmark.js`) instead of pi's experiment tools.
 
 ## Development
 

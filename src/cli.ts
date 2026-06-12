@@ -57,7 +57,9 @@ const { values, positionals } = await parseArgs({
     loop:   { type: 'boolean', default: false },
     status: { type: 'boolean', default: false },
     check:  { type: 'boolean', default: false },
+    agent:  { type: 'string', default: '' },
     model:  { type: 'string', default: '' },
+    reasoning: { type: 'string', default: '' },
     stop:   { type: 'boolean', default: false },
     task:   { type: 'string', short: 't', default: '' },
     goal:   { type: 'string', default: '' },
@@ -87,6 +89,9 @@ Task Orchestrator — autonomous task execution
   orchestrator --state-root <dir> override state root (default: <home>\\task-orchestrator)
   orchestrator --tasks <dir>    override derived task directory
   orchestrator --worktrees <dir> override derived worktree directory
+  orchestrator --agent <name>    coding agent: pi (default) or copilot
+  orchestrator --model <model>   model override passed to the coding agent
+  orchestrator --reasoning <level> reasoning effort passed to supported agents
   orchestrator add <name>
   orchestrator add <name> --goal "..." --metric x --scope "a b"
 
@@ -97,7 +102,9 @@ Environment variables:
   ORCH_STATE_ROOT=<dir>      optional state root override
   ORCH_TASKS=<dir>           optional task directory override
   ORCH_WORKTREES=<dir>       optional worktree directory override
-  ORCH_MODEL=<model>         model override (uses pi default when unset)
+  ORCH_AGENT=<name>          coding agent: pi (default) or copilot
+  ORCH_MODEL=<model>         model override (uses agent default when unset)
+  ORCH_REASONING=<level>     reasoning effort override for supported agents
   ORCH_AUTO_STASH=1          stash parent repo changes before merging
   ORCH_CONVERGE=<n>          zero-runs to converge (default: 3)
   ORCH_MAX_FAILURES=<n|infinite> failed attempts before BLOCKED (default: 5)
@@ -220,7 +227,8 @@ if (failed.length > 0) {
   // pi/API key missing — warn but continue (user might have custom benchmark)
 }
 
-const agent = createCodingAgent('pi', {
+const agent = createCodingAgent(values.agent || env.agent, {
+  ...(values.reasoning ? { reasoning: values.reasoning } : {}),
   ...(values.model ? { model: values.model } : {}),
   workDir: repo,
 });

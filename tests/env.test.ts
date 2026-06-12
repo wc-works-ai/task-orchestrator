@@ -5,6 +5,8 @@ describe('env', () => {
   const originalMaxFailures = process.env.ORCH_MAX_FAILURES;
   const originalKeepAlive = process.env.ORCH_KEEP_ALIVE;
   const originalIdleSleepMs = process.env.ORCH_IDLE_SLEEP_MS;
+  const originalAgent = process.env.ORCH_AGENT;
+  const originalReasoning = process.env.ORCH_REASONING;
 
   afterEach(() => {
     if (originalMaxFailures === undefined) delete process.env.ORCH_MAX_FAILURES;
@@ -13,6 +15,10 @@ describe('env', () => {
     else process.env.ORCH_KEEP_ALIVE = originalKeepAlive;
     if (originalIdleSleepMs === undefined) delete process.env.ORCH_IDLE_SLEEP_MS;
     else process.env.ORCH_IDLE_SLEEP_MS = originalIdleSleepMs;
+    if (originalAgent === undefined) delete process.env.ORCH_AGENT;
+    else process.env.ORCH_AGENT = originalAgent;
+    if (originalReasoning === undefined) delete process.env.ORCH_REASONING;
+    else process.env.ORCH_REASONING = originalReasoning;
   });
 
   it('defaults maxFailures to 5', () => {
@@ -30,5 +36,19 @@ describe('env', () => {
     process.env.ORCH_IDLE_SLEEP_MS = '25';
     expect(env.keepAlive).toBe(true);
     expect(env.idleSleepMs).toBe(25);
+  });
+
+  it('defaults agent to pi and reasoning to undefined', () => {
+    delete process.env.ORCH_AGENT;
+    delete process.env.ORCH_REASONING;
+    expect(env.agent).toBe('pi');
+    expect(env.reasoning).toBeUndefined();
+  });
+
+  it('reads agent and reasoning overrides', () => {
+    process.env.ORCH_AGENT = 'copilot';
+    process.env.ORCH_REASONING = 'high';
+    expect(env.agent).toBe('copilot');
+    expect(env.reasoning).toBe('high');
   });
 });

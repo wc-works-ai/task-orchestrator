@@ -79,6 +79,24 @@ describe('PiSpawner', () => {
     expect(new PiSpawner().modelFor(make(dir, 1, 'a'))).toBeUndefined();
   });
 
+  it('resolves reasoning from task metadata before defaults', () => {
+    const t = make(dir, 1, 'a', '- **Reasoning:** high\n## Goal\nTest');
+    expect(new PiSpawner({ reasoning: 'medium' }).resolveReasoning(t)).toBe('high');
+  });
+
+  it('falls back to configured reasoning without changing pi args', async () => {
+    const t = make(dir, 1, 'a');
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiSpawner({ reasoning: 'high' }).spawn(t, dir);
+    setTimeout(() => mock.emit('close', 0), 5);
+    expect((await p).success).toBe(true);
+    const args = vi.mocked(spawn).mock.calls[0]?.[1];
+    expect(args).not.toContain('--reasoning');
+    expect(args).not.toContain('--reasoning-effort');
+  });
+
   it('spawn calls pi with correct model', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
     t.status = Status.PENDING;

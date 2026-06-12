@@ -24,6 +24,7 @@ export interface TaskInfo {
   readonly name: string;
   readonly goal: string;
   readonly model: string;
+  readonly reasoning: string;
   readonly status: string;
   /** Working directory for benchmarks (worktree root or repo root) */
   readonly cwd: string;
@@ -262,6 +263,13 @@ export class TaskState {
     try {
       return readFileSync(join(this.#dir, 'autoresearch.md'), 'utf-8')
         .match(/\*\*Model:\*\*\s*(.+)/)?.[1]?.trim() ?? '';
+    } catch { return ''; }
+  }
+
+  get reasoning(): string {
+    try {
+      return readFileSync(join(this.#dir, 'autoresearch.md'), 'utf-8')
+        .match(/\*\*Reasoning:\*\*\s*(.+)/)?.[1]?.trim() ?? '';
     } catch { return ''; }
   }
 

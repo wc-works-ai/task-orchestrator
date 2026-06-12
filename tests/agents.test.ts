@@ -35,6 +35,12 @@ describe('createCodingAgent', () => {
   });
 
   it('rejects unsupported agents with supported names', () => {
-    expect(() => createCodingAgent('nope', {})).toThrow(/Supported agents: pi/);
+    expect(() => createCodingAgent('nope', {})).toThrow(/Supported agents: pi, copilot/);
+  });
+
+  it('creates the copilot agent', () => {
+    const agent = createCodingAgent('copilot', { workDir: dir });
+
+    expect(agent.name).toBe('copilot');
   });
 });

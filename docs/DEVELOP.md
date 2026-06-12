@@ -21,7 +21,9 @@ TDD + SOLID. Read `TESTING.md` first for test conventions.
 | `ORCH_REPO` | current directory | Target repo/folder override |
 | `ORCH_STATE_ROOT` | `<home>\task-orchestrator` | Orchestrator state root override |
 | `ORCH_TASKS` | `<state-root>\<repo-slug>\tasks` | Task directory override |
-| `ORCH_MODEL` | pi default | Model override passed to `pi` |
+| `ORCH_AGENT` | `pi` | Coding agent: `pi` or `copilot` |
+| `ORCH_MODEL` | agent default | Model override passed to the coding agent |
+| `ORCH_REASONING` | unset | Reasoning effort override for supported agents |
 | `ORCH_AUTO_STASH` | unset | Stash parent repo changes before merging |
 | `ORCH_CONVERGE` | `3` | Zero-runs to converge |
 | `ORCH_MAX_FAILURES` | `5` | Failed attempts before BLOCKED; integer >= 1 or `infinite` |
@@ -43,9 +45,18 @@ Unrecoverable merge failures park the task as BLOCKED, keep its worktree, and le
 
 | Field | Values | What it controls |
 |---|---|---|
+| `**Model:**` | agent-specific model name | Task-level model override; falls back to `--model` / `ORCH_MODEL` |
+| `**Reasoning:**` | agent-specific effort level | Task-level reasoning override; falls back to `--reasoning` / `ORCH_REASONING` |
 | `**Retry limit:**` | integer >= 1, `infinite`, `unlimited`, or `inf` | Failed attempts before BLOCKED; falls back to `ORCH_MAX_FAILURES` |
 
 Dependencies wait for all referenced tasks to converge; if any dependency is terminally BLOCKED, dependents are automatically BLOCKED transitively, while still-retrying FAILED dependencies keep dependents waiting.
+
+### Coding agents
+
+`pi` is the default agent and uses pi's experiment tools. `copilot` uses the standalone GitHub Copilot CLI with:
+`copilot -p "<prompt>" -s --allow-all-tools --no-ask-user [--model <model>] [--reasoning-effort <level>]`.
+
+Copilot requires the `copilot` CLI plus `COPILOT_GITHUB_TOKEN` (or gh/GITHUB_TOKEN) auth. It does not report token usage in `-p -s` mode and uses a shell benchmark loop instead of pi's experiment tools.
 
 ---
 

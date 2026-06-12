@@ -438,6 +438,18 @@ describe('TaskState', () => {
     expect(fresh.model).toBe('gpt-5');
   });
 
+  it('reasoning parses **Reasoning:** metadata', () => {
+    const t = make(dir, 1, 'a', { status: Status.PENDING });
+    writeFileSync(join(t.directory, 'autoresearch.md'), '- **Reasoning:** high\n## Goal\nTest');
+    expect(new TaskState(t.directory).reasoning).toBe('high');
+  });
+
+  it('reasoning returns empty when missing', () => {
+    const t = make(dir, 1, 'a', { status: Status.PENDING });
+    writeFileSync(join(t.directory, 'autoresearch.md'), '## Goal\nTest');
+    expect(new TaskState(t.directory).reasoning).toBe('');
+  });
+
   it('maxFailures parses **Retry limit:** integer metadata', () => {
     const t = make(dir, 1, 'a', { status: Status.PENDING });
     writeFileSync(join(t.directory, 'autoresearch.md'), '- **Retry limit:** 3\n## Goal\nTest');
