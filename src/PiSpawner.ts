@@ -372,7 +372,11 @@ export class PiSpawner implements CodingAgent {
     if (now - state.lastHeartbeat >= this.#progressStatusInterval) {
       state.lastHeartbeat = now;
       const elapsed = PiSpawner.#formatDuration(now - state.startedAt);
-      console.log(`  agent working: ${elapsed} elapsed, ${state.iterations} iterations, ${PiSpawner.#formatBytes(state.rawBytes)} received`);
+      const t = state.tokenUsage;
+      const tokens = PiSpawner.#hasTokenUsage(t)
+        ? `tokens: ${t.totalTokens} (input=${t.input} output=${t.output} cached=${t.cacheRead})`
+        : 'waiting for first LLM response';
+      console.log(`  agent working: ${elapsed} elapsed, ${tokens}`);
     }
   }
 
@@ -402,12 +406,6 @@ export class PiSpawner implements CodingAgent {
 
   static #formatDuration(ms: number): string {
     return ms < 1000 ? `${ms}ms` : `${Math.round(ms / 1000)}s`;
-  }
-
-  static #formatBytes(bytes: number): string {
-    if (bytes < 1024) return `${bytes}B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
   }
 
   static #positiveInt(value: number, fallback: number): number {

@@ -1061,7 +1061,7 @@ describe('PiSpawner', () => {
       const output = joinedCalls(logSpy);
       expect(output).toContain('agent working:');
       expect(output).toContain('elapsed');
-      expect(output).toMatch(/\d+(\.\d+)?KB received/);
+      expect(output).toContain('waiting for first LLM response');
       // Should NOT show the silence warning (agent was active)
       expect(output).not.toContain('still running: no agent output');
     } finally {
@@ -1069,7 +1069,7 @@ describe('PiSpawner', () => {
     }
   });
 
-  it('activity heartbeat formats MB for large output', async () => {
+  it('activity heartbeat shows token usage when LLM has responded', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
     t.status = Status.PENDING;
     const mock = mockChild();
@@ -1083,14 +1083,20 @@ describe('PiSpawner', () => {
         progressStatusInterval: 30,
       }).spawn(t, dir);
 
-      // One large chunk to hit MB formatting
-      mock.stdout!.emit('data', Buffer.from('x'.repeat(1_200_000)));
-      await new Promise(r => setTimeout(r, 80));
+      // Emit a message_end with token usage so heartbeat shows real counts
+      mock.stdout!.emit('data', Buffer.from(JSON.stringify({
+        type: 'message_end',
+        message: { role: 'assistant', usage: { input: 100, output: 50, cacheRead: 200, cacheWrite: 0, totalTokens: 350 } },
+      }) + '\n'));
+      await new Promise(r => setTimeout(r, 60));
       mock.emit('close', 0);
       await p;
 
       const output = joinedCalls(logSpy);
-      expect(output).toMatch(/\d+\.\d+MB received/);
+      expect(output).toContain('tokens: 350');
+      expect(output).toContain('input=100');
+      expect(output).toContain('output=50');
+      expect(output).toContain('cached=200');
     } finally {
       logSpy.mockRestore();
     }
