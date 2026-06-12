@@ -125,7 +125,7 @@ describe('Engine agent spawning', () => {
       expect(output).toContain('T1 check: metric=1 (needs work; target is 0)');
       expect(output).toContain('T1 action: starting agent because metric is 1');
       expect(output).toContain('T1 agent stopped without finishing (2 progress records; reason: pi exited with code 1');
-      expect(output).toContain('T1 check after agent: metric=1 (still needs work)');
+      expect(output).toContain('T1 check after agent (repo): metric=1 (still needs work)');
       expect(output).toContain('T1 retrying: metric is still 1 (failed attempt 1/5)');
     } finally {
       logSpy.mockRestore();

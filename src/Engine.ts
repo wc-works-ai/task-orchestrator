@@ -224,8 +224,9 @@ export class Engine {
         // Use the existing worktree (from a previous tick) if available, so
         // convergence checks measure the agent's work — not the main repo.
         const existingWt = this.#worktrees.get(task.taskNumber);
-        this.#log(`T${task.taskNumber} checking: ${this.#singleLine(task.goal)} (running benchmark…)`);
-        let metric = await this.#run(task, existingWt?.path);
+        const checkCwd = existingWt?.path ?? this.#repo;
+        this.#log(`T${task.taskNumber} checking: ${this.#singleLine(task.goal)} (running benchmark in ${existingWt ? 'worktree' : 'repo'}…)`);
+        let metric = await this.#run(task, checkCwd);
         this.#log(`T${task.taskNumber} check: metric=${metric}${metric === 0 ? ' (done)' : ' (needs work; target is 0)'}`);
 
         if (metric === 0) return await this.#handleZero(task, metric);
@@ -500,8 +501,8 @@ export class Engine {
       this.#handleEnvironmentalFailure(task, metric, spawnResult.error ?? 'coding agent authentication failed');
       return -1;
     }
-    const newMetric = await this.#run(task, wt?.path);
-    this.#log(`T${task.taskNumber} check after agent: metric=${newMetric}${newMetric === 0 ? ' (done)' : ' (still needs work)'}`);
+    const newMetric = await this.#run(task, wt?.path ?? this.#repo);
+    this.#log(`T${task.taskNumber} check after agent (${wt ? 'worktree' : 'repo'}): metric=${newMetric}${newMetric === 0 ? ' (done)' : ' (still needs work)'}`);
     return newMetric;
   }
 
@@ -532,14 +533,9 @@ export class Engine {
     return value.replace(/\s+/g, ' ').slice(0, 200);
   }
 
-  async #run(task: TaskState, worktreePath?: string): Promise<number> {
+  async #run(task: TaskState, cwd: string): Promise<number> {
     try {
-      // The task's benchmark.js lives in the task directory and inspects its
-      // process.cwd(). Run it against the worktree (to measure the agent's
-      // work) or the repo (initial "is it already done?" check). Do NOT relocate
-      // the task directory: it may live outside the repo (independent state-root
-      // layout), so a repo-relative remap would not land inside the worktree.
-      const info = { ...task.info, cwd: worktreePath ?? this.#repo };
+      const info = { ...task.info, cwd };
       return await this.#bench(info);
     }
     catch { return 1; }
