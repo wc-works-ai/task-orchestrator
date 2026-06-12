@@ -17,6 +17,7 @@ describe('config', () => {
     'ORCH_MAX_FAILURES',
     'ORCH_AUTO_STASH',
     'ORCH_MERGE_LOCK_MS',
+    'ORCH_VERIFY_CMD',
     'ORCH_HEARTBEAT_MS',
     'ORCH_CLAIM_MAX_MS',
     'ORCH_PROGRESS_TIMEOUT',

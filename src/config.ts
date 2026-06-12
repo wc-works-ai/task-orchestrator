@@ -22,6 +22,7 @@ export const CONFIG_SPEC: readonly ConfigItem[] = [
   { group: 'Convergence & merge', env: 'ORCH_MAX_FAILURES', kind: 'number', def: '5', desc: 'Failed attempts before BLOCKED (int>=1 or infinite)' },
   { group: 'Convergence & merge', env: 'ORCH_AUTO_STASH', flag: 'auto-stash', kind: 'boolean', def: 'off', desc: 'Stash parent repo changes before merging' },
   { group: 'Convergence & merge', env: 'ORCH_MERGE_LOCK_MS', kind: 'number', def: '600000', desc: 'Break a merge lock held longer than this (crashed merger, ms)' },
+  { group: 'Convergence & merge', env: 'ORCH_VERIFY_CMD', kind: 'string', def: 'unset', desc: 'Shell command to run in worktree before merge (e.g. npm run tc)' },
   { group: 'Concurrency & timeouts', env: 'ORCH_HEARTBEAT_MS', kind: 'number', def: '300000', desc: 'Claim heartbeat freshness window (ms)' },
   { group: 'Concurrency & timeouts', env: 'ORCH_CLAIM_MAX_MS', kind: 'number', def: '1800000', desc: 'Hard claim ceiling; reclaim stale claim even across machines (ms)' },
   { group: 'Concurrency & timeouts', env: 'ORCH_PROGRESS_TIMEOUT', kind: 'number', def: '120000', desc: 'Kill agent after no output for this long (ms)' },

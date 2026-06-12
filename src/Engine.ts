@@ -43,6 +43,7 @@ export interface EngineOptions {
   readonly spawn?: SpawnFn;
   readonly mergeRecovery?: MergeRecoveryFn;
   readonly autoStashBeforeMerge?: boolean;
+  readonly verifyCmd?: string; // shell command run in worktree before merge (e.g. 'npm run tc')
   readonly instanceId?: string;
   readonly repoDir?: string;     // for worktree creation
   readonly worktreesDir?: string; // override default .worktrees/ location
@@ -62,6 +63,7 @@ export class Engine {
   readonly #spawn: SpawnFn | null;
   readonly #mergeRecovery: MergeRecoveryFn | undefined;
   readonly #autoStashBeforeMerge: boolean;
+  readonly #verifyCmd: string | undefined;
   readonly #id: string;
   readonly #retryCooldownMs: number;
   readonly #keepAlive: boolean;
@@ -84,6 +86,7 @@ export class Engine {
     this.#spawn = opts.spawn ?? null;
     this.#mergeRecovery = opts.mergeRecovery;
     this.#autoStashBeforeMerge = opts.autoStashBeforeMerge ?? false;
+    this.#verifyCmd = opts.verifyCmd ?? env.verifyCmd;
     this.#id = opts.instanceId ?? `${process.pid}-${randomUUID().slice(0, 8)}`;
     this.#retryCooldownMs = opts.retryCooldownMs ?? 0; // default: no cooldown
     this.#keepAlive = opts.keepAlive ?? env.keepAlive;
@@ -361,6 +364,11 @@ export class Engine {
         task.resetConvergence();
         return 'rework';
       }
+      if (this.#verifyCmd && !this.#runVerifyCmd(wt.path)) {
+        this.#log(`T${task.taskNumber} verify command failed; sending back to agent`, 'transition');
+        task.resetConvergence();
+        return 'rework';
+      }
       await wt.merge();
       await wt.remove();
       this.#worktrees.delete(task.taskNumber);
@@ -492,6 +500,20 @@ export class Engine {
       return await this.#bench(info);
     }
     catch { return 1; }
+  }
+
+  /** Run the configured verify command in the given cwd. Returns true on success. */
+  #runVerifyCmd(cwd: string): boolean {
+    try {
+      /* v8 ignore next 4 */
+      const [shell, ...args] = process.platform === 'win32'
+        ? ['cmd', '/c', this.#verifyCmd!]
+        : ['sh', '-c', this.#verifyCmd!];
+      execFileSync(shell, args, { cwd, stdio: 'pipe', timeout: 300_000 });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   // ── Merge lock (cross-orchestrator) ─────────────────────────────────

@@ -612,4 +612,102 @@ describe('Engine agent spawning', () => {
     expect(r2.task).not.toBeNull();
     expect(r2.converged).toBe(false);
   });
+
+  it('verifyCmd passes: task merges successfully', async () => {
+    const { execSync } = await import('node:child_process');
+    const { mkdirSync: mk, writeFileSync } = await import('node:fs');
+
+    const repoDir = resolve(dir, 'repo');
+    const tasksDir = resolve(dir, 'tasks');
+    mk(repoDir, { recursive: true });
+    execSync('git init && git config user.email test@test && git config user.name test && git commit --allow-empty -m init', { cwd: repoDir });
+
+    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
+      mk(resolve(tasksDir, s), { recursive: true });
+    }
+
+    const d = resolve(tasksDir, 'pending', 'T01-x');
+    mk(d, { recursive: true });
+    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+
+    const spawn = vi.fn().mockResolvedValue({ success: true, iterations: 1 });
+    const benchmark = vi.fn()
+      .mockResolvedValueOnce(1).mockResolvedValueOnce(0)
+      .mockResolvedValue(0);
+
+    // verifyCmd that always passes (exit 0)
+    const verifyCmd = process.platform === 'win32' ? 'exit /b 0' : 'true';
+    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir, verifyCmd });
+    await engine.tick();
+    await engine.tick();
+    const r = await engine.tick();
+
+    expect(r.converged).toBe(true);
+  });
+
+  it('verifyCmd fails: task goes to rework instead of merging', async () => {
+    const { execSync } = await import('node:child_process');
+    const { mkdirSync: mk, writeFileSync } = await import('node:fs');
+
+    const repoDir = resolve(dir, 'repo');
+    const tasksDir = resolve(dir, 'tasks');
+    mk(repoDir, { recursive: true });
+    execSync('git init && git config user.email test@test && git config user.name test && git commit --allow-empty -m init', { cwd: repoDir });
+
+    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
+      mk(resolve(tasksDir, s), { recursive: true });
+    }
+
+    const d = resolve(tasksDir, 'pending', 'T01-x');
+    mk(d, { recursive: true });
+    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+
+    const spawn = vi.fn().mockResolvedValue({ success: true, iterations: 1 });
+    const benchmark = vi.fn()
+      .mockResolvedValueOnce(1).mockResolvedValueOnce(0)
+      .mockResolvedValue(0);
+
+    // verifyCmd that always fails (exit 1)
+    const verifyCmd = process.platform === 'win32' ? 'exit /b 1' : 'false';
+    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir, verifyCmd });
+    await engine.tick(); // metric=1 → spawn → 0 (cz=1)
+    await engine.tick(); // metric=0 (cz=2)
+    const r = await engine.tick(); // metric=0 (cz=3 → mergeAndRemove → verifyCmd fails → rework)
+
+    expect(r.converged).toBe(false);
+    // Task should NOT be converged — verify failure sent it to rework
+    const all = await TaskState.scan(tasksDir);
+    expect(all.get('1')!.status).not.toBe(Status.CONVERGED);
+  });
+
+  it('no verifyCmd: merge proceeds without verification', async () => {
+    const { execSync } = await import('node:child_process');
+    const { mkdirSync: mk, writeFileSync } = await import('node:fs');
+
+    const repoDir = resolve(dir, 'repo');
+    const tasksDir = resolve(dir, 'tasks');
+    mk(repoDir, { recursive: true });
+    execSync('git init && git config user.email test@test && git config user.name test && git commit --allow-empty -m init', { cwd: repoDir });
+
+    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
+      mk(resolve(tasksDir, s), { recursive: true });
+    }
+
+    const d = resolve(tasksDir, 'pending', 'T01-x');
+    mk(d, { recursive: true });
+    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+
+    const spawn = vi.fn().mockResolvedValue({ success: true, iterations: 1 });
+    const benchmark = vi.fn()
+      .mockResolvedValueOnce(1).mockResolvedValueOnce(0)
+      .mockResolvedValue(0);
+
+    // No verifyCmd — should converge normally
+    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir });
+    await engine.tick();
+    await engine.tick();
+    const r = await engine.tick();
+
+    expect(r.converged).toBe(true);
+  });
 });

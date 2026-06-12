@@ -41,4 +41,5 @@ export const env = {
   get idleSleepMs()        { return ms(process.env.ORCH_IDLE_SLEEP_MS, 5000); },
   get claimMaxMs()         { return parseInt(process.env.ORCH_CLAIM_MAX_MS ?? '1800000', 10); },
   get mergeLockMs()        { return parseInt(process.env.ORCH_MERGE_LOCK_MS ?? '600000', 10); },
+  get verifyCmd()          { return process.env.ORCH_VERIFY_CMD || undefined; },
 } as const;

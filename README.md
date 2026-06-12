@@ -119,6 +119,7 @@ Boolean env vars accept `1`, `true`, `yes`, or `on`.
 | `ORCH_MAX_FAILURES` | env only | `5` | Failed attempts before BLOCKED (int>=1 or `infinite`) |
 | `ORCH_AUTO_STASH` | `--auto-stash` | off | Stash parent repo changes before merging |
 | `ORCH_MERGE_LOCK_MS` | env only | `600000` | Break a merge lock held longer than this (crashed merger, ms) |
+| `ORCH_VERIFY_CMD` | env only | unset | Shell command to run in worktree before merge (e.g. `npm run tc`) |
 
 ### Concurrency & timeouts
 
