@@ -521,6 +521,10 @@ export class PiSpawner implements CodingAgent {
       `and log_experiment. Edit only files listed in the task's scope.`,
       'Iterate until metric=0 for 3 consecutive keep runs.',
       '',
+      `IMPORTANT: Do NOT modify, delete, or move any files inside ${arPath}/ except autoresearch.md.`,
+      'The orchestrator manages benchmark.js, autoresearch.sh, and agent logs there.',
+      'Your edits belong in the working directory (the worktree/repo), not the task directory.',
+      '',
       'NOTE: autoresearch.sh must NOT cd to another directory — it runs from the worktree',
       'root where node_modules and all source files are available.',
     ].join('\n');

@@ -181,6 +181,10 @@ export class CopilotCliAgent implements CodingAgent {
       'Read the printed "METRIC <name>=<value>" line.',
       'Edit only files listed in the task scope.',
       'Iterate until the metric reaches its target value of 0.',
+      '',
+      `IMPORTANT: Do NOT modify, delete, or move any files inside ${taskDir}/ except autoresearch.md.`,
+      'The orchestrator manages benchmark.js, autoresearch.sh, and agent logs there.',
+      'Your edits belong in the working directory (the worktree/repo), not the task directory.',
     ].join('\n');
   }
 
