@@ -30,7 +30,6 @@ TDD + SOLID. Read `TESTING.md` first for test conventions.
 | `ORCH_KEEP_ALIVE` | unset | Keep looping through transient idle/cooldown periods |
 | `ORCH_INFINITE` | unset | Never exit on idle; wait for new or addressed tasks until stopped |
 | `ORCH_IDLE_SLEEP_MS` | `5000` | Sleep interval between keep-alive/infinite idle ticks |
-| `ORCH_ENV_BACKOFF_MS` | `60000` | Wait before retrying after a task-agnostic (environment) failure, e.g. a missing API key; such failures do not consume a retry |
 | `ORCH_WORKTREES` | `<state-root>\<repo-slug>\worktrees` | Worktree directory override |
 | `ORCH_HEARTBEAT_MS` | `300000` | Stale claim timeout |
 | `ORCH_AGENT_LOG_MAX_BYTES` | `10485760` | Maximum `agent.log` size before older output is truncated |
@@ -52,6 +51,8 @@ Unrecoverable merge failures park the task as BLOCKED, keep its worktree, and le
 | `**Retry limit:**` | integer >= 1, `infinite`, `unlimited`, or `inf` | Failed attempts before BLOCKED; falls back to `ORCH_MAX_FAILURES` |
 
 Dependencies wait for all referenced tasks to converge; if any dependency is terminally BLOCKED, dependents are automatically BLOCKED transitively, while still-retrying FAILED dependencies keep dependents waiting.
+
+Task-agnostic (environment) failures — missing/invalid API key or agent auth, surfaced as `authFailure` by the agent adapter — are not the task's fault and would hit every task identically. The orchestrator fails fast: the first such failure stops the whole run in all modes, including `--infinite`, leaves the task `FAILED` without consuming a retry, and exits non-zero with `Environment issue: <reason>`. Task-specific failures (non-zero metric, merge conflict) still consume the retry budget.
 
 ### Coding agents
 

@@ -91,7 +91,6 @@ Explicit `--tasks` and `--worktrees` paths override those derived locations.
 | `ORCH_KEEP_ALIVE` | unset | Keep looping through transient idle/cooldown periods when set to `1`, `true`, `yes`, or `on` |
 | `ORCH_INFINITE` | unset | Never exit on idle; wait for new or addressed tasks until `--stop` |
 | `ORCH_IDLE_SLEEP_MS` | `5000` | Sleep interval between keep-alive/infinite idle ticks |
-| `ORCH_ENV_BACKOFF_MS` | `60000` | Wait before retrying after a task-agnostic (environment) failure, e.g. a missing API key; such failures do not consume a retry |
 | `ORCH_HEARTBEAT_MS` | `300000` | Stale claim timeout |
 | `ORCH_AGENT_LOG_MAX_BYTES` | `10485760` | Maximum `agent.log` size before older output is truncated |
 | `ORCH_AGENT_LOG_RAW` | unset | Write raw spawned-agent stdout/stderr to `agent.log` when set to `1`, `true`, `yes`, or `on` |
@@ -115,6 +114,14 @@ Optional `autoresearch.md` metadata:
 | `**Retry limit:**` | integer >= 1, `infinite`, `unlimited`, or `inf` | Failed attempts before BLOCKED; falls back to `ORCH_MAX_FAILURES` |
 
 Dependencies wait for all referenced tasks to converge; if any dependency is terminally BLOCKED, dependents are automatically BLOCKED transitively, while still-retrying FAILED dependencies keep dependents waiting.
+
+### Task-agnostic (environment) failures
+
+A *task-agnostic* failure would hit every task the same way: the coding agent's environment is misconfigured or unavailable (for example, a missing or invalid API key). The orchestrator **fails fast**: on the first such failure it stops the whole run immediately, in every mode including `--infinite`.
+
+The affected task is left `FAILED` **without** consuming a retry. The CLI prints `Environment issue: <reason>` and exits non-zero, so operators or automation can fix the environment and rerun. Remaining pending tasks are not picked, which prevents one environment problem from churning every task into `FAILED`.
+
+A *task-specific* failure is different: the agent ran but the metric is still non-zero, or a merge conflict occurred. These failures consume the task's retry budget as usual.
 
 ## Coding agents
 

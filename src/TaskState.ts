@@ -38,6 +38,7 @@ export interface TickResult {
   readonly metric: number;
   readonly converged: boolean;
   readonly stopped?: false;
+  readonly environmentError?: string;
 }
 
 export interface TickNull {
@@ -45,6 +46,7 @@ export interface TickNull {
   readonly metric: 0;
   readonly converged: false;
   readonly stopped?: boolean;
+  readonly environmentError?: string;
 }
 
 // ── Claim types ─────────────────────────────────────────────────────────────

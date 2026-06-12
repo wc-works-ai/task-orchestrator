@@ -129,7 +129,7 @@ describe('Engine', () => {
     expect(task.status).toBe(Status.FAILED);
   });
 
-  it('does not consume a retry or block on a task-agnostic (auth) failure', async () => {
+  it('does not consume a retry on a task-agnostic (auth) failure', async () => {
     make(dir, 1, 'auth');
     const engine = new Engine(dir, {
       benchmark: one,
@@ -142,72 +142,50 @@ describe('Engine', () => {
     });
 
     const r = await engine.tick();
-    expect(r.task).not.toBeNull();
+    expect(r.stopped).toBe(true);
+    expect(r.environmentError).toContain('No API key found');
+    expect(engine.environmentError).toContain('No API key found');
 
-    const all = await TaskState.scan(dir);
-    const task = all.get('1')!;
-    expect(task.status).toBe(Status.FAILED);
-    expect(task.failureCount).toBe(0);
-  });
-
-  it('keeps retrying without consuming retries across repeated env failures', async () => {
-    make(dir, 1, 'auth');
-    let attempts = 0;
-    const engine = new Engine(dir, {
-      benchmark: one,
-      envBackoffMs: 0,
-      spawn: async () => {
-        attempts++;
-        return { success: false, iterations: 0, authFailure: true, error: 'No API key found' };
-      },
-    });
-
-    for (let i = 0; i < 3; i++) {
-      await engine.tick();
-      const task = (await TaskState.scan(dir)).get('1')!;
-      expect(task.status).toBe(Status.FAILED);
-      expect(task.failureCount).toBe(0);
-    }
-    expect(attempts).toBe(3);
-  });
-
-  it('defers retry while the environment backoff is active', async () => {
-    make(dir, 1, 'auth');
-    let attempts = 0;
-    const engine = new Engine(dir, {
-      benchmark: one,
-      envBackoffMs: 100_000,
-      spawn: async () => {
-        attempts++;
-        return { success: false, iterations: 0, authFailure: true, error: 'No API key found' };
-      },
-    });
-
-    const r1 = await engine.tick();
-    expect(r1.task).not.toBeNull();
-    const r2 = await engine.tick();
-    expect(r2.task).toBeNull();
-    expect(attempts).toBe(1);
     const task = (await TaskState.scan(dir)).get('1')!;
     expect(task.status).toBe(Status.FAILED);
     expect(task.failureCount).toBe(0);
   });
 
-  it('does not cascade-block dependents on an env failure', async () => {
+  it('fails fast: stops the run on an env failure so other tasks do not churn to FAILED', async () => {
     make(dir, 1, 'auth');
-    make(dir, 2, 'dependent', { deps: [1] });
+    make(dir, 2, 'second');
+    let spawnCalls = 0;
     const engine = new Engine(dir, {
       benchmark: one,
-      envBackoffMs: 0,
+      spawn: async () => {
+        spawnCalls++;
+        return { success: false, iterations: 0, authFailure: true, error: 'No API key found' };
+      },
+    });
+
+    const ticks = await engine.loop();
+
+    expect(spawnCalls).toBe(1);
+    expect(ticks).toBe(0);
+    expect(engine.environmentError).toContain('No API key found');
+    const all = await TaskState.scan(dir);
+    expect(all.get('1')!.status).toBe(Status.FAILED);
+    expect(all.get('1')!.failureCount).toBe(0);
+    expect(all.get('2')!.status).toBe(Status.PENDING);
+  });
+
+  it('fails (not blocks) the detecting task on an env failure', async () => {
+    make(dir, 1, 'auth');
+    const engine = new Engine(dir, {
+      benchmark: one,
       spawn: async () => ({ success: false, iterations: 0, authFailure: true, error: 'No API key found' }),
     });
 
     await engine.tick();
-    await engine.tick();
-
-    const all = await TaskState.scan(dir);
-    expect(all.get('1')!.status).toBe(Status.FAILED);
-    expect(all.get('2')!.status).not.toBe(Status.BLOCKED);
+    const task = (await TaskState.scan(dir)).get('1')!;
+    expect(task.status).toBe(Status.FAILED);
+    expect(task.status).not.toBe(Status.BLOCKED);
+    expect(task.failureCount).toBe(0);
   });
 
   it('skips task with unmet deps, picks next', async () => {

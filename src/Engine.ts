@@ -59,7 +59,6 @@ export interface EngineOptions {
   readonly keepAlive?: boolean;
   readonly infinite?: boolean;
   readonly idleSleepMs?: number;
-  readonly envBackoffMs?: number; // wait after a task-agnostic (environment) failure (default 60000)
   readonly sleep?: SleepFn;
   readonly onTick?: (result: TickResult | TickNull, total: number) => void | Promise<void>;
 }
@@ -77,14 +76,12 @@ export class Engine {
   readonly #keepAlive: boolean;
   readonly #infinite: boolean;
   readonly #idleSleepMs: number;
-  readonly #envBackoffMs: number;
   readonly #sleep: SleepFn;
+  #environmentError?: string;
   /** Track active worktrees by task number */
   readonly #worktrees = new Map<number, Worktree>();
   /** Track last failure time per task for retry cooldown */
   readonly #retryCooldowns = new Map<number, number>();
-  /** Track last task-agnostic (environment) failure time per task for backoff */
-  readonly #envCooldowns = new Map<number, number>();
 
   constructor(tasksDir: string, opts: EngineOptions = {}) {
     this.#dir = tasksDir;
@@ -99,11 +96,11 @@ export class Engine {
     this.#keepAlive = opts.keepAlive ?? env.keepAlive;
     this.#infinite = opts.infinite ?? env.infinite;
     this.#idleSleepMs = opts.idleSleepMs ?? env.idleSleepMs;
-    this.#envBackoffMs = opts.envBackoffMs ?? env.envBackoffMs;
     this.#sleep = opts.sleep ?? sleep;
   }
 
   get instanceId(): string { return this.#id; }
+  get environmentError(): string | undefined { return this.#environmentError; }
 
   #log(msg: string, category: LogCategory = 'routine'): void {
     const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
@@ -170,16 +167,6 @@ export class Engine {
     if (this.#retryCooldownMs > 0 && lastFail && Date.now() - lastFail < this.#retryCooldownMs) {
       task.release(Status.FAILED);
       this.#log(`T${task.taskNumber}: cooldown (${Date.now() - lastFail}ms < ${this.#retryCooldownMs}ms)`);
-      return { task: null, metric: 0, converged: false };
-    }
-
-    // Environment backoff — a prior task-agnostic failure (e.g. missing API key)
-    // did not consume a retry; wait before retrying so a persistent environment
-    // issue does not spin the loop. Always applies (independent of retry cooldown).
-    const lastEnvFail = this.#envCooldowns.get(task.taskNumber);
-    if (lastEnvFail !== undefined && Date.now() - lastEnvFail < this.#envBackoffMs) {
-      task.release(Status.FAILED);
-      this.#log(`T${task.taskNumber}: environment backoff (${this.#envBackoffMs - (Date.now() - lastEnvFail)}ms left); retry not yet due`);
       return { task: null, metric: 0, converged: false };
     }
 
@@ -421,16 +408,18 @@ export class Engine {
   }
 
   /**
-   * Task-agnostic / environment failure (e.g. missing API key). The task itself
-   * is fine, so do NOT consume a retry and do NOT block dependents. Release the
-   * task so it retries once the environment is fixed, with a backoff so a
-   * persistent issue does not spin the loop.
+   * Task-agnostic / environment failure (e.g. a missing API key). The task is
+   * fine, so do NOT consume a retry. The same problem would hit every task, so
+   * stop the whole run immediately (fail fast) instead of churning the rest of
+   * the queue into FAILED. The detecting task is left FAILED so a rerun resumes
+   * it once the environment is fixed.
    */
-  #handleEnvironmentalFailure(task: TaskState, metric: number, reason: string): TickResult {
-    this.#envCooldowns.set(task.taskNumber, Date.now());
+  #handleEnvironmentalFailure(task: TaskState, _metric: number, reason: string): TickNull {
+    const detail = this.#singleLine(reason);
+    this.#environmentError = detail;
     task.release(Status.FAILED);
-    this.#log(`T${task.taskNumber} paused: ${this.#singleLine(reason)} — environment issue, not counted against retries (metric=${metric}); will retry after backoff`, 'transition');
-    return { task: task.info, metric, converged: false };
+    this.#log(`T${task.taskNumber} environment issue: ${detail} — stopping run (fail fast); not counted against retries; fix and rerun`, 'transition');
+    return { task: null, metric: 0, converged: false, stopped: true, environmentError: detail };
   }
 
   #experimentLabel(count: number): string {

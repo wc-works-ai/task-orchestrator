@@ -39,5 +39,4 @@ export const env = {
   get keepAlive()          { return bool(process.env.ORCH_KEEP_ALIVE); },
   get infinite()           { return bool(process.env.ORCH_INFINITE); },
   get idleSleepMs()        { return ms(process.env.ORCH_IDLE_SLEEP_MS, 5000); },
-  get envBackoffMs()       { return ms(process.env.ORCH_ENV_BACKOFF_MS, 60000); },
 } as const;

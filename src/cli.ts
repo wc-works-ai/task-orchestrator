@@ -114,7 +114,6 @@ Environment variables:
   ORCH_KEEP_ALIVE=1          wait through transient idle/cooldown periods
   ORCH_INFINITE=1            never exit on idle; wait for new or addressed tasks
   ORCH_IDLE_SLEEP_MS=<ms>    keep-alive/infinite idle sleep interval (default: 5000)
-  ORCH_ENV_BACKOFF_MS=<ms>   wait before retrying after an env failure, e.g. missing API key (default: 60000)
   ORCH_HEARTBEAT_MS=<ms>     stale claim timeout (default: 300000)
   ORCH_PROGRESS_TIMEOUT=<ms> kill agent after no output (default: 120000)
   ORCH_AGENT_LOG_MAX_BYTES=<bytes> cap agent.log size (default: 10485760)
@@ -292,6 +291,11 @@ if (values.task) {
 try {
   if (values.once) {
     const r = await engine.tick();
+    if (engine.environmentError) {
+      console.error(`\n  ❌ Environment issue: ${engine.environmentError}`);
+      console.error('  Stopped without consuming any task retries. Fix the environment (e.g. set the API key) and rerun.\n');
+      process.exit(1);
+    }
     if (r.task) {
       const icon = r.converged ? '✅' : r.metric === 0 ? '⏳' : '❌';
       console.log(`${icon} T${r.task.number}: metric=${r.metric}`);
@@ -312,6 +316,12 @@ try {
       keepAlive,
       infinite,
     });
+    if (engine.environmentError) {
+      await printRunSummary(dir, n);
+      console.error(`\n  ❌ Environment issue: ${engine.environmentError}`);
+      console.error('  Stopped without consuming any task retries. Fix the environment (e.g. set the API key) and rerun.\n');
+      process.exit(1);
+    }
     await printRunSummary(dir, n);
     if (infinite) console.log(`\n🛑 stopped after ${n} ticks\n`);
     else console.log(`\n🎉 ${n} ticks — all done\n`);
