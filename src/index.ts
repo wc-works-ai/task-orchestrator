@@ -5,5 +5,7 @@ export type { TaskInfo, BenchmarkFn, TickResult } from './TaskState.js';
 export { addTask } from './addTask.js';
 export { piCommand } from './PiCommand.js';
 export type { PiCommand } from './PiCommand.js';
+export type { CodingAgent } from './CodingAgent.js';
+export { createCodingAgent } from './agents.js';
 export { defaultStateRoot, repoSlug, resolveStatePaths } from './StatePaths.js';
 export type { StatePathInputs, StatePaths } from './StatePaths.js';

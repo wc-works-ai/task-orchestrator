@@ -8,7 +8,7 @@ import { execSync } from 'node:child_process';
 import { addTask } from './addTask.js';
 import { Engine, MergeRecoveryAction, type MergeRecoveryFailure } from './Engine.js';
 import { TaskState, type TaskInfo } from './TaskState.js';
-import { PiSpawner } from './PiSpawner.js';
+import { createCodingAgent } from './agents.js';
 import { Prerequisites } from './Prerequisites.js';
 import { env } from './env.js';
 import { resolveStatePaths } from './StatePaths.js';
@@ -220,7 +220,7 @@ if (failed.length > 0) {
   // pi/API key missing — warn but continue (user might have custom benchmark)
 }
 
-const spawner = new PiSpawner({
+const agent = createCodingAgent('pi', {
   ...(values.model ? { model: values.model } : {}),
   workDir: repo,
 });
@@ -249,7 +249,7 @@ const engine = new Engine(dir, {
   worktreesDir,
   autoStashBeforeMerge: autoStash,
   mergeRecovery: autoStash ? () => MergeRecoveryAction.StashAndRetry : promptMergeRecovery,
-  spawn: (task, worktreePath, signal) => spawner.spawn(task, worktreePath, signal),
+  spawn: (task, worktreePath, signal) => agent.spawn(task, worktreePath, signal),
   benchmark: async (t: TaskInfo) => {
     try {
       const out = execSync(`node ${t.directory}/benchmark.js`, {

@@ -5,6 +5,7 @@ import { TaskState } from './TaskState.js';
 import { env } from './env.js';
 import { piCommand } from './PiCommand.js';
 import type { SpawnResult, TokenUsage } from './Engine.js';
+import type { CodingAgent } from './CodingAgent.js';
 
 
 
@@ -44,7 +45,8 @@ export interface PiSpawnerOptions {
   readonly agentLogRaw?: boolean;
 }
 
-export class PiSpawner {
+export class PiSpawner implements CodingAgent {
+  readonly name = 'pi';
   readonly #model: string | undefined;
   readonly #fallback: string | undefined;
   readonly #workDir: string;
@@ -68,6 +70,10 @@ export class PiSpawner {
   /** Resolve the model for a task: metadata → constructor → env → pi default */
   modelFor(task: TaskState): string | undefined {
     return task.model || this.#model;
+  }
+
+  resolveModel(task: TaskState): string | undefined {
+    return this.modelFor(task);
   }
 
   async spawn(task: TaskState, worktreePath?: string, signal?: AbortSignal): Promise<SpawnResult> {
