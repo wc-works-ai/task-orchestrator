@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { rm } from 'node:fs/promises';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { EventEmitter } from 'node:events';
@@ -15,6 +15,16 @@ vi.mock('node:child_process', () => ({
 }));
 
 const { execFileSync, spawn } = await vi.importMock<typeof import('node:child_process')>('node:child_process');
+
+/** Read the single per-run agent log file produced in a task directory. */
+function readRunLog(taskDir: string): string {
+  const name = readdirSync(taskDir).find(f => /^agent-.*\.log$/.test(f));
+  if (!name) throw new Error(`no agent run log found in ${taskDir}`);
+  return readFileSync(join(taskDir, name), 'utf-8');
+}
+
+/** Pattern for the per-run log path printed in the spawn summary. */
+const RUN_LOG_LINE = /log: .*[\\/]agent-\d{8}-\d{6}-\d{3}\.log/;
 
 class MockChild extends EventEmitter {
   pid = 4321;
@@ -164,8 +174,8 @@ describe('PiSpawner', () => {
       expect(output).toContain('started: ');
       expect(output).toContain('task: Review Azure DevOps PR 981660 for FabricSparkCST and write a concise report');
       expect(output).toContain(`worktree: ${dir}`);
-      expect(output).toContain(`log: ${join(t.directory, 'agent.log')}`);
-      expect(output).toContain('status: agent running; details in agent.log');
+      expect(output).toMatch(RUN_LOG_LINE);
+      expect(output).toContain('status: agent running; details in the log file above');
       expect(output).not.toContain('npm run t');
       expect(output).not.toContain('METRIC branch_gap=42.5');
       expect(output).not.toContain('Logged #1: keep');
@@ -257,7 +267,7 @@ describe('PiSpawner', () => {
       expect(output).toContain('still running: no agent output for');
       expect(output).toContain('(auto-stop at 500ms)');
       expect(output).not.toContain('running: last agent output');
-      expect(output).toContain(`log: ${join(t.directory, 'agent.log')}`);
+      expect(output).toMatch(RUN_LOG_LINE);
 
       mock.emit('close', 0);
       const r = await p;
@@ -365,7 +375,7 @@ describe('PiSpawner', () => {
     }, 5);
     const r = await p;
     expect(r.success).toBe(true);
-    const log = readFileSync(join(t.directory, 'agent.log'), 'utf-8');
+    const log = readRunLog(t.directory);
     expect(log).toContain('agent log mode: summary');
     expect(log).toContain('raw output bytes=23 omitted');
     expect(log).not.toContain('warning: something bad');
@@ -384,7 +394,7 @@ describe('PiSpawner', () => {
     }, 5);
     const r = await p;
     expect(r.success).toBe(true);
-    const log = readFileSync(join(t.directory, 'agent.log'), 'utf-8');
+    const log = readRunLog(t.directory);
     expect(log).toContain('agent log mode: raw');
     expect(log).toContain('warning: something bad');
     expect(log).toContain('raw output bytes=23 logged');
@@ -497,7 +507,7 @@ describe('PiSpawner', () => {
       cacheWrite: 6,
       totalTokens: 130,
     });
-    const log = readFileSync(join(t.directory, 'agent.log'), 'utf-8');
+    const log = readRunLog(t.directory);
     expect(log).toContain('=== token usage total=130 input=13 output=6 cacheRead=105 cacheWrite=6 ===');
   });
 
@@ -537,7 +547,7 @@ describe('PiSpawner', () => {
         cacheWrite: 4,
         totalTokens: 10,
       });
-      const log = readFileSync(join(t.directory, 'agent.log'), 'utf-8');
+      const log = readRunLog(t.directory);
       expect(Buffer.byteLength(log)).toBeLessThanOrEqual(4096);
       expect(log).toContain('agent.log truncated; keeping latest output only');
       expect(log).toContain('=== token usage total=10 input=1 output=2 cacheRead=3 cacheWrite=4 ===');

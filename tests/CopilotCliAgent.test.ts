@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { rm } from 'node:fs/promises';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { EventEmitter } from 'node:events';
@@ -181,7 +181,8 @@ describe('CopilotCliAgent', () => {
     expect(result.success).toBe(true);
     expect(result.iterations).toBe(2);
     expect(result.tokenUsage).toBeUndefined();
-    const log = readFileSync(join(task.directory, 'agent.log'), 'utf-8');
+    const logName = readdirSync(task.directory).find(f => /^agent-.*\.log$/.test(f))!;
+    const log = readFileSync(join(task.directory, logName), 'utf-8');
     expect(log).toContain('token usage unavailable');
     expect(log).toContain('METRIC failures=1');
     expect(log).toContain('METRIC failures=0');

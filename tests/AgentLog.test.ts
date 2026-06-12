@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { appendAgentLog, openAgentLog } from '../src/AgentLog.js';
+import { appendAgentLog, openAgentLog, runLogName } from '../src/AgentLog.js';
 
 function setup(): string {
   const root = resolve('test-artifacts');
@@ -34,5 +34,13 @@ describe('AgentLog', () => {
 
     expect(readFileSync(log.path, 'utf-8')).toBe('\n=== age');
     expect(log.bytes).toBe(8);
+  });
+
+  it('runLogName builds a filesystem-safe per-run name (no colons)', () => {
+    expect(runLogName(new Date(2026, 5, 12, 18, 33, 18, 7))).toBe('agent-20260612-183318-007.log');
+  });
+
+  it('runLogName defaults to the current time', () => {
+    expect(runLogName()).toMatch(/^agent-\d{8}-\d{6}-\d{3}\.log$/);
   });
 });

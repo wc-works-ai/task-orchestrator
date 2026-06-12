@@ -68,8 +68,8 @@ Complete guide to configuring the Task Orchestrator. **Resolution order:** CLI f
 | Variable | CLI flag | Purpose | Default | Example |
 |---|---|---|---|---|
 | `ORCH_LOG_LEVEL` | none (env only) | Console verbosity: `quiet`, `normal`, or `verbose` | `normal` | `verbose` |
-| `ORCH_AGENT_LOG_RAW` | none (env only) | Write raw agent output to `agent.log` | `off` | `1` or `true` |
-| `ORCH_AGENT_LOG_MAX_BYTES` | none (env only) | Max size of agent.log before truncation (bytes) | `10485760` (10 MB) | `52428800` |
+| `ORCH_AGENT_LOG_RAW` | none (env only) | Write raw agent output to the per-run log file | `off` | `1` or `true` |
+| `ORCH_AGENT_LOG_MAX_BYTES` | none (env only) | Max size of each per-run agent log before truncation (bytes) | `10485760` (10 MB) | `52428800` |
 
 ## Check Your Configuration
 
@@ -153,7 +153,7 @@ $ orchestrator --once              # run one task, don't loop
 ```
 
 Then check logs:
-- `<state-root>/<repo-slug>/tasks/T01-name/agent.log` — raw agent output
+- `<state-root>/<repo-slug>/tasks/T01-name/agent-<timestamp>.log` — raw agent output, one file per spawn/retry (e.g. `agent-20260612-183318-007.log`)
 
 ## Boolean Environment Variables
 

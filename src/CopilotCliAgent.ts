@@ -3,11 +3,10 @@ import { join } from 'node:path';
 import { TaskState } from './TaskState.js';
 import { env } from './env.js';
 import { resolveCliCommand } from './PiCommand.js';
-import { appendAgentLog, openAgentLog } from './AgentLog.js';
+import { appendAgentLog, openAgentLog, runLogName } from './AgentLog.js';
 import type { SpawnResult, PrerequisiteResult, CodingAgentOptions } from './CodingAgent.js';
 import type { CodingAgent } from './CodingAgent.js';
 
-const F_AGENT_LOG = 'agent.log';
 const DEFAULT_AGENT_LOG_MAX_BYTES = 10 * 1024 * 1024;
 const METRIC_MARKER = 'METRIC ';
 const AUTH_SCAN_TAIL = 256;
@@ -75,7 +74,7 @@ export class CopilotCliAgent implements CodingAgent {
     if (signal?.aborted) return Promise.resolve({ success: false, iterations: 0 });
 
     const cwd = worktreePath ?? this.#workDir;
-    const logPath = join(task.directory, F_AGENT_LOG);
+    const logPath = join(task.directory, runLogName());
     const agentLog = openAgentLog(logPath, this.#agentLogMaxBytes);
     const model = this.resolveModel(task);
     const reasoning = this.resolveReasoning(task);

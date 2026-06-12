@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { TaskState } from './TaskState.js';
 import { env } from './env.js';
 import { piCommand } from './PiCommand.js';
-import { appendAgentLog, openAgentLog, type AgentLog } from './AgentLog.js';
+import { appendAgentLog, openAgentLog, runLogName, type AgentLog } from './AgentLog.js';
 import type { SpawnResult, TokenUsage, PrerequisiteResult, CodingAgentOptions } from './CodingAgent.js';
 import type { CodingAgent } from './CodingAgent.js';
 
@@ -136,14 +136,14 @@ export class PiSpawner implements CodingAgent {
     const models = this.#fallback && this.#fallback !== primaryModel
       ? [primaryModel, this.#fallback]
       : [primaryModel];
-    const logPath = join(task.directory, F_AGENT_LOG);
+    const logPath = join(task.directory, runLogName());
 
     console.log(`T${task.taskNumber} using ${models.map(PiSpawner.#modelLabel).join(', ')}`);
     console.log(`  started: ${PiSpawner.#now()}`);
     console.log(`  task: ${PiSpawner.#shortText(task.goal)}`);
     console.log(`  worktree: ${cwd}`);
     console.log(`  log: ${logPath}`);
-    console.log('  status: agent running; details in agent.log');
+    console.log('  status: agent running; details in the log file above');
     const authErrors: string[] = [];
     const tokenUsage = PiSpawner.#emptyTokenUsage();
     let lastResult: SpawnResult | undefined;
@@ -151,7 +151,7 @@ export class PiSpawner implements CodingAgent {
     for (const model of models) {
       /* c8 ignore next 1 */
       if (signal?.aborted) return { success: false, iterations: 0 };
-      const result = await this.#run(task, model, cwd, signal);
+      const result = await this.#run(task, model, cwd, logPath, signal);
       lastResult = result;
       if (result.tokenUsage) PiSpawner.#addTokenUsage(tokenUsage, result.tokenUsage);
       if (result.success) return PiSpawner.#withTokenUsage(result, tokenUsage);
@@ -178,7 +178,7 @@ export class PiSpawner implements CodingAgent {
     return PiSpawner.#withTokenUsage(lastResult!, tokenUsage);
   }
 
-  #run(task: TaskState, model: string | undefined, cwd: string, signal?: AbortSignal): Promise<SpawnResult> {
+  #run(task: TaskState, model: string | undefined, cwd: string, logPath: string, signal?: AbortSignal): Promise<SpawnResult> {
     /* c8 ignore next 1 */
     if (signal?.aborted) return Promise.resolve({ success: false, iterations: 0 });
 
@@ -257,7 +257,6 @@ export class PiSpawner implements CodingAgent {
       /* c8 ignore next 1 */
       signal?.addEventListener('abort', onAbort, { once: true });
 
-      const logPath = join(task.directory, F_AGENT_LOG);
       const agentLog = openAgentLog(logPath, this.#agentLogMaxBytes);
       try {
         appendAgentLog(agentLog, [
