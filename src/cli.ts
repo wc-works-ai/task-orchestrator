@@ -14,6 +14,7 @@ import { env } from './env.js';
 import { resolveStatePaths } from './StatePaths.js';
 import { printOverview, printRunSummary } from './RunReport.js';
 import { parseMetrics, unmetSummary } from './metrics.js';
+import { formatTaskGraph, type GraphNode } from './TaskGraph.js';
 import { formatEffectiveConfig, formatSettingsHelp } from './config.js';
 
 async function promptMergeRecovery(failure: MergeRecoveryFailure): Promise<MergeRecoveryAction> {
@@ -53,6 +54,7 @@ const { values, positionals } = await parseArgs({
     tasks:  { type: 'string', default: '' },
     loop:   { type: 'boolean', default: false },
     status: { type: 'boolean', default: false },
+    graph:  { type: 'boolean', default: false },
     check:  { type: 'boolean', default: false },
     agent:  { type: 'string', default: '' },
     model:  { type: 'string', default: '' },
@@ -82,6 +84,7 @@ Task Orchestrator — autonomous task execution
   orchestrator                  run until all tasks complete (loop)
   orchestrator --once
   orchestrator --status
+  orchestrator --graph
   orchestrator --check
   orchestrator --stop
   orchestrator --config
@@ -232,6 +235,29 @@ if (values.status) {
     }
   }
   console.log(`  -- ${all.size} total\n`);
+  process.exit(0);
+}
+
+if (values.graph) {
+  const { readdirSync } = await import('node:fs');
+  const seen = new Set<number>();
+  const nodes: GraphNode[] = [];
+  // Read every shard (including converged) so the full DAG is shown.
+  for (const shard of ['pending', 'in_progress', 'failed', 'blocked', 'converged'] as const) {
+    let entries: string[] = [];
+    try { entries = readdirSync(resolve(dir, shard)); } catch {}
+    for (const e of entries) {
+      if (!/^T\d+-/.test(e)) continue;
+      const t = new TaskState(resolve(dir, shard, e));
+      if (seen.has(t.taskNumber)) continue;
+      seen.add(t.taskNumber);
+      const status = shard === 'in_progress' ? 'running' : shard;
+      nodes.push({ number: t.taskNumber, status, goal: t.goal, deps: [...t.dependencies] });
+    }
+  }
+  console.log('');
+  for (const line of formatTaskGraph(nodes)) console.log(line);
+  console.log('');
   process.exit(0);
 }
 
