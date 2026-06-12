@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { TaskState, Status, type BenchmarkFn, type TaskInfo, type TickResult, type TickNull } from './TaskState.js';
 import { Worktree, MergeConflictError } from './Worktree.js';
+import { TaskOwnership } from './TaskOwnership.js';
 import { env } from './env.js';
 import type { SpawnFn, TokenUsage } from './CodingAgent.js';
 
@@ -80,6 +81,8 @@ export class Engine {
   readonly #worktrees = new Map<number, Worktree>();
   /** Track last failure time per task for retry cooldown */
   readonly #retryCooldowns = new Map<number, number>();
+  /** In-process guard: a task number is processed by at most one worker at a time */
+  readonly #ownership = new TaskOwnership();
   #currentLockToken: string | null = null;
 
   constructor(tasksDir: string, opts: EngineOptions = {}) {
@@ -176,61 +179,73 @@ export class Engine {
       return { task: null, metric: 0, converged: false };
     }
 
-    // Check retry cooldown — if this task failed recently, skip it
-    const lastFail = this.#retryCooldowns.get(task.taskNumber);
-    if (this.#retryCooldownMs > 0 && lastFail && Date.now() - lastFail < this.#retryCooldownMs) {
-      task.release(Status.FAILED);
-      this.#log(`T${task.taskNumber}: cooldown (${Date.now() - lastFail}ms < ${this.#retryCooldownMs}ms)`);
+    // In-process guard: if another worker in this process already owns this
+    // task number (e.g. two concurrent ticks both received our own in-progress
+    // claim), skip it here. The owning worker will carry it to completion.
+    if (!this.#ownership.acquire(task.taskNumber)) {
       return { task: null, metric: 0, converged: false };
     }
-
-    // Reset worktree on retry so agent starts fresh (discard conflicting changes)
-    /* istanbul ignore next: dead code — pick() always sets IN_PROGRESS */
-    if (task.isFailed) {
-      const wt = this.#worktrees.get(task.taskNumber);
-      /* istanbul ignore next */
-      if (wt) await wt.resetForRetry();
-    }
-
-    const ac = new AbortController();
-    /* c8 ignore start */
-    const hb = setInterval(() => {
-      task.heartbeat();
-      if (existsSync(this.#stopFile)) {
-        ac.abort();
-      }
-    }, 30_000);
-    /* c8 ignore stop */
     try {
-      let metric = await this.#run(task);
-      this.#log(`T${task.taskNumber} check: metric=${metric}${metric === 0 ? ' (done)' : ' (needs work; target is 0)'}`);
+      // Check retry cooldown — if this task failed recently, skip it
+      const lastFail = this.#retryCooldowns.get(task.taskNumber);
+      if (this.#retryCooldownMs > 0 && lastFail && Date.now() - lastFail < this.#retryCooldownMs) {
+        task.release(Status.FAILED);
+        this.#log(`T${task.taskNumber}: cooldown (${Date.now() - lastFail}ms < ${this.#retryCooldownMs}ms)`);
+        return { task: null, metric: 0, converged: false };
+      }
 
-      if (metric === 0) return await this.#handleZero(task, metric);
+      // Reset worktree on retry so agent starts fresh (discard conflicting changes)
+      /* istanbul ignore next: dead code — pick() always sets IN_PROGRESS */
+      if (task.isFailed) {
+        const wt = this.#worktrees.get(task.taskNumber);
+        /* istanbul ignore next */
+        if (wt) await wt.resetForRetry();
+      }
 
-      // Non-zero: try spawner if available
-      task.resetConvergence();
+      const ac = new AbortController();
+      /* c8 ignore start */
+      const hb = setInterval(() => {
+        task.heartbeat();
+        if (existsSync(this.#stopFile)) {
+          ac.abort();
+        }
+      }, 30_000);
+      /* c8 ignore stop */
+      try {
+        let metric = await this.#run(task);
+        this.#log(`T${task.taskNumber} check: metric=${metric}${metric === 0 ? ' (done)' : ' (needs work; target is 0)'}`);
 
-      if (this.#spawn) {
-        try {
-          const { wt, spawnTask } = await this.#prepareWorktree(task);
-          metric = await this.#runSpawnCycle(task, spawnTask, wt, metric, ac.signal);
-          if (metric === -1) return { task: null, metric: 0, converged: false, stopped: true, ...(this.#environmentError !== undefined && { environmentError: this.#environmentError }) };
-          if (metric === 0) return await this.#handleZero(task, metric, wt);
-        } catch (e: unknown) {
-          const msg = e instanceof Error ? e.message : String(e);
-          if (msg.includes('conflict')) {
-            task.status = Status.FAILED;
-            this.#retryCooldowns.set(task.taskNumber, Date.now());
-            console.error(`  ⚠️  T${task.taskNumber}: merge conflict — task FAILED, worktree kept for inspection`);
-          } else {
-            this.#log(`T${task.taskNumber} unexpected error during spawn/worktree setup: ${this.#singleLine(msg)}; releasing task`, 'transition');
+        if (metric === 0) return await this.#handleZero(task, metric);
+
+        // Non-zero: try spawner if available
+        task.resetConvergence();
+
+        if (this.#spawn) {
+          try {
+            const { wt, spawnTask } = await this.#prepareWorktree(task);
+            metric = await this.#runSpawnCycle(task, spawnTask, wt, metric, ac.signal);
+            if (metric === -1) return { task: null, metric: 0, converged: false, stopped: true, ...(this.#environmentError !== undefined && { environmentError: this.#environmentError }) };
+            if (metric === 0) return await this.#handleZero(task, metric, wt);
+          } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : String(e);
+            if (msg.includes('conflict')) {
+              task.status = Status.FAILED;
+              this.#retryCooldowns.set(task.taskNumber, Date.now());
+              console.error(`  ⚠️  T${task.taskNumber}: merge conflict — task FAILED, worktree kept for inspection`);
+            } else {
+              this.#log(`T${task.taskNumber} unexpected error during spawn/worktree setup: ${this.#singleLine(msg)}; releasing task`, 'transition');
+            }
           }
         }
-      }
 
-      return this.#handleFailure(task, metric);
+        return this.#handleFailure(task, metric);
+      } finally {
+        clearInterval(hb);
+      }
     } finally {
-      clearInterval(hb);
+      // Release only after the lifecycle and any shard transition have fully
+      // settled, so a later cycle cannot re-pick a half-moved task.
+      this.#ownership.release(task.taskNumber);
     }
   }
 

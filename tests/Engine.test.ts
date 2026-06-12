@@ -52,6 +52,29 @@ describe('Engine', () => {
     expect(engine.instanceId).toBeTruthy();
   });
 
+  it('in-process ownership guard: a concurrent tick skips a task already being processed', async () => {
+    make(dir, 1, 'a');
+    let reentrant: Awaited<ReturnType<Engine['tick']>> | undefined;
+    let benchCalls = 0;
+    // While T1 is mid-lifecycle (owned by the first tick), re-enter tick().
+    // The re-entrant tick picks the same in-progress task we own, but the
+    // ownership guard must make it skip instead of double-processing.
+    const engine: Engine = new Engine(dir, {
+      benchmark: async () => {
+        benchCalls++;
+        if (benchCalls === 1) reentrant = await engine.tick();
+        return 0;
+      },
+    });
+    const r = await engine.tick();
+    expect(r.task).not.toBeNull();
+    expect(r.task!.number).toBe(1);
+    // The re-entrant tick saw the owned task and skipped it (no double-process).
+    expect(reentrant!.task).toBeNull();
+    // The skipped re-entrant tick did not run the benchmark again.
+    expect(benchCalls).toBe(1);
+  });
+
   it('converges after threshold zero-runs', async () => {
     make(dir, 1, 'a');
     const engine = new Engine(dir, { benchmark: zero });
