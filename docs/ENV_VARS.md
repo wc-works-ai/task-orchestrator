@@ -62,6 +62,7 @@ Complete guide to configuring the Task Orchestrator. **Resolution order:** CLI f
 | `ORCH_HEARTBEAT_MS` | none (env only) | Heartbeat freshness window for claim (milliseconds) | `300000` (5 min) | `600000` |
 | `ORCH_CLAIM_MAX_MS` | none (env only) | Hard claim ceiling; reclaim stale claim across machines (ms) | `1800000` (30 min) | `3600000` |
 | `ORCH_PROGRESS_TIMEOUT` | none (env only) | Kill agent if no output for this long (milliseconds) | `120000` (2 min) | `300000` |
+| `ORCH_BENCHMARK_TIMEOUT` | none (env only) | Kill a task `benchmark.js` run after this long (ms); raise it for benchmarks that run the full test suite | `120000` (2 min) | `300000` |
 
 ### Logging
 

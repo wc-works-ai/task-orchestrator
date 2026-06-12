@@ -46,6 +46,7 @@ export const env = {
   get worktreesDir() { return process.env.ORCH_WORKTREES || undefined; },
   get heartbeatMs()       { return parseInt(process.env.ORCH_HEARTBEAT_MS ?? '300000', 10); },
   get progressTimeoutMs()  { return parseInt(process.env.ORCH_PROGRESS_TIMEOUT ?? '120000', 10); },
+  get benchmarkTimeoutMs() { return ms(process.env.ORCH_BENCHMARK_TIMEOUT, 120000); },
   get agentLogMaxBytes()   { return parseInt(process.env.ORCH_AGENT_LOG_MAX_BYTES ?? '10485760', 10); },
   get agentLogRaw()        { return bool(process.env.ORCH_AGENT_LOG_RAW); },
   get logLevel()           { return logLevel(process.env.ORCH_LOG_LEVEL); },
