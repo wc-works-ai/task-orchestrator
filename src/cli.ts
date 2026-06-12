@@ -3,7 +3,7 @@ import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { addTask } from './addTask.js';
 import { Engine, MergeRecoveryAction, type MergeRecoveryFailure } from './Engine.js';
@@ -275,15 +275,27 @@ const engine = new Engine(dir, {
   infinite,
   spawn: (task, worktreePath, signal) => agent.spawn(task, worktreePath, signal),
   benchmark: async (t: TaskInfo) => {
+    const benchCwd = isPathInside(t.directory, effectiveWorktreesDir) ? t.cwd : repo;
+    const reasonPath = resolve(t.directory, 'benchmark.log');
+    let out: string;
     try {
-      const out = execFileSync(process.execPath, [resolve(t.directory, 'benchmark.js')], {
-        timeout: 30_000, encoding: 'utf-8',
-        cwd: isPathInside(t.directory, effectiveWorktreesDir) ? t.cwd : repo,
+      out = execFileSync(process.execPath, [resolve(t.directory, 'benchmark.js')], {
+        timeout: 30_000, encoding: 'utf-8', cwd: benchCwd,
       });
-      const r = parseMetrics(out);
-      if (r.total > 0 && r.criteria.length > 1) console.log(`T${t.number} unmet: ${unmetSummary(r)}`);
-      return r.total;
-    } catch { return 1; }
+    } catch (e: unknown) {
+      // Capture whatever the benchmark printed before crashing/timing out so the
+      // failure reason is never silently swallowed.
+      const err = e as { stdout?: string; stderr?: string; message?: string };
+      out = `${err.stdout ?? ''}${err.stderr ?? ''}`.trim() || (err.message ?? 'benchmark execution failed');
+    }
+    try { writeFileSync(reasonPath, out); } catch {}
+    const r = parseMetrics(out);
+    if (r.total > 0) {
+      const summary = unmetSummary(r) || `no METRIC lines emitted (treated as ${r.total})`;
+      console.log(`T${t.number} unmet: ${summary}`);
+      console.log(`  why: ${reasonPath}`);
+    }
+    return r.total;
   },
 });
 

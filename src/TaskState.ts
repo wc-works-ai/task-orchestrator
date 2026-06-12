@@ -82,7 +82,20 @@ export class TaskState {
   }
 
   get info(): TaskInfo {
-    return this;
+    // Return a materialized plain object (not `this`): callers such as
+    // Engine spread it (`{ ...task.info, cwd }`) to run benchmarks in a
+    // worktree, and spreading the instance would drop getter-based fields
+    // (number, goal, ...), surfacing as `Tundefined` in logs.
+    return {
+      directory: this.directory,
+      number: this.number,
+      name: this.name,
+      goal: this.goal,
+      model: this.model,
+      reasoning: this.reasoning,
+      status: this.status,
+      cwd: this.cwd,
+    };
   }
   /** Default cwd — overridden by Engine with actual worktree/repo root */
   get cwd(): string { return this.#dir; }
