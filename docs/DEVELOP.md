@@ -20,6 +20,11 @@ See `README.md` for the grouped configuration table.
 CLI flags override env vars. See `orchestrator --help`.
 Settings are defined once in `src/config.ts` (`CONFIG_SPEC`) and rendered into both `--help` and `--config`; inspect effective values with `orchestrator --config`.
 
+#### Style conventions
+- File naming: PascalCase for class modules (`Engine.ts`, `TaskState.ts`); lowercase for utilities/entrypoints (`env.ts`, `cli.ts`, `config.ts`).
+- Constants: `UPPER_CASE` for module constants; PascalCase members for enum-like objects (`MergeRecoveryAction.StashAndRetry`).
+- Top-level helpers: `function` declarations for utilities; arrow-consts for single-expression helpers/lambdas.
+
 Loop mode prints an `Overview:` counts line after each tick and a final `Summary:` with one line per task. Infinite/daemon mode (`--infinite`, `--loop`, or `ORCH_INFINITE`) never exits on idle; it polls every `ORCH_IDLE_SLEEP_MS` for new tasks or for BLOCKED/FAILED tasks to be addressed, and exits only after `--stop`.
 
 Unrecoverable merge failures park the task as BLOCKED, keep its worktree, and let the run continue.

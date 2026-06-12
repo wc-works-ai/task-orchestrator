@@ -57,6 +57,25 @@ describe('config', () => {
     }
     expect(help).toContain('ORCH_CLAIM_MAX_MS');
     expect(help).toContain('ORCH_MERGE_LOCK_MS');
+    expect(help).toContain('--reasoning <level>');
+  });
+
+  it('uses the generic placeholder for unknown string flags', () => {
+    const extra = {
+      group: 'Test',
+      env: 'ORCH_TEST_UNKNOWN',
+      flag: 'unknown',
+      kind: 'string',
+      def: 'unset',
+      desc: 'test only',
+    } as const;
+
+    (CONFIG_SPEC as typeof CONFIG_SPEC & { push: (item: typeof extra) => number }).push(extra);
+    try {
+      expect(formatSettingsHelp()).toContain('--unknown <value>');
+    } finally {
+      (CONFIG_SPEC as typeof CONFIG_SPEC & { pop: () => unknown }).pop();
+    }
   });
 
   it('renders default source when neither flag nor env is set', () => {

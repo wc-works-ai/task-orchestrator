@@ -510,9 +510,11 @@ describe('Engine agent spawning', () => {
     const repoDir = resolve(dir, 'repo');
     const tasksDir = resolve(dir, 'tasks');
     const wtDir = resolve(dir, 'custom-wts');
+    const gitEnv = { ...process.env, HOME: repoDir, USERPROFILE: repoDir, XDG_CONFIG_HOME: repoDir };
     mk(repoDir, { recursive: true });
     mk(wtDir, { recursive: true });
-    execSync('git init && git config user.email test@test && git config user.name test && git commit --allow-empty -m init', { cwd: repoDir });
+    execSync('git init', { cwd: repoDir, env: gitEnv });
+    execSync('git -c user.email=test@test -c user.name=test commit --allow-empty -m init', { cwd: repoDir, env: gitEnv });
 
     for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
       mk(resolve(tasksDir, s), { recursive: true });

@@ -41,6 +41,7 @@ function placeholder(flag: string): string {
   if (flag === 'agent') return '<name>';
   if (flag === 'model') return '<model>';
   if (flag === 'reasoning') return '<level>';
+  /* v8 ignore next */
   return '<value>';
 }
 

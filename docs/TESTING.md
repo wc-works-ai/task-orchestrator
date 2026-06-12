@@ -11,4 +11,4 @@
 
 1. Read source. Map every branch.
 2. For each public method: happy path + edge case + error path.
-3. Verify: `npm run tc` — target 80%+ branch coverage.
+3. Verify: `npm run tc` — 100% branch coverage (enforced by vitest config).

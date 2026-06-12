@@ -40,7 +40,7 @@ export class Worktree {
     return existsSync(join(this.#path, '.git'));
   }
 
-  async create(): Promise<string> {
+  create(): string {
     if (this.exists) return this.#path;
 
     try {
@@ -87,7 +87,7 @@ export class Worktree {
    * overlapping edits still conflict. A real conflict is aborted and surfaced
    * as a MergeConflictError, handled like any other merge conflict.
    */
-  async syncWithBase(): Promise<void> {
+  syncWithBase(): void {
     try {
       this.#gitInWT('merge', '--no-edit', this.#base);
     } catch (e: unknown) {
@@ -100,7 +100,7 @@ export class Worktree {
     }
   }
 
-  async merge(): Promise<void> {
+  merge(): void {
     const prevBranch = this.#git('rev-parse', '--abbrev-ref', 'HEAD').trim();
     try {
       this.#git('checkout', this.#base);
@@ -122,21 +122,21 @@ export class Worktree {
     }
   }
 
-  async stashParentChanges(message: string): Promise<boolean> {
+  stashParentChanges(message: string): boolean {
     if (!this.#git('status', '--porcelain').trim()) return false;
     this.#git('stash', 'push', '-u', '-m', message);
     return true;
   }
 
   /** Discard all worktree changes — agent starts fresh on retry */
-  async resetForRetry(): Promise<void> {
+  resetForRetry(): void {
     try {
       this.#gitInWT('checkout', this.#base);          // detach from branch
       this.#gitInWT('checkout', '-B', this.#branch);   // recreate branch at base
     } catch { /* best-effort */ }
   }
 
-  async remove(): Promise<void> {
+  remove(): void {
     try { this.#git('worktree', 'remove', '--force', this.#path); } catch {}
     try { this.#git('branch', '-D', this.#branch); } catch {}
   }

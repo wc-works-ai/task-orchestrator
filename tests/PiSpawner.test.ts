@@ -107,6 +107,10 @@ describe('PiSpawner', () => {
     expect(args).not.toContain('--reasoning-effort');
   });
 
+  it('returns undefined reasoning when neither task nor defaults configure it', () => {
+    expect(new PiSpawner().resolveReasoning(make(dir, 1, 'a'))).toBeUndefined();
+  });
+
   it('spawn calls pi with correct model', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
     t.status = Status.PENDING;
@@ -168,6 +172,69 @@ describe('PiSpawner', () => {
     }
   });
 
+  it('returns a combined auth failure when every model fails authentication', async () => {
+    const primary = mockChild();
+    const fallback = mockChild();
+    vi.mocked(spawn).mockReturnValueOnce(primary).mockReturnValueOnce(fallback);
+
+    const p = new PiSpawner({ model: 'gpt-5.5', fallbackModel: 'backup-model' }).spawn(make(dir, 1, 'a'));
+    setTimeout(() => {
+      primary.stderr!.emit('data', Buffer.from('No API key found for azure-openai-responses.\n'));
+      primary.emit('close', 1);
+    }, 5);
+    setTimeout(() => {
+      fallback.stderr!.emit('data', Buffer.from('No API key found for backup-provider.\n'));
+      fallback.emit('close', 1);
+    }, 10);
+
+    const r = await p;
+    expect(r.success).toBe(false);
+    expect(r.authFailure).toBe(true);
+    expect(r.error).toContain('azure-openai-responses');
+    expect(r.error).toContain('backup-provider');
+  });
+
+  it('truncates long task descriptions in the spawn summary', async () => {
+    const t = make(dir, 1, 'a', `## Goal\n${'long '.repeat(80)}`);
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      const p = new PiSpawner().spawn(t, dir);
+      setTimeout(() => mock.emit('close', 0), 5);
+      const r = await p;
+      expect(r.success).toBe(true);
+      expect(joinedCalls(logSpy)).toContain('...');
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('suppresses duplicate quiet-status lines until the interval elapses again', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      const p = new PiSpawner({
+        progressTimeout: 500,
+        progressCheckInterval: 10,
+        progressStatusInterval: 40,
+      }).spawn(t, dir);
+
+      await new Promise(r => setTimeout(r, 70));
+      const statusLines = joinedCalls(logSpy).split('\n').filter(line => line.includes('still running:'));
+      expect(statusLines.length).toBe(1);
+
+      mock.emit('close', 0);
+      await p;
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
   it('prints periodic running status without internal agent output', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
     t.status = Status.PENDING;
@@ -197,12 +264,45 @@ describe('PiSpawner', () => {
     }
   });
 
+  it('formats second-based timeouts in quiet status output', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      const p = new PiSpawner({
+        progressTimeout: 1500,
+        progressCheckInterval: 20,
+        progressStatusInterval: 20,
+      }).spawn(t, dir);
+
+      await new Promise(r => setTimeout(r, 50));
+      expect(joinedCalls(logSpy)).toContain('(auto-stop at 2s)');
+
+      mock.emit('close', 0);
+      await p;
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
   it('returns failure on non-zero exit', async () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
     const p = new PiSpawner().spawn(make(dir, 1, 'a'));
     setTimeout(() => mock.emit('close', 1), 5);
     expect((await p).success).toBe(false);
+  });
+
+  it('reports unknown when pi exits without a code', async () => {
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+    const p = new PiSpawner().spawn(make(dir, 1, 'a'));
+    setTimeout(() => mock.emit('close', null), 5);
+    const r = await p;
+    expect(r.success).toBe(false);
+    expect(r.error).toBe('pi exited with code unknown');
   });
 
   it('returns auth failure when pi reports missing provider key', async () => {
@@ -285,6 +385,44 @@ describe('PiSpawner', () => {
     expect(log).toContain('agent log mode: raw');
     expect(log).toContain('warning: something bad');
     expect(log).toContain('raw output bytes=23 logged');
+  });
+
+  it('returns no token usage when assistant usage is missing', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiSpawner().spawn(t, dir);
+    setTimeout(() => {
+      mock.stdout!.emit('data', Buffer.from(JSON.stringify({
+        type: 'message_end',
+        message: { role: 'assistant', usage: null },
+      }) + '\n'));
+      mock.emit('close', 0);
+    }, 5);
+
+    const r = await p;
+    expect(r.success).toBe(true);
+    expect(r.tokenUsage).toBeUndefined();
+  });
+
+  it('treats non-numeric usage fields as zero', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiSpawner().spawn(t, dir);
+    setTimeout(() => {
+      mock.stdout!.emit('data', Buffer.from(JSON.stringify({
+        type: 'message_end',
+        message: { role: 'assistant', usage: { input: 'oops', output: 'nope' } },
+      }) + '\n'));
+      mock.emit('close', 0);
+    }, 5);
+
+    const r = await p;
+    expect(r.success).toBe(true);
+    expect(r.tokenUsage).toBeUndefined();
   });
 
   it('captures stdout and counts iterations', async () => {
@@ -405,6 +543,16 @@ describe('PiSpawner', () => {
     }
   });
 
+  it('falls back to the default agent log size when configured bytes are invalid', async () => {
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiSpawner({ agentLogMaxBytes: 0 }).spawn(make(dir, 1, 'a'));
+    setTimeout(() => mock.emit('close', 0), 5);
+
+    expect((await p).success).toBe(true);
+  });
+
   it('handles spawn error gracefully', async () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
@@ -454,6 +602,35 @@ describe('PiSpawner', () => {
     setTimeout(() => mock.emit('close', 0), 5);
     const r = await p;
     expect(r.success).toBe(true);
+  });
+
+  it('uses the absolute task path when cwd is outside the task directory', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+    const worktree = makeWorktree(dir);
+
+    const p = new PiSpawner().spawn(t, worktree);
+    setTimeout(() => mock.emit('close', 0), 5);
+
+    const r = await p;
+    expect(r.success).toBe(true);
+    const args = vi.mocked(spawn).mock.calls.at(-1)?.[1];
+    expect(args?.some(arg => String(arg).includes(`Task: read ${t.directory}/autoresearch.md, then run the experiment loop.`))).toBe(true);
+  });
+
+  it('ignores invalid pids when killing a tree', () => {
+    killTree(0);
+
+    expect(execFileSync).not.toHaveBeenCalled();
+  });
+
+  it('swallows taskkill failures while stopping a process tree', () => {
+    vi.mocked(execFileSync).mockImplementation(() => {
+      throw new Error('taskkill failed');
+    });
+
+    expect(() => killTree(1234)).not.toThrow();
   });
 
   // ── Internal NDJSON output remains quiet on the main terminal ─────────────

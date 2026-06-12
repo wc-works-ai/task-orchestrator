@@ -556,6 +556,11 @@ describe('TaskState', () => {
     expect(new TaskState(t.directory).reasoning).toBe('');
   });
 
+  it('reasoning returns empty when autoresearch metadata cannot be read', () => {
+    const t = make(dir, 1, 'a');
+    expect(t.reasoning).toBe('');
+  });
+
   it('maxFailures parses **Retry limit:** integer metadata', () => {
     const t = make(dir, 1, 'a', { status: Status.PENDING });
     writeFileSync(join(t.directory, 'autoresearch.md'), '- **Retry limit:** 3\n## Goal\nTest');
@@ -573,6 +578,12 @@ describe('TaskState', () => {
     expect(t.maxFailures).toBe(MAX_FAILURES);
   });
 
+  it('maxFailures falls back to global default when autoresearch lacks retry metadata', () => {
+    const t = make(dir, 1, 'a', { status: Status.PENDING });
+    writeFileSync(join(t.directory, 'autoresearch.md'), '## Goal\nTest');
+    expect(new TaskState(t.directory).maxFailures).toBe(MAX_FAILURES);
+  });
+
   it.each(['0', '-2', 'abc'])('maxFailures falls back to global default for invalid value %s', (value) => {
     const t = make(dir, 1, 'a', { status: Status.PENDING });
     writeFileSync(join(t.directory, 'autoresearch.md'), `- **Retry limit:** ${value}\n## Goal\nTest`);
@@ -585,6 +596,18 @@ describe('TaskState', () => {
     const t = make(dir, 1, 'a');
     expect(t.claimOwner).toBeNull();
     expect(t.claimOwnerId).toBe('');
+  });
+
+  it('pick skips a task when claiming it loses a race', async () => {
+    make(dir, 1, 'a');
+    make(dir, 2, 'b');
+    const claimSpy = vi.spyOn(TaskState.prototype, 'claim').mockImplementationOnce(() => false);
+
+    const picked = await TaskState.pick(dir, 'test');
+
+    expect(picked).not.toBeNull();
+    expect(picked!.taskNumber).toBe(2);
+    claimSpy.mockRestore();
   });
 
   it('heartbeat writes without error', () => {

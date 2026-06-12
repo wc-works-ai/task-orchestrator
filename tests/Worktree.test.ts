@@ -1,4 +1,4 @@
-import { describe, it, beforeEach, afterEach, expect } from 'vitest';
+import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { rm } from 'node:fs/promises';
 import { mkdtempSync, existsSync, readFileSync, rmSync } from 'node:fs';
 import { resolve, join } from 'node:path';
@@ -81,7 +81,7 @@ describe('Worktree', () => {
 
     writeFileSync(join(repo, 'tracked.txt'), 'dirty dev');
 
-    await expect(wt.merge()).rejects.toThrow(/Unable to switch to master/);
+    expect(() => wt.merge()).toThrow(/Unable to switch to master/);
     expect(existsSync(join(wt.path, '.git'))).toBe(true);
     expect(execSync('git branch --show-current', { cwd: repo, encoding: 'utf-8' }).trim()).toBe('dev');
   });
@@ -90,10 +90,10 @@ describe('Worktree', () => {
     const { writeFileSync } = await import('node:fs');
     const wt = new Worktree(repo, { name: 'T01-test' });
 
-    await expect(wt.stashParentChanges('clean stash')).resolves.toBe(false);
+    expect(wt.stashParentChanges('clean stash')).toBe(false);
 
     writeFileSync(join(repo, 'dirty.txt'), 'dirty');
-    await expect(wt.stashParentChanges('dirty stash')).resolves.toBe(true);
+    expect(wt.stashParentChanges('dirty stash')).toBe(true);
 
     expect(execSync('git status --porcelain', { cwd: repo, encoding: 'utf-8' })).toBe('');
     expect(execSync('git stash list', { cwd: repo, encoding: 'utf-8' })).toContain('dirty stash');
@@ -109,7 +109,7 @@ describe('Worktree', () => {
     writeFileSync(join(wt.path, 'shared.txt'), 'worktree content');
     execSync('git add shared.txt && git commit -m "wt change"', { cwd: wt.path });
 
-    await expect(wt.merge()).rejects.toThrow(MergeConflictError);
+    expect(() => wt.merge()).toThrow(MergeConflictError);
 
     // No silent resolution: main file untouched, branch kept, merge aborted cleanly
     expect(readFileSync(join(repo, 'shared.txt'), 'utf-8')).toBe('main content');
@@ -120,7 +120,7 @@ describe('Worktree', () => {
   it('remove deletes worktree and branch', async () => {
     const wt = new Worktree(repo, { name: 'T01-test' });
     await wt.create();
-    await wt.remove();
+    wt.remove();
     expect(existsSync(join(wt.path, '.git'))).toBe(false);
     const branches = execSync('git branch', { cwd: repo, encoding: 'utf-8' });
     expect(branches).not.toContain('orchestrator/T01-test');
@@ -134,7 +134,7 @@ describe('Worktree', () => {
     execSync('git add test.txt && git commit -m "work"', { cwd: wt.path });
     // resetForRetry may fail silently if base branch is in use elsewhere
     // It must never throw
-    await expect(wt.resetForRetry()).resolves.toBeUndefined();
+    expect(() => wt.resetForRetry()).not.toThrow();
   });
 
   it('reuses existing worktree without error', async () => {
@@ -167,7 +167,7 @@ describe('Worktree', () => {
       await wt.create();
       expect(existsSync(join(wt.path, '.git'))).toBe(true);
       // Clean up worktree so we can remove repo
-      await wt.remove();
+      wt.remove();
     } finally {
       await rm(unsetRepo, { recursive: true, force: true });
     }
@@ -176,7 +176,7 @@ describe('Worktree', () => {
   it('remove is best-effort with non-existent worktree', async () => {
     const wt = new Worktree(repo, { name: 'T99-nonexistent' });
     // Should not throw
-    await expect(wt.remove()).resolves.toBeUndefined();
+    expect(() => wt.remove()).not.toThrow();
   });
 
   it('gitConfig returns empty for unset config', async () => {
@@ -199,7 +199,7 @@ describe('Worktree', () => {
         if (origUser) writeGlobalGitConfig(bareRepo, 'user.name', origUser);
         if (origEmail) writeGlobalGitConfig(bareRepo, 'user.email', origEmail);
       }
-      await wt.remove();
+      wt.remove();
     } finally {
       await rm(bareRepo, { recursive: true, force: true });
     }
@@ -236,7 +236,7 @@ describe('Worktree', () => {
     writeFileSync(join(repo, 'shared.txt'), 'base');
     execSync('git add shared.txt && git commit -m "base"', { cwd: repo });
 
-    await expect(wt.syncWithBase()).rejects.toThrow(MergeConflictError);
+    expect(() => wt.syncWithBase()).toThrow(MergeConflictError);
 
     // Aborted cleanly: no MERGE_HEAD left, branch kept
     expect(() => execSync('git rev-parse -q --verify MERGE_HEAD', { cwd: wt.path, encoding: 'utf-8' })).toThrow();
@@ -252,7 +252,14 @@ describe('Worktree', () => {
     writeFileSync(join(repo, 'shared.txt'), 'base committed change');
     execSync('git add shared.txt && git commit -m "base change"', { cwd: repo });
 
-    const error = await wt.syncWithBase().catch((e: unknown) => e);
+    const error = (() => {
+      try {
+        wt.syncWithBase();
+        return undefined;
+      } catch (e: unknown) {
+        return e;
+      }
+    })();
     expect(error).toBeInstanceOf(Error);
     expect(error).not.toBeInstanceOf(MergeConflictError);
     expect((error as Error).message).toContain('Failed to merge master into orchestrator/T01-test');
@@ -294,11 +301,42 @@ describe('Worktree', () => {
 
     writeFileSync(join(repo, 'shared.txt'), 'main uncommitted change');
 
-    const error = await wt.merge().catch((e: unknown) => e);
+    const error = (() => {
+      try {
+        wt.merge();
+        return undefined;
+      } catch (e: unknown) {
+        return e;
+      }
+    })();
     expect(error).toBeInstanceOf(Error);
     expect(error).not.toBeInstanceOf(MergeConflictError);
     expect((error as Error).message).toContain('Merge of orchestrator/T01-test failed');
     expect(execSync('git branch --show-current', { cwd: repo, encoding: 'utf-8' }).trim()).toBe('master');
     expect(() => execSync('git rev-parse -q --verify MERGE_HEAD', { cwd: repo, encoding: 'utf-8' })).toThrow();
+  });
+
+  it('falls back to stringified non-Error merge failures when unmerged-path detection also fails', async () => {
+    vi.resetModules();
+    vi.doMock('node:child_process', () => ({
+      execFileSync: vi.fn((_command: string, args: readonly string[]) => {
+        if (args[0] === 'rev-parse') return 'master\n';
+        if (args[0] === 'checkout') return '';
+        if (args[0] === 'merge' && args[1] === '--no-ff') throw 'plain-string failure';
+        if (args[0] === 'merge' && args[1] === '--abort') return '';
+        if (args[0] === 'ls-files') throw new Error('ls-files failed');
+        return '';
+      }),
+    }));
+
+    try {
+      const { Worktree: MockedWorktree } = await import('../src/Worktree.js');
+      const wt = new MockedWorktree('Q:\\Repos\\not-a-repo', { name: 'T01-test' });
+
+      expect(() => wt.merge()).toThrow('Merge of orchestrator/T01-test failed: plain-string failure');
+    } finally {
+      vi.doUnmock('node:child_process');
+      vi.resetModules();
+    }
   });
 });

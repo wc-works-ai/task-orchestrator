@@ -152,6 +152,24 @@ describe('Engine', () => {
     expect(task.failureCount).toBe(0);
   });
 
+  it('uses the generic auth-failure message when the agent omits an error', async () => {
+    make(dir, 1, 'auth');
+    const engine = new Engine(dir, {
+      benchmark: one,
+      spawn: async () => ({
+        success: false,
+        iterations: 0,
+        authFailure: true,
+      }),
+    });
+
+    const r = await engine.tick();
+
+    expect(r.stopped).toBe(true);
+    expect(r.environmentError).toContain('coding agent authentication failed');
+    expect((await TaskState.scan(dir)).get('1')!.failureCount).toBe(0);
+  });
+
   it('fails fast: stops the run on an env failure so other tasks do not churn to FAILED', async () => {
     make(dir, 1, 'auth');
     make(dir, 2, 'second');
@@ -264,6 +282,17 @@ describe('Engine', () => {
     expect(r.task).toBeNull();
     const all = await TaskState.scan(dir);
     expect(all.get('3')!.status).toBe(Status.BLOCKED);
+  });
+
+  it('ignores non-task entries while blocked-dependency scanning tolerates a missing shard', async () => {
+    writeFileSync(join(dir, 'pending', '.gitkeep'), '');
+    make(dir, 1, 'real-task');
+    await rm(resolve(dir, 'failed'), { recursive: true, force: true });
+
+    const r = await new Engine(dir, { benchmark: zero }).tick();
+
+    expect(r.task).not.toBeNull();
+    expect(r.task!.number).toBe(1);
   });
 
   it('second instance does not steal claim', async () => {

@@ -120,7 +120,7 @@ export class Engine {
 
   async pickByNumber(num: number): Promise<TaskState | null> {
     await TaskState.scan(this.#dir);
-    for (const shard of ["pending","in_progress","failed","converged","blocked"]) {
+    for (const shard of ['pending', 'in_progress', 'failed', 'converged', 'blocked']) {
       try { for (const e of readdirSync(resolve(this.#dir, shard))) {
         if (new RegExp(`^T0*${num}-`).test(e)) return new TaskState(resolve(this.#dir, shard, e));
       }} catch {}

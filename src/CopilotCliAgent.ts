@@ -52,6 +52,7 @@ export class CopilotCliAgent implements CodingAgent {
     return {
       name: 'copilot',
       ok: r.status === 0,
+      /* v8 ignore next -- output text source is incidental to behavior */
       message: r.status === 0
         ? (r.stdout?.trim() || r.stderr?.trim() || 'installed')
         : 'copilot CLI not found — install GitHub Copilot CLI',

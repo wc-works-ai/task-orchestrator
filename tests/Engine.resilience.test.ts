@@ -64,6 +64,25 @@ describe('Engine resilience', () => {
     }
   });
 
+  it('loop uses the default sleep path after a non-Error tick failure', async () => {
+    make(dir, 1, 'retries');
+    const engine = new Engine(dir, { benchmark: () => 0, idleSleepMs: 0 });
+    const originalScan = TaskState.scan.bind(TaskState);
+    let scanCalls = 0;
+    vi.spyOn(TaskState, 'scan').mockImplementation(async (tasksDir: string) => {
+      scanCalls++;
+      if (scanCalls === 1) throw 'plain string error';
+      return originalScan(tasksDir);
+    });
+
+    try {
+      await expect(engine.loop({ idleSleepMs: 0 })).resolves.toBeGreaterThan(0);
+      expect(scanCalls).toBeGreaterThan(1);
+    } finally {
+      vi.mocked(TaskState.scan).mockRestore();
+    }
+  });
+
   it('loop stops with environmentError after MAX_CONSECUTIVE_TICK_ERRORS', async () => {
     const originalDir = dir;
     // Create a tasks dir but DON'T create shards - tick() will throw when scan() fails
@@ -189,6 +208,23 @@ describe('Engine resilience', () => {
       if (originalClaimMaxMs === undefined) delete process.env.ORCH_CLAIM_MAX_MS;
       else process.env.ORCH_CLAIM_MAX_MS = originalClaimMaxMs;
     }
+  });
+
+  it('handles a stale claimed task whose owner file is missing', async () => {
+    const taskDir = resolve(dir, 'in_progress', 'T01-missing-owner');
+    mkdirSync(taskDir, { recursive: true });
+    const claimDir = join(taskDir, '.claim');
+    mkdirSync(claimDir, { recursive: true });
+    writeFileSync(join(claimDir, 'heartbeat'), 'stale');
+    writeFileSync(join(taskDir, '.status'), 'IN_PROGRESS:remote\n');
+    const tenMinAgo = (Date.now() - 600_000) / 1000;
+    utimesSync(join(claimDir, 'heartbeat'), tenMinAgo, tenMinAgo);
+
+    const engine = new Engine(dir, { benchmark: () => 0, instanceId: 'missing-owner' });
+    const r = await engine.tick();
+
+    expect(r.task).toBeNull();
+    expect(existsSync(claimDir)).toBe(true);
   });
 
   // ── FIX 1: instanceId is globally unique ────────────────────────────

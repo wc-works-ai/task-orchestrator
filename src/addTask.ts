@@ -17,7 +17,7 @@ export function addTask(tasksDir: string, name: string, opts: AddTaskOptions = {
   let next = 0;
   for (const s of ['pending','in_progress','converged','failed','blocked']) {
     try { for (const e of readdirSync(resolve(tasksDir, s))) {
-      const m = e.match(/^T(\d+)-/); if (m?.[1]) next = Math.max(next, parseInt(m[1] ?? '0', 10));
+      const m = e.match(/^T(\d+)-/); if (m?.[1]) next = Math.max(next, parseInt(m[1]!, 10));
     }} catch {}
   }
   next++;
@@ -41,7 +41,7 @@ export function addTask(tasksDir: string, name: string, opts: AddTaskOptions = {
     '#!/usr/bin/env node',
     '// Multiple METRIC lines are allowed; all must reach 0 before merge.',
     'let g = 1; // TODO: add real checks — reduce g to 0 when done',
-    `console.log('METRIC ${metric}=' + g);`,
+    `console.log(\`METRIC ${metric}=\${g}\`);`,
   ].join('\n'));
 
   return { number: next, name, directory: d, goal, metric, scope };

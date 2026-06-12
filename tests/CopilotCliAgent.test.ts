@@ -79,6 +79,18 @@ describe('CopilotCliAgent', () => {
     ]), expect.objectContaining({ cwd: join(dir, 'worktree') }));
   });
 
+  it('uses the configured work directory when no worktree is passed', async () => {
+    const child = mockChild();
+    vi.mocked(spawn).mockReturnValue(child);
+
+    const promise = new CopilotCliAgent({ workDir: 'Q:\\work-dir' }).spawn(make(dir));
+    setTimeout(() => child.emit('close', 0), 5);
+    const result = await promise;
+
+    expect(result.success).toBe(true);
+    expect(spawn).toHaveBeenCalledWith('copilot', expect.any(Array), expect.objectContaining({ cwd: 'Q:\\work-dir' }));
+  });
+
   it('omits model and reasoning args when unset', async () => {
     const child = mockChild();
     vi.mocked(spawn).mockReturnValue(child);
@@ -170,4 +182,43 @@ describe('CopilotCliAgent', () => {
     expect(result.success).toBe(false);
     expect(result.error).toBe('copilot spawn aborted');
   });
+
+  it('returns the spawn error message', async () => {
+    const child = mockChild();
+    vi.mocked(spawn).mockReturnValue(child);
+
+    const promise = new CopilotCliAgent().spawn(make(dir), dir);
+    setTimeout(() => child.emit('error', new Error('spawn blew up')), 5);
+    const result = await promise;
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('spawn blew up');
+  });
+
+  it('ignores a late close after an error', async () => {
+    const child = mockChild();
+    vi.mocked(spawn).mockReturnValue(child);
+
+    const promise = new CopilotCliAgent().spawn(make(dir), dir);
+    setTimeout(() => {
+      child.emit('error', new Error('spawn blew up'));
+      child.emit('close', 0);
+    }, 5);
+    const result = await promise;
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('spawn blew up');
+  });
+
+  it('falls back to the default agent log size when configured bytes are invalid', async () => {
+    const child = mockChild();
+    vi.mocked(spawn).mockReturnValue(child);
+
+    const promise = new CopilotCliAgent({ agentLogMaxBytes: 0 }).spawn(make(dir), dir);
+    setTimeout(() => child.emit('close', 0), 5);
+    const result = await promise;
+
+    expect(result.success).toBe(true);
+  });
+
 });

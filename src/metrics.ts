@@ -11,8 +11,8 @@ export interface MetricResult {
 export function parseMetrics(stdout: string, fallback = 1): MetricResult {
   const matches = stdout.matchAll(/METRIC\s+(\w+)=(\d+)/g);
   const criteria = Array.from(matches, m => ({
-    name: m[1] ?? '',
-    value: parseInt(m[2] ?? '0', 10),
+    name: m[1]!,
+    value: parseInt(m[2]!, 10),
   }));
 
   if (criteria.length === 0) return { total: fallback, criteria: [] };

@@ -46,4 +46,8 @@ describe('StatePaths', () => {
   it('sanitizes repo slug for folder names', () => {
     expect(repoSlug('Q:\\Repos\\bad:name')).toBe('bad-name');
   });
+
+  it('rejects repo roots that do not produce a slug', () => {
+    expect(() => repoSlug('Q:\\')).toThrow('Cannot derive repo slug');
+  });
 });

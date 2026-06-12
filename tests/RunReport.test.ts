@@ -1,7 +1,7 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { formatOverview, formatRunSummary } from '../src/RunReport.js';
+import { formatOverview, formatRunSummary, printOverview, printRunSummary } from '../src/RunReport.js';
 import { Status, TaskState } from '../src/TaskState.js';
 
 function setup(): string {
@@ -57,5 +57,37 @@ describe('RunReport', () => {
     await expect(formatOverview(dir, 24)).resolves.toBe(
       'Overview: running=T5 converged=1 failed=1 blocked=1 pending=1 (tick 24)',
     );
+  });
+
+  it('falls back to unknown icon and status for unexpected task states', async () => {
+    dir = setup();
+    make(dir, 1, 'mystery', 'BROKEN');
+
+    await expect(formatRunSummary(dir, 3)).resolves.toEqual([
+      'Summary: converged=0 failed=0 blocked=0 pending=0 in_progress=0 (3 ticks)',
+      '  ❓ T1 unknown  attempts=0',
+    ]);
+    await expect(formatOverview(dir, 3)).resolves.toBe(
+      'Overview: running=none converged=0 failed=0 blocked=0 pending=0 (tick 3)',
+    );
+  });
+
+  it('prints overview and summary lines', async () => {
+    dir = setup();
+    make(dir, 1, 'pending', Status.PENDING);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      await printOverview(dir, 7);
+      await printRunSummary(dir, 7);
+
+      expect(logSpy.mock.calls.map(([line]) => line)).toEqual([
+        'Overview: running=none converged=0 failed=0 blocked=0 pending=1 (tick 7)',
+        'Summary: converged=0 failed=0 blocked=0 pending=1 in_progress=0 (7 ticks)',
+        '  ⬜ T1 pending',
+      ]);
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 });
