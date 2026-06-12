@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { rm } from 'node:fs/promises';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readdirSync, rmSync, readFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { TaskState, Status, CONVERGENCE_THRESHOLD, inProgress } from '../src/TaskState.js';
 import { MAX_FAILURES } from '../src/Status.js';
@@ -240,7 +240,7 @@ describe('TaskState', () => {
     make(dir, 2, 'b');
     make(dir, 3, 'c', { status: Status.FAILED });
     const all = await TaskState.scan(dir);
-    expect(all.size).toBe(3);
+    expect(all.size).toBe(2); // converged shard is excluded from scan
   });
 
   it('pick returns highest priority', async () => {
@@ -777,5 +777,64 @@ describe('TaskState', () => {
     const t = new TaskState(taskDir);
     expect(t.claimOwner).not.toBeNull();
     expect(t.claimOwner!.host).toBe('');
+  });
+
+  // ── pruneConverged ─────────────────────────────────────────────────
+
+  it('pruneConverged: prunes oldest dirs and writes archive', () => {
+    for (let i = 1; i <= 3; i++) {
+      const d = resolve(dir, 'converged', `T0${i}-task`);
+      mkdirSync(d, { recursive: true });
+      writeFileSync(join(d, '.status'), 'CONVERGED\n');
+    }
+    TaskState.pruneConverged(dir, 2);
+    const remaining = readdirSync(resolve(dir, 'converged')).filter((e) => /^T\d+/.test(e));
+    expect(remaining).toHaveLength(2);
+    const archive = readFileSync(resolve(dir, 'converged', '.archive.jsonl'), 'utf-8');
+    expect(archive.trim().split('\n').filter(Boolean)).toHaveLength(1);
+  });
+
+  it('pruneConverged: keep=0 means unlimited (no pruning)', () => {
+    for (let i = 1; i <= 5; i++) {
+      mkdirSync(resolve(dir, 'converged', `T0${i}-task`), { recursive: true });
+    }
+    TaskState.pruneConverged(dir, 0);
+    const remaining = readdirSync(resolve(dir, 'converged')).filter((e) => /^T\d+/.test(e));
+    expect(remaining).toHaveLength(5);
+    expect(existsSync(resolve(dir, 'converged', '.archive.jsonl'))).toBe(false);
+  });
+
+  it('pruneConverged: returns silently when converged dir is missing', () => {
+    const base2 = resolve(process.cwd(), '.test-tmp');
+    mkdirSync(base2, { recursive: true });
+    const freshDir = mkdtempSync(join(base2, 'prune-miss-'));
+    try {
+      expect(() => TaskState.pruneConverged(freshDir, 2)).not.toThrow();
+    } finally {
+      rmSync(freshDir, { recursive: true, force: true });
+    }
+  });
+
+  // ── countConverged ─────────────────────────────────────────────────
+
+  it('countConverged: returns 0 when converged dir is missing', () => {
+    const base2 = resolve(process.cwd(), '.test-tmp');
+    mkdirSync(base2, { recursive: true });
+    const freshDir = mkdtempSync(join(base2, 'cc-miss-'));
+    try {
+      expect(TaskState.countConverged(freshDir)).toBe(0);
+    } finally {
+      rmSync(freshDir, { recursive: true, force: true });
+    }
+  });
+
+  it('countConverged: counts task dirs and archive lines', () => {
+    mkdirSync(resolve(dir, 'converged', 'T01-a'), { recursive: true });
+    mkdirSync(resolve(dir, 'converged', 'T02-b'), { recursive: true });
+    // No archive yet
+    expect(TaskState.countConverged(dir)).toBe(2);
+    // Add archive with 2 lines
+    writeFileSync(resolve(dir, 'converged', '.archive.jsonl'), '{"T":3}\n{"T":4}\n');
+    expect(TaskState.countConverged(dir)).toBe(4);
   });
 });

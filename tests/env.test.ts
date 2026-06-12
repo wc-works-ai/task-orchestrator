@@ -9,6 +9,7 @@ describe('env', () => {
   const originalAgent = process.env.ORCH_AGENT;
   const originalReasoning = process.env.ORCH_REASONING;
   const originalClaimMaxMs = process.env.ORCH_CLAIM_MAX_MS;
+  const originalKeepConverged = process.env.ORCH_KEEP_CONVERGED;
 
   afterEach(() => {
     if (originalMaxFailures === undefined) delete process.env.ORCH_MAX_FAILURES;
@@ -25,6 +26,8 @@ describe('env', () => {
     else process.env.ORCH_REASONING = originalReasoning;
     if (originalClaimMaxMs === undefined) delete process.env.ORCH_CLAIM_MAX_MS;
     else process.env.ORCH_CLAIM_MAX_MS = originalClaimMaxMs;
+    if (originalKeepConverged === undefined) delete process.env.ORCH_KEEP_CONVERGED;
+    else process.env.ORCH_KEEP_CONVERGED = originalKeepConverged;
   });
 
   it('defaults maxFailures to 5', () => {
@@ -70,5 +73,14 @@ describe('env', () => {
     expect(env.claimMaxMs).toBe(1800000);
     process.env.ORCH_CLAIM_MAX_MS = '60000';
     expect(env.claimMaxMs).toBe(60000);
+  });
+
+  it('defaults keepConverged to 100 and reads override', () => {
+    delete process.env.ORCH_KEEP_CONVERGED;
+    expect(env.keepConverged).toBe(100);
+    process.env.ORCH_KEEP_CONVERGED = '0';
+    expect(env.keepConverged).toBe(0);
+    process.env.ORCH_KEEP_CONVERGED = '50';
+    expect(env.keepConverged).toBe(50);
   });
 });

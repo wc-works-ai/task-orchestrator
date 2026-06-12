@@ -70,8 +70,10 @@ const { values, positionals } = await parseArgs({
     once:   { type: 'boolean', default: false },
     config: { type: 'boolean', default: false },
     'keep-alive': { type: 'boolean', default: false },
+    'keep-converged': { type: 'string', default: '' },
     infinite: { type: 'boolean', default: false },
     'auto-stash': { type: 'boolean', default: false },
+    parallel: { type: 'string', default: '' },
     worktrees: { type: 'string', default: '' },
     help:   { type: 'boolean', short: 'h', default: false },
   },
@@ -121,6 +123,22 @@ const worktreesDir = paths.worktrees;
 const autoStash = values['auto-stash'] || env.autoStash;
 const keepAlive = values['keep-alive'] || env.keepAlive;
 const infinite = values.infinite || values.loop || env.infinite;
+
+// Parse parallel value: CLI flag > env var > default
+let parallel = env.parallelTasks;
+if (values.parallel) {
+   const parsed = parseInt(values.parallel, 10);
+   if (!Number.isFinite(parsed) || parsed < 0) {
+     console.warn(`⚠️  --parallel must be 0-100; received '${values.parallel}', using default: 1`);
+   } else if (parsed > 100) {
+     console.warn(`⚠️  --parallel clamped to 100 (received: ${parsed})`);
+     parallel = 100;
+   } else {
+     parallel = parsed;
+   }
+}
+
+const keepConverged = values['keep-converged'] ? parseInt(values['keep-converged'] as string, 10) : undefined;
 
 console.log(`repo: ${repo}`);
 console.log(`tasks: ${dir}`);
@@ -252,6 +270,9 @@ const engine = new Engine(dir, {
   autoStashBeforeMerge: autoStash,
   mergeRecovery: autoStash ? () => MergeRecoveryAction.StashAndRetry : promptMergeRecovery,
   verifyCmd: 'npm run tc',
+  parallel,
+  ...(keepConverged !== undefined ? { keepConverged } : {}),
+  infinite,
   spawn: (task, worktreePath, signal) => agent.spawn(task, worktreePath, signal),
   benchmark: async (t: TaskInfo) => {
     try {

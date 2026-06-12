@@ -19,5 +19,12 @@ describe('cli benchmark execution', () => {
     expect(source).toContain('verifyCmd: \'npm run tc\'');
     expect(source).toContain('new Engine(dir, {');
   });
+
+  it('includes --keep-converged flag wired to keepConverged EngineOption', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src', 'cli.ts'), 'utf-8');
+
+    expect(source).toContain("'keep-converged': { type: 'string', default: '' }");
+    expect(source).toContain('keepConverged');
+  });
 });
 

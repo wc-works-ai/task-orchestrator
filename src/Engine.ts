@@ -51,8 +51,10 @@ export interface EngineOptions {
   readonly keepAlive?: boolean;
   readonly infinite?: boolean;
   readonly idleSleepMs?: number;
+  readonly parallel?: number;
   readonly sleep?: SleepFn;
   readonly onTick?: (result: TickResult | TickNull, total: number) => void | Promise<void>;
+  readonly keepConverged?: number;
 }
 
 export class Engine {
@@ -69,6 +71,8 @@ export class Engine {
   readonly #keepAlive: boolean;
   readonly #infinite: boolean;
   readonly #idleSleepMs: number;
+  readonly #parallel: number;
+  readonly #keepConverged: number;
   readonly #sleep: SleepFn;
   readonly #baseBranch: string;
   #environmentError?: string;
@@ -92,6 +96,8 @@ export class Engine {
     this.#keepAlive = opts.keepAlive ?? env.keepAlive;
     this.#infinite = opts.infinite ?? env.infinite;
     this.#idleSleepMs = opts.idleSleepMs ?? env.idleSleepMs;
+    this.#parallel = opts.parallel ?? env.parallelTasks;
+    this.#keepConverged = opts.keepConverged ?? env.keepConverged;
     this.#sleep = opts.sleep ?? sleep;
     this.#baseBranch = this.#detectBaseBranch();
   }
@@ -137,11 +143,11 @@ export class Engine {
     }
     this.#recover();
     await TaskState.scan(this.#dir);
-    this.#blockTasksWithBlockedDependencies();
+    TaskState.cascadeBlockDependencies(this.#dir);
 
     const task = await TaskState.pick(this.#dir, this.#id);
     if (!task) {
-      this.#blockTasksWithBlockedDependencies();
+      TaskState.cascadeBlockDependencies(this.#dir);
       // Diagnostic: show why nothing was picked
       for (const shard of ['pending', 'in_progress', 'failed', 'blocked'] as const) {
         let entries: string[];
@@ -205,42 +211,10 @@ export class Engine {
       task.resetConvergence();
 
       if (this.#spawn) {
-        let wt = this.#worktrees.get(task.taskNumber) ?? null;
-        let spawnTask = task;
         try {
-          // Create worktree if needed
-          if (!wt && existsSync(resolve(this.#repo, '.git'))) {
-            wt = new Worktree(this.#repo, { name: task.taskName, baseBranch: this.#baseBranch, ...(this.#worktreesDir ? { worktreesDir: this.#worktreesDir } : {}) });
-            await wt.create();
-            this.#worktrees.set(task.taskNumber, wt);
-          }
-          if (wt) {
-            // Copy task directory into worktree (tasks/ not tracked in git)
-            const wtTaskDir = this.#taskDirectoryInWorktree(task, wt.path);
-            try {
-              cpSync(task.directory, wtTaskDir, { recursive: true, filter: (f: string) => !f.endsWith('agent.log') });
-              spawnTask = new TaskState(wtTaskDir);
-            } catch {}
-            // Copy node_modules for isolated npm commands (no symlink — avoids circular chain risk)
-            const wtNm = join(wt.path, 'node_modules');
-            if (!existsSync(wtNm)) {
-              try { cpSync(join(this.#repo, 'node_modules'), wtNm, { recursive: true }); } catch {}
-            }
-          }
-          this.#log(`T${task.taskNumber} action: starting agent because metric is ${metric}`);
-          const spawnResult = await this.#spawn(spawnTask, wt?.path, ac.signal);
-          this.#log(
-            `T${task.taskNumber} agent ${spawnResult.success ? 'finished' : 'stopped without finishing'} ` +
-            `(${this.#experimentLabel(spawnResult.iterations)}` +
-            `${spawnResult.tokenUsage ? `; tokens: ${this.#tokenUsageLabel(spawnResult.tokenUsage)}` : ''}` +
-            `${spawnResult.error ? `; reason: ${this.#singleLine(spawnResult.error)}` : ''}` +
-            `${spawnResult.logPath ? `; details: ${spawnResult.logPath}` : ''})`,
-          );
-          if (spawnResult.authFailure) {
-            return this.#handleEnvironmentalFailure(task, metric, spawnResult.error ?? 'coding agent authentication failed');
-          }
-          metric = await this.#run(task, wt?.path);
-          this.#log(`T${task.taskNumber} check after agent: metric=${metric}${metric === 0 ? ' (done)' : ' (still needs work)'}`);
+          const { wt, spawnTask } = await this.#prepareWorktree(task);
+          metric = await this.#runSpawnCycle(task, spawnTask, wt, metric, ac.signal);
+          if (metric === -1) return { task: null, metric: 0, converged: false, stopped: true, ...(this.#environmentError !== undefined && { environmentError: this.#environmentError }) };
           if (metric === 0) return await this.#handleZero(task, metric, wt);
         } catch (e: unknown) {
           const msg = e instanceof Error ? e.message : String(e);
@@ -268,14 +242,52 @@ export class Engine {
     const infinite = opts.infinite ?? this.#infinite;
     const idleSleepMs = opts.idleSleepMs ?? this.#idleSleepMs;
     const sleepFn = opts.sleep ?? this.#sleep;
+    const parallel = opts.parallel ?? this.#parallel;
     let announcedIdle = false;
     let consecutiveErrors = 0;
     let lastErrorMsg = '';
     while (true) {
-      let result: TickResult | TickNull;
       try {
-        result = await this.tick();
+        // Determine how many concurrent ticks to spawn
+        // If parallel=0 (unlimited), spawn at most 100 ticks to avoid file system thrashing
+        // Otherwise spawn up to the parallel limit
+        const tickCount = parallel === 0 ? 100 : parallel;
+        
+        // Run up to `tickCount` ticks concurrently
+        const tickPromises: Promise<TickResult | TickNull>[] = [];
+        for (let i = 0; i < tickCount; i++) {
+          tickPromises.push(this.tick());
+        }
+        const results = await Promise.all(tickPromises);
         consecutiveErrors = 0;
+
+        // Check for stop signal
+        if (results.some(r => r.stopped)) break;
+
+        // Count tasks that completed and check if we're idle
+        const tasksCompleted = results.filter(r => r.task !== null);
+        const anyTaskCompleted = tasksCompleted.length > 0;
+
+        if (!anyTaskCompleted) {
+          if (infinite) {
+            if (!announcedIdle) {
+              this.#log('idle: waiting for new tasks or for blocked/failed tasks to be addressed (infinite mode; --stop to exit)');
+              announcedIdle = true;
+            }
+            await sleepFn(idleSleepMs);
+            continue;
+          }
+          if (!keepAlive || await this.#isRunComplete()) break;
+          await sleepFn(idleSleepMs);
+          continue;
+        }
+        announcedIdle = false;
+
+        // Report on completed tasks
+        for (const result of tasksCompleted) {
+          total++;
+          if (opts.onTick) await opts.onTick(result as TickResult, total);
+        }
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         lastErrorMsg = msg;
@@ -288,23 +300,6 @@ export class Engine {
         await sleepFn(idleSleepMs);
         continue;
       }
-      if (result.stopped) break;
-      if (!result.task) {
-        if (infinite) {
-          if (!announcedIdle) {
-            this.#log('idle: waiting for new tasks or for blocked/failed tasks to be addressed (infinite mode; --stop to exit)');
-            announcedIdle = true;
-          }
-          await sleepFn(idleSleepMs);
-          continue;
-        }
-        if (!keepAlive || await this.#isRunComplete()) break;
-        await sleepFn(idleSleepMs);
-        continue;
-      }
-      announcedIdle = false;
-      total++;
-      if (opts.onTick) await opts.onTick(result, total);
     }
     return total;
   }
@@ -340,6 +335,7 @@ export class Engine {
         }
       }
       task.status = Status.CONVERGED;
+      TaskState.pruneConverged(this.#dir, this.#keepConverged);
       this.#log(`T${task.taskNumber} CONVERGED`, 'transition');
       return { task: task.info, metric, converged: true };
     }
@@ -445,24 +441,46 @@ export class Engine {
     return { task: task.info, metric, converged: false };
   }
 
-  #blockTasksWithBlockedDependencies(): void {
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const shard of ['pending', 'failed'] as const) {
-        let entries: string[];
-        try { entries = readdirSync(resolve(this.#dir, shard)); } catch { continue; }
-        for (const e of entries) {
-          if (!e.startsWith('T')) continue;
-          const task = new TaskState(resolve(this.#dir, shard, e));
-          if (task.isConverged || task.isBlocked || task.isInProgress) continue;
-          if (!task.hasBlockedDependency(this.#dir)) continue;
-          task.markBlocked();
-          this.#log(`T${task.taskNumber} BLOCKED — dependency is blocked; cannot converge`, 'transition');
-          changed = true;
-        }
+  async #prepareWorktree(task: TaskState): Promise<{ wt: Worktree | null; spawnTask: TaskState }> {
+    let wt = this.#worktrees.get(task.taskNumber) ?? null;
+    let spawnTask = task;
+    if (!wt && existsSync(resolve(this.#repo, '.git'))) {
+      wt = new Worktree(this.#repo, { name: task.taskName, baseBranch: this.#baseBranch, ...(this.#worktreesDir ? { worktreesDir: this.#worktreesDir } : {}) });
+      await wt.create();
+      this.#worktrees.set(task.taskNumber, wt);
+    }
+    if (wt) {
+      const wtTaskDir = this.#taskDirectoryInWorktree(task, wt.path);
+      try {
+        cpSync(task.directory, wtTaskDir, { recursive: true, filter: (f: string) => !f.endsWith('agent.log') });
+        spawnTask = new TaskState(wtTaskDir);
+      } catch {}
+      // Copy node_modules for isolated npm commands (no symlink — avoids circular chain risk)
+      const wtNm = join(wt.path, 'node_modules');
+      if (!existsSync(wtNm)) {
+        try { cpSync(join(this.#repo, 'node_modules'), wtNm, { recursive: true }); } catch {}
       }
     }
+    return { wt, spawnTask };
+  }
+
+  async #runSpawnCycle(task: TaskState, spawnTask: TaskState, wt: Worktree | null, metric: number, signal: AbortSignal): Promise<number> {
+    this.#log(`T${task.taskNumber} action: starting agent because metric is ${metric}`);
+    const spawnResult = await this.#spawn!(spawnTask, wt?.path, signal);
+    this.#log(
+      `T${task.taskNumber} agent ${spawnResult.success ? 'finished' : 'stopped without finishing'} ` +
+      `(${this.#experimentLabel(spawnResult.iterations)}` +
+      `${spawnResult.tokenUsage ? `; tokens: ${this.#tokenUsageLabel(spawnResult.tokenUsage)}` : ''}` +
+      `${spawnResult.error ? `; reason: ${this.#singleLine(spawnResult.error)}` : ''}` +
+      `${spawnResult.logPath ? `; details: ${spawnResult.logPath}` : ''})`,
+    );
+    if (spawnResult.authFailure) {
+      this.#handleEnvironmentalFailure(task, metric, spawnResult.error ?? 'coding agent authentication failed');
+      return -1;
+    }
+    const newMetric = await this.#run(task, wt?.path);
+    this.#log(`T${task.taskNumber} check after agent: metric=${newMetric}${newMetric === 0 ? ' (done)' : ' (still needs work)'}`);
+    return newMetric;
   }
 
   /**

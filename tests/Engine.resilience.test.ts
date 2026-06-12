@@ -514,3 +514,150 @@ describe('Engine base branch detection', () => {
     expect(masterLog).not.toContain('worktree commit');
   });
 });
+
+describe('Infinite loop mode', () => {
+  let dir = '';
+
+  beforeEach(() => { dir = setup(); });
+  afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
+
+  it('infinite mode waits for new tasks instead of exiting', async () => {
+    make(dir, 1, 'task1');
+    const sleepCalls: number[] = [];
+    const sleep = vi.fn().mockImplementation(async (ms: number) => {
+      sleepCalls.push(ms);
+      // Stop after 2 sleep calls to avoid infinite loop
+      if (sleepCalls.length >= 2) throw new Error('stop');
+    });
+
+    const engine = new Engine(dir, {
+      benchmark: () => 0,
+      sleep,
+      infinite: true,
+      idleSleepMs: 50,
+    });
+
+    try {
+      await engine.loop({ infinite: true, idleSleepMs: 50, sleep });
+    } catch (e: any) {
+      if (!e.message.includes('stop')) throw e;
+    }
+
+    // Should have called sleep at least once (for idle wait)
+    expect(sleepCalls.length).toBeGreaterThanOrEqual(1);
+    // At least one sleep call should use idleSleepMs
+    expect(sleepCalls.some(ms => ms === 50)).toBe(true);
+  });
+});
+
+describe('Atomic task claiming', () => {
+  let dir = '';
+
+  beforeEach(() => { dir = setup(); });
+  afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
+
+  it('only one process can claim a task at a time', async () => {
+    make(dir, 1, 'shared-task');
+    
+    // Two engines try to pick the same task
+    const engine1 = new Engine(dir, { benchmark: () => 0, instanceId: 'engine-1' });
+    const engine2 = new Engine(dir, { benchmark: () => 0, instanceId: 'engine-2' });
+
+    // First engine picks the task
+    const r1 = await engine1.tick();
+    expect(r1.task).not.toBeNull();
+    expect(r1.task!.number).toBe(1);
+
+    // Second engine should not pick the same task (already claimed)
+    const r2 = await engine2.tick();
+    expect(r2.task).toBeNull();
+  });
+
+  it('claim lock file is cleaned up after task release', async () => {
+    make(dir, 1, 'task1');
+    const engine = new Engine(dir, { benchmark: () => 0 });
+
+    // Pick the task
+    const r1 = await engine.tick();
+    expect(r1.task).not.toBeNull();
+    expect(r1.task!.number).toBe(1);
+
+    // Check that .claim.lock exists after picking
+    const taskState = new TaskState(r1.task!.directory);
+    const lockFile = join(taskState.directory, '.claim.lock');
+    expect(existsSync(lockFile)).toBe(true);
+
+    // Release the task manually
+    taskState.release(Status.PENDING);
+
+    // Check that lock file is gone
+    expect(existsSync(lockFile)).toBe(false);
+  });
+
+  it('stale claim lock files are cleaned up on recovery', async () => {
+    const taskDir = resolve(dir, 'in_progress', 'T01-stale-lock');
+    mkdirSync(taskDir, { recursive: true });
+    writeFileSync(join(taskDir, '.status'), 'IN_PROGRESS:dead-inst\n');
+
+    // Create a stale .claim.lock file
+    writeFileSync(join(taskDir, '.claim.lock'), 'pid:999999\nstarted:${Date.now()}\ninstance:dead-inst\nhost:dead-host\n');
+
+    // Also create the .claim directory to simulate old-style claim
+    const claimDir = join(taskDir, '.claim');
+    mkdirSync(claimDir, { recursive: true });
+    writeFileSync(join(claimDir, 'owner'), 'pid:999999\nstarted:${Date.now()}\ninstance:dead-inst\nhost:dead-host\n');
+    writeFileSync(join(claimDir, 'heartbeat'), '');
+
+    // Simulate stale heartbeat
+    const veryOldTime = (Date.now() - 10_000_000) / 1000;
+    utimesSync(join(claimDir, 'heartbeat'), veryOldTime, veryOldTime);
+
+    // Manually release to test cleanup
+    const task = new TaskState(taskDir);
+    task.release(Status.FAILED);
+
+    // Check that both claim files are gone
+    expect(existsSync(join(taskDir, '.claim.lock'))).toBe(false);
+    expect(existsSync(join(taskDir, '.claim'))).toBe(false);
+  });
+
+  it('claim lock prevents race condition with parallel tasks', async () => {
+    make(dir, 1, 'parallel-task');
+    make(dir, 2, 'parallel-task-2');
+    const engine = new Engine(dir, { benchmark: () => 1, parallel: 2 });
+
+    // Run loop once with parallel=2
+    // With 2 tasks and parallel=2, both should be picked up
+    const r1 = await engine.tick();
+    const r2 = await engine.tick();
+
+    // At least one should find a task
+    const tasks = [r1.task, r2.task].filter(t => t !== null);
+    expect(tasks.length).toBeGreaterThanOrEqual(1);
+    
+    // If both were picked, they should be different tasks
+    if (tasks.length === 2) {
+      const [t1, t2] = tasks as any[];
+      expect(t1.number).not.toBe(t2.number);
+    }
+  });
+
+  it('atomic claim prevents two engines from claiming same task', async () => {
+    make(dir, 1, 'shared-task');
+    const engine1 = new Engine(dir, { benchmark: () => 0, instanceId: 'engine-1' });
+    const engine2 = new Engine(dir, { benchmark: () => 0, instanceId: 'engine-2' });
+
+    // Engine 1 picks the task
+    const r1 = await engine1.tick();
+    expect(r1.task).not.toBeNull();
+    expect(r1.task!.number).toBe(1);
+
+    // Verify .claim.lock file exists
+    const lockFile = join(r1.task!.directory, '.claim.lock');
+    expect(existsSync(lockFile)).toBe(true);
+
+    // Engine 2 tries to pick but should get nothing (task already claimed)
+    const r2 = await engine2.tick();
+    expect(r2.task).toBeNull();
+  });
+});

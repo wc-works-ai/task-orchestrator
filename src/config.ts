@@ -18,6 +18,8 @@ export const CONFIG_SPEC: readonly ConfigItem[] = [
   { group: 'Run mode', env: 'ORCH_KEEP_ALIVE', flag: 'keep-alive', kind: 'boolean', def: 'off', desc: 'Wait through transient idle/cooldown periods' },
   { group: 'Run mode', env: 'ORCH_INFINITE', flag: 'infinite', kind: 'boolean', def: 'off', desc: 'Daemon mode; wait for new/addressed tasks (alias: --loop)' },
   { group: 'Run mode', env: 'ORCH_IDLE_SLEEP_MS', kind: 'number', def: '5000', desc: 'Idle poll interval for keep-alive/infinite (ms)' },
+  { group: 'Run mode', env: 'ORCH_PARALLEL', flag: 'parallel', kind: 'number', def: '1', desc: 'Max concurrent tasks (0=unlimited, 1-100 clamps to 100, default: serial)' },
+  { group: 'Run mode', env: 'ORCH_KEEP_CONVERGED', flag: 'keep-converged', kind: 'number', def: '100', desc: 'Max converged task dirs to keep (0 = unlimited); older ones are archived to converged/.archive.jsonl' },
   { group: 'Convergence & merge', env: 'ORCH_CONVERGE', kind: 'number', def: '3', desc: 'Zero-metric runs required to converge' },
   { group: 'Convergence & merge', env: 'ORCH_MAX_FAILURES', kind: 'number', def: '5', desc: 'Failed attempts before BLOCKED (int>=1 or infinite)' },
   { group: 'Convergence & merge', env: 'ORCH_AUTO_STASH', flag: 'auto-stash', kind: 'boolean', def: 'off', desc: 'Stash parent repo changes before merging' },
@@ -42,6 +44,7 @@ function placeholder(flag: string): string {
   if (flag === 'agent') return '<name>';
   if (flag === 'model') return '<model>';
   if (flag === 'reasoning') return '<level>';
+  if (flag === 'parallel') return '<count>';
   /* v8 ignore next */
   return '<value>';
 }

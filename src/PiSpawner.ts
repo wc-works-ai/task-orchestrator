@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { TaskState } from './TaskState.js';
 import { env } from './env.js';
 import { piCommand } from './PiCommand.js';
-import { appendAgentLog, openAgentLog } from './AgentLog.js';
+import { appendAgentLog, openAgentLog, type AgentLog } from './AgentLog.js';
 import type { SpawnResult, TokenUsage, PrerequisiteResult, CodingAgentOptions } from './CodingAgent.js';
 import type { CodingAgent } from './CodingAgent.js';
 
@@ -21,6 +21,19 @@ const MAX_JSON_LINE_BUFFER = 1_000_000;
 const AUTH_SCAN_TAIL = 512;
 const ITERATION_MARKER = 'log_experiment';
 type MutableTokenUsage = { -readonly [K in keyof TokenUsage]: TokenUsage[K] };
+
+interface RunState {
+  rawBytes: number;
+  iterations: number;
+  iterationTail: string;
+  authTail: string;
+  readonly authProviders: Set<string>;
+  readonly tokenUsage: MutableTokenUsage;
+  lineBuf: string;
+  lastProgress: number;
+  lastStatus: number;
+  progressStale: boolean;
+}
 
 export interface PiSpawnerOptions extends CodingAgentOptions {
   /** Optional fallback model if primary fails */
@@ -178,23 +191,25 @@ export class PiSpawner implements CodingAgent {
       });
 
       let aborted = false;
-      let iterations = 0;
-      let lineBuf = '';
-      let iterationTail = '';
-      let authTail = '';
-      const authProviders = new Set<string>();
-      const tokenUsage = PiSpawner.#emptyTokenUsage();
-      let lastProgress = Date.now();
-      let lastStatus = Date.now();
-      let rawBytes = 0;
-      let progressStale = false;
+      const state: RunState = {
+        rawBytes: 0,
+        iterations: 0,
+        iterationTail: '',
+        authTail: '',
+        authProviders: new Set<string>(),
+        tokenUsage: PiSpawner.#emptyTokenUsage(),
+        lineBuf: '',
+        lastProgress: Date.now(),
+        lastStatus: Date.now(),
+        progressStale: false,
+      };
       let terminationError = '';
       let progressTimer: NodeJS.Timeout | undefined;
       let forceKillTimer: NodeJS.Timeout | undefined;
       let forceResolveTimer: NodeJS.Timeout | undefined;
       const result = (r: Omit<SpawnResult, 'tokenUsage'>): SpawnResult =>
-        PiSpawner.#hasTokenUsage(tokenUsage)
-          ? { ...r, tokenUsage: { ...tokenUsage } }
+        PiSpawner.#hasTokenUsage(state.tokenUsage)
+          ? { ...r, tokenUsage: { ...state.tokenUsage } }
           : r;
       const clearKillTimers = () => {
         if (forceKillTimer) clearTimeout(forceKillTimer);
@@ -210,7 +225,7 @@ export class PiSpawner implements CodingAgent {
       };
       const forceResolve = (error: string) => {
         cleanup();
-        done(result({ success: false, iterations, error, logPath }));
+        done(result({ success: false, iterations: state.iterations, error, logPath }));
       };
       const escalateTermination = (error: string) => {
         terminationError = error;
@@ -254,51 +269,16 @@ export class PiSpawner implements CodingAgent {
         ].join('\n') + '\n');
       } catch {}
 
-      const handleData = (txt: string) => {
-        rawBytes += Buffer.byteLength(txt);
-        if (this.#agentLogRaw) {
-          try { appendAgentLog(agentLog, txt); } catch {}
-        }
-
-        const iterationScan = `${iterationTail}${txt}`;
-        iterations += PiSpawner.#countOccurrences(iterationScan, ITERATION_MARKER);
-        iterationTail = PiSpawner.#tail(iterationScan, ITERATION_MARKER.length - 1);
-
-        const authScan = `${authTail}${txt}`;
-        PiSpawner.#collectAuthProviders(authScan, authProviders);
-        authTail = PiSpawner.#tail(authScan, AUTH_SCAN_TAIL);
-
-        lineBuf = PiSpawner.#processJsonLines(txt, lineBuf, tokenUsage);
-      };
-
-      child.stdout?.on('data', (d: Buffer) => { lastProgress = Date.now(); handleData(d.toString()); });
-      child.stderr?.on('data', (d: Buffer) => { lastProgress = Date.now(); handleData(d.toString()); });
+      child.stdout?.on('data', (d: Buffer) => { state.lastProgress = Date.now(); this.#handleData(d.toString(), state, agentLog); });
+      child.stderr?.on('data', (d: Buffer) => { state.lastProgress = Date.now(); this.#handleData(d.toString(), state, agentLog); });
 
       // Progress check: kill child if no output for progressTimeout ms
-      progressTimer = setInterval(() => {
-        if (progressStale) return;
-        const now = Date.now();
-        const quietFor = now - lastProgress;
-        if (quietFor >= this.#progressTimeout) {
-          progressStale = true;
-          const error = `No agent output for ${PiSpawner.#formatDuration(quietFor)}; stopped pi`;
-          console.error(`  ❌ ${error}. See ${logPath}`);
-          escalateTermination(error);
-          return;
-        }
-        if (quietFor < this.#progressStatusInterval) return;
-        if (now - lastStatus < this.#progressStatusInterval) return;
-        lastStatus = now;
-        console.log(
-          `  still running: no agent output for ${PiSpawner.#formatDuration(quietFor)} ` +
-          `(auto-stop at ${PiSpawner.#formatDuration(this.#progressTimeout)})`,
-        );
-      }, this.#progressCheckInterval);
+      progressTimer = setInterval(() => this.#checkProgress(state, logPath, escalateTermination), this.#progressCheckInterval);
 
       child.on('close', (code: number | null) => {
         cleanup();
-        const authError = PiSpawner.#authError(authProviders);
-        const failure = progressStale
+        const authError = PiSpawner.#authError(state.authProviders);
+        const failure = state.progressStale
           ? terminationError
           : aborted
           ? 'pi spawn aborted'
@@ -309,11 +289,11 @@ export class PiSpawner implements CodingAgent {
         try {
           appendAgentLog(agentLog, [
             `=== agent session ended (exit ${code}) ===`,
-            `=== raw output bytes=${rawBytes} ${this.#agentLogRaw ? 'logged' : 'omitted'} ===`,
-            `=== iterations=${iterations} ===`,
+            `=== raw output bytes=${state.rawBytes} ${this.#agentLogRaw ? 'logged' : 'omitted'} ===`,
+            `=== iterations=${state.iterations} ===`,
             authError ? `=== auth failure ${authError} ===` : '',
             failure ? `=== failure ${failure} ===` : '',
-            PiSpawner.#hasTokenUsage(tokenUsage) ? `=== token usage ${PiSpawner.#formatTokenUsage(tokenUsage)} ===` : '',
+            PiSpawner.#hasTokenUsage(state.tokenUsage) ? `=== token usage ${PiSpawner.#formatTokenUsage(state.tokenUsage)} ===` : '',
             '',
           ].filter(Boolean).join('\n'));
         /* c8 ignore start */
@@ -321,16 +301,16 @@ export class PiSpawner implements CodingAgent {
           console.error(`[PiSpawner] failed to finalize ${F_AGENT_LOG}: ${e instanceof Error ? e.message : String(e)}`);
         }
         /* c8 ignore stop */
-        if (progressStale) {
-          done(result({ success: false, iterations, error: terminationError, logPath }));
+        if (state.progressStale) {
+          done(result({ success: false, iterations: state.iterations, error: terminationError, logPath }));
         } else if (!aborted && code !== 0 && authError) {
-          done(result({ success: false, iterations, authFailure: true, error: authError, logPath }));
+          done(result({ success: false, iterations: state.iterations, authFailure: true, error: authError, logPath }));
         } else if (aborted) {
-          done(result({ success: false, iterations, error: 'pi spawn aborted', logPath }));
+          done(result({ success: false, iterations: state.iterations, error: 'pi spawn aborted', logPath }));
         } else if (code === 0) {
-          done(result({ success: true, iterations, logPath }));
+          done(result({ success: true, iterations: state.iterations, logPath }));
         } else {
-          done(result({ success: false, iterations, error: `pi exited with code ${code ?? 'unknown'}`, logPath }));
+          done(result({ success: false, iterations: state.iterations, error: `pi exited with code ${code ?? 'unknown'}`, logPath }));
         }
       });
 
@@ -339,6 +319,40 @@ export class PiSpawner implements CodingAgent {
         done(result({ success: false, iterations: 0, error: e.message, logPath }));
       });
     });
+  }
+
+  #handleData(txt: string, state: RunState, agentLog: AgentLog): void {
+    state.rawBytes += Buffer.byteLength(txt);
+    if (this.#agentLogRaw) {
+      try { appendAgentLog(agentLog, txt); } catch {}
+    }
+    const iterationScan = `${state.iterationTail}${txt}`;
+    state.iterations += PiSpawner.#countOccurrences(iterationScan, ITERATION_MARKER);
+    state.iterationTail = PiSpawner.#tail(iterationScan, ITERATION_MARKER.length - 1);
+    const authScan = `${state.authTail}${txt}`;
+    PiSpawner.#collectAuthProviders(authScan, state.authProviders);
+    state.authTail = PiSpawner.#tail(authScan, AUTH_SCAN_TAIL);
+    state.lineBuf = PiSpawner.#processJsonLines(txt, state.lineBuf, state.tokenUsage);
+  }
+
+  #checkProgress(state: RunState, logPath: string, escalateTermination: (error: string) => void): void {
+    if (state.progressStale) return;
+    const now = Date.now();
+    const quietFor = now - state.lastProgress;
+    if (quietFor >= this.#progressTimeout) {
+      state.progressStale = true;
+      const error = `No agent output for ${PiSpawner.#formatDuration(quietFor)}; stopped pi`;
+      console.error(`  ❌ ${error}. See ${logPath}`);
+      escalateTermination(error);
+      return;
+    }
+    if (quietFor < this.#progressStatusInterval) return;
+    if (now - state.lastStatus < this.#progressStatusInterval) return;
+    state.lastStatus = now;
+    console.log(
+      `  still running: no agent output for ${PiSpawner.#formatDuration(quietFor)} ` +
+      `(auto-stop at ${PiSpawner.#formatDuration(this.#progressTimeout)})`,
+    );
   }
 
   /** Extract provider auth failures from pi output. */

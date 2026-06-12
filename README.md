@@ -1,12 +1,12 @@
 # Task Orchestrator
 
-Autonomous task execution engine. Spawns AI agents to complete tasks defined in markdown files, measures progress via benchmarks, and converges tasks when acceptance criteria are met.
+Autonomous task execution engine. Spawns AI agents to complete tasks defined in markdown files, measures progress via benchmarks, and merges when acceptance criteria are met.
 
-```
-$ orchestrator add "fix-auth-bug" --goal "Fix authentication timeout" --metric "pass_count" --scope "src/auth.ts tests/auth.test.ts"
-$ orchestrator               # run one task
-$ orchestrator --loop         # daemon mode: wait forever until --stop
-$ orchestrator --status       # show dashboard
+```bash
+orchestrator add "fix-auth" --goal "Fix auth timeout" --metric "pass_count"
+orchestrator              # run one task cycle
+orchestrator --loop       # daemon mode
+orchestrator --status     # show dashboard
 ```
 
 ## Install
@@ -15,7 +15,7 @@ $ orchestrator --status       # show dashboard
 git clone https://github.com/wc-works-ai/task-orchestrator.git
 cd task-orchestrator
 npm install
-git config core.hooksPath .githooks   # enable pre-commit + pre-push hooks
+git config core.hooksPath .githooks
 ```
 
 Requires Node.js >= 22 and a configured coding agent CLI.
@@ -23,182 +23,90 @@ Requires Node.js >= 22 and a configured coding agent CLI.
 ## Quick start
 
 ```bash
-# Create a task
-orchestrator add "hello-world" --goal "Make all tests pass" --metric "failures"
-
-# Edit the task's autoresearch.md with details, then run
+orchestrator add "my-task" --goal "Make tests pass" --metric "failures"
 npm run tick
 ```
 
 ## How it works
 
-1. **Define a task** in `<state-root>/<repo-slug>/tasks/pending/<name>/autoresearch.md`
-2. **Run orchestrator** — picks task, runs benchmark, spawns AI agent
-3. **Agent iterates** — runs experiments in isolated git worktree
-4. **Convergence** — when every metric reaches 0 for 3 consecutive runs, task is merged
+1. Define a task in `tasks/pending/<name>/autoresearch.md`
+2. Run orchestrator → picks task, runs benchmark, spawns AI agent
+3. Agent iterates in isolated git worktree
+4. Task merges when benchmark reports all metrics = 0 for 3 consecutive runs
 
-## Acceptance Criteria
+## Core concepts
 
-**Benchmark decides pass/fail:**
-- Each task owns a `benchmark.js` that prints `METRIC name=value` lines.
-- **Every metric must be `0`** for the task to pass.
+**Acceptance criteria:** Task owns a `benchmark.js` that outputs `METRIC name=value` lines. All metrics must be `0` to pass. See `docs/DOC_AUTHORING.md` for details.
 
-```js
-console.log('METRIC failing_tests=0');
-console.log('METRIC lint_errors=0');
+**Convergence:** When all metrics reach 0 for 3 consecutive runs (configurable), task is marked ready to merge.
+
+**Merge guards:** Before merge, benchmark runs again after syncing with base branch. Optional `ORCH_VERIFY_CMD` (e.g., `npm run tc`) can block merge. Conflicts keep worktree for inspection.
+
+**Multi-orchestrator safe:** File-based coordination via atomic claims and heartbeat monitoring. See `docs/DEVELOP.md` for details.
+
+**Loop mode (infinite mode):** Run with `--infinite` or `ORCH_INFINITE=1` to keep the orchestrator alive indefinitely. It will continuously poll for new tasks and wait for blocked/failed tasks to be addressed. Polling interval is configurable via `ORCH_IDLE_SLEEP_MS` (default: 5000ms). Exit with `--stop` or Ctrl+C.
+
+**Atomic task claiming:** When running with `--parallel > 1`, task claiming is atomic: only one orchestrator process can claim a task at a time, preventing race conditions. Lock files (`.claim.lock`) are created with exclusive write and cleaned up after task completion. This enables safe concurrent execution across multiple machines.
+
+## Key CLI commands
+
+```bash
+orchestrator --once           # Single cycle
+orchestrator --status         # Dashboard
+orchestrator --config         # Show resolved config
+orchestrator --check          # Validate prerequisites
+orchestrator edit <n>         # Edit task metadata
+orchestrator --infinite       # Daemon: wait for new tasks until --stop
+orchestrator --parallel 2     # Run up to 2 tasks concurrently
 ```
 
-**Convergence & merge guards:**
-- Task must pass benchmark for `ORCH_CONVERGE` consecutive runs (default: 3).
-- Any non-zero metric resets convergence → agent runs again.
-- If merge conflicts occur, task is marked BLOCKED and worktree kept for inspection.
-- Before merge: benchmark runs again after syncing with base branch.
-- Optional `ORCH_VERIFY_CMD` can block merge (e.g., enforce coverage).
+Full CLI reference: `orchestrator --help` or `docs/DEVELOP.md`.
 
-**Merge happens last:**
-- Only after all metrics are 0, convergence satisfied, post-sync re-verify passes, and optional `ORCH_VERIFY_CMD` passes.
+## Fleet orchestration
 
-## CLI
+Run multiple orchestrators concurrently on the same task queue for high-throughput unattended execution:
 
-| Command | Description |
-|---|---|
-| `orchestrator` | Run current repo until all tasks complete |
-| `orchestrator --once` | Process one tick and exit |
-| `orchestrator --status` | Show task dashboard |
-| `orchestrator --config` | Print resolved configuration and paths |
-| `orchestrator --check` | Check prerequisites |
-| `orchestrator --stop` | Signal running instances to stop |
-| `orchestrator --task <n>` | Force-pick specific task |
-| `orchestrator --auto-stash` | Stash parent repo changes before merging |
-| `orchestrator --keep-alive` | Keep looping through transient idle/cooldown periods |
-| `orchestrator --infinite` / `--loop` | Never exit on idle; wait for new or addressed tasks until `--stop` |
-| `orchestrator --agent <name>` | Coding agent: `pi` (default) or `copilot` |
-| `orchestrator --model <model>` | Model override passed to the coding agent |
-| `orchestrator --reasoning <level>` | Reasoning effort override for supported agents |
-| `orchestrator add <name>` | Scaffold a new task |
-| `orchestrator edit <n>` | Edit task metadata |
+```bash
+# On machine 1: wait indefinitely for new tasks, run 2 in parallel
+ORCH_PARALLEL=2 ORCH_INFINITE=1 orchestrator
 
-### Inspect configuration
+# On machine 2: same setup (both machines share the task queue)
+ORCH_PARALLEL=2 ORCH_INFINITE=1 orchestrator
 
-- `orchestrator --config` prints the **effective** configuration: each resolved value, its source (`flag`, `env`, or `default`), and resolved paths. Use it before a long run to verify env vars and flags took effect.
-- `orchestrator --check` validates prerequisites and agent auth, such as `COPILOT_GITHUB_TOKEN` / `GITHUB_TOKEN` for copilot or `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` for pi.
+# On machine 3: add new task dynamically
+orchestrator add "new-task" --goal "Do something"
 
-By default, tasks and worktrees are stored together under the state root:
-
-```text
-<state-root>\<repo-slug>\tasks
-<state-root>\<repo-slug>\worktrees
+# Stop all orchestrators
+orchestrator --stop
 ```
 
-The default state root is `<home>\task-orchestrator`.
+All instances coordinate safely via:
+- **Atomic claiming:** Only one process claims each task (`.claim.lock` file with exclusive write)
+- **Heartbeat monitoring:** Fresh heartbeat prevents stale claim reclamation across machines
+- **Stale claim recovery:** Dead processes' claims are released after configurable timeout (default: 30 min)
 
-Explicit `--tasks` and `--worktrees` paths override those derived locations.
+## Configuration
 
-## Environment variables
+Set via CLI flags, environment variables, or defaults. See `docs/ENV_VARS.md` for all options.
 
-Resolution order: CLI flag > env var > default.
+**Most important:**
+- `--state-root` / `ORCH_STATE_ROOT` — where tasks/worktrees live (default: `$HOME/task-orchestrator`)
+- `--agent` / `ORCH_AGENT` — coding agent: `pi` (default) or `copilot`
+- `--model` / `ORCH_MODEL` — model override (e.g., `gpt-5`, `claude-opus`)
+- `--parallel` / `ORCH_PARALLEL` — max concurrent tasks (default: 1, serial; 0=unlimited)
 
-Boolean env vars accept `1`, `true`, `yes`, or `on`.
-
-### Paths
-
-| Variable | CLI flag | Default | Description |
-|---|---|---|---|
-| `ORCH_REPO` | `--repo` | current directory | Target repo/folder |
-| `ORCH_STATE_ROOT` | `--state-root` | `<home>\task-orchestrator` | Orchestrator state root |
-| `ORCH_TASKS` | `--tasks` | `<state-root>\<repo-slug>\tasks` | Task directory |
-| `ORCH_WORKTREES` | `--worktrees` | `<state-root>\<repo-slug>\worktrees` | Worktree directory |
-
-### Coding agent
-
-| Variable | CLI flag | Default | Description |
-|---|---|---|---|
-| `ORCH_AGENT` | `--agent` | `pi` | Coding agent: pi or copilot |
-| `ORCH_MODEL` | `--model` | agent default | Model override passed to the agent |
-| `ORCH_REASONING` | `--reasoning` | unset | Reasoning effort for supported agents |
-
-### Run mode
-
-| Variable | CLI flag | Default | Description |
-|---|---|---|---|
-| `ORCH_KEEP_ALIVE` | `--keep-alive` | off | Wait through transient idle/cooldown periods |
-| `ORCH_INFINITE` | `--infinite`, `--loop` | off | Daemon mode; wait for new/addressed tasks |
-| `ORCH_IDLE_SLEEP_MS` | env only | `5000` | Idle poll interval for keep-alive/infinite (ms) |
-
-### Convergence & merge
-
-| Variable | CLI flag | Default | Description |
-|---|---|---|---|
-| `ORCH_CONVERGE` | env only | `3` | Zero-metric runs required to converge |
-| `ORCH_MAX_FAILURES` | env only | `5` | Failed attempts before BLOCKED (int>=1 or `infinite`) |
-| `ORCH_AUTO_STASH` | `--auto-stash` | off | Stash parent repo changes before merging |
-| `ORCH_MERGE_LOCK_MS` | env only | `600000` | Break a merge lock held longer than this (crashed merger, ms) |
-| `ORCH_VERIFY_CMD` | env only | unset | Shell command to run in worktree before merge (e.g. `npm run tc`) |
-
-### Concurrency & timeouts
-
-| Variable | CLI flag | Default | Description |
-|---|---|---|---|
-| `ORCH_HEARTBEAT_MS` | env only | `300000` | Claim heartbeat freshness window (ms) |
-| `ORCH_CLAIM_MAX_MS` | env only | `1800000` | Hard claim ceiling; reclaim stale claim even across machines (ms) |
-| `ORCH_PROGRESS_TIMEOUT` | env only | `120000` | Kill agent after no output for this long (ms) |
-
-### Logging
-
-| Variable | CLI flag | Default | Description |
-|---|---|---|---|
-| `ORCH_LOG_LEVEL` | env only | `normal` | Console verbosity: quiet \| normal \| verbose |
-| `ORCH_AGENT_LOG_RAW` | env only | off | Write raw spawned-agent output to agent.log |
-| `ORCH_AGENT_LOG_MAX_BYTES` | env only | `10485760` | Max agent.log size before truncation (bytes) |
+Use `orchestrator --config` to inspect effective values and their sources.
 
 ## Task structure
 
 ```
 tasks/pending/T01-my-task/
-├── autoresearch.md   # Goal, metric, scope, acceptance criteria
-├── autoresearch.sh   # Auto-generated experiment runner
-└── benchmark.js      # Outputs: METRIC <name>=<value> (all must be 0)
+├── autoresearch.md   # Goal, metric, scope
+├── autoresearch.sh   # Auto-generated runner
+└── benchmark.js      # Outputs: METRIC name=value (sum must be 0)
 ```
 
-A benchmark may print **multiple** `METRIC` lines. The effective metric is the **sum** of all values. A benchmark with no `METRIC` line is treated as metric `1` (not done).
-
-**Optional autoresearch.md metadata:**
-| Field | Controls |
-|---|---|
-| `**Model:**` | Task-level model override |
-| `**Reasoning:**` | Task-level reasoning override |
-| `**Retry limit:**` | Failed attempts before BLOCKED |
-
-Dependencies wait for all referenced tasks to converge; if any is terminally BLOCKED, dependents auto-BLOCKED.
-
-## Merging converged work
-
-When a task converges:
-1. **Update before merge** — latest base is merged into the task branch to absorb sibling changes
-2. **Re-verify acceptance** — benchmark runs again after absorbing base; if broken, send back to agent
-3. **Serialize merges** — one orchestrator merges at a time (atomic `mkdir`); stale merge locks are broken
-4. **Park, never discard** — genuine conflicts block the merge and keep the worktree for inspection
-
-## Running multiple orchestrators
-
-Several orchestrators can safely share one task directory and repo via file-based coordination:
-
-- **Atomic claim** — picking a task creates `.claim` directory (atomic `mkdir`); only one wins; loser moves on
-- **Liveness by heartbeat** — owner refreshes heartbeat file; others only judge by heartbeat age, never by pid
-- **Recovery** — reclaim stale claim if: (a) owner on this machine and pid gone, or (b) claim older than `ORCH_CLAIM_MAX_MS`
-- **Unique identity** — each orchestrator gets globally-unique instance id (`<pid>-<random>`)
-
-## Coding agents
-
-- `pi` (default) — uses pi's experiment tools; accepts `--model` / `ORCH_MODEL`
-- `copilot` — GitHub Copilot CLI with `copilot -p "<prompt>" -s --allow-all-tools --no-ask-user [--model <model>] [--reasoning-effort <level>]`
-  - Requires: `copilot` CLI + `COPILOT_GITHUB_TOKEN` (or gh/GITHUB_TOKEN)
-  - Limitation: doesn't report token usage; uses shell benchmark loop
-
-**Adding a new agent:**
-1. Create `src/<Name>Agent.ts` implementing `CodingAgent`
-2. Register in `src/agents.ts` `REGISTRY`
-3. Run `npm run all` — no Engine.ts changes needed
+Task metadata in `autoresearch.md`: `**Model:**`, `**Reasoning:**`, `**Retry limit:**`. See `docs/DEVELOP.md` for details.
 
 ## Development
 

@@ -1,7 +1,6 @@
 import { TaskState } from './TaskState.js';
 
 type Counts = {
-  converged: number;
   failed: number;
   blocked: number;
   pending: number;
@@ -9,10 +8,9 @@ type Counts = {
 };
 
 function countTasks(tasks: readonly TaskState[]): Counts {
-  const counts: Counts = { converged: 0, failed: 0, blocked: 0, pending: 0, inProgress: 0 };
+  const counts: Counts = { failed: 0, blocked: 0, pending: 0, inProgress: 0 };
   for (const task of tasks) {
-    if (task.isConverged) counts.converged++;
-    else if (task.isFailed) counts.failed++;
+    if (task.isFailed) counts.failed++;
     else if (task.isBlocked) counts.blocked++;
     else if (task.isPending) counts.pending++;
     else if (task.isInProgress) counts.inProgress++;
@@ -25,7 +23,6 @@ function sortedTasks(all: Map<string, TaskState>): TaskState[] {
 }
 
 function taskIcon(task: TaskState): string {
-  if (task.isConverged) return '✅';
   if (task.isFailed) return '❌';
   if (task.isBlocked) return '🚫';
   if (task.isPending) return '⬜';
@@ -34,7 +31,6 @@ function taskIcon(task: TaskState): string {
 }
 
 function taskStatus(task: TaskState): string {
-  if (task.isConverged) return 'converged';
   if (task.isFailed) return 'failed';
   if (task.isBlocked) return 'blocked';
   if (task.isPending) return 'pending';
@@ -45,8 +41,9 @@ function taskStatus(task: TaskState): string {
 export async function formatOverview(tasksDir: string, tick: number): Promise<string> {
   const tasks = sortedTasks(await TaskState.scan(tasksDir));
   const counts = countTasks(tasks);
+  const convergedCount = TaskState.countConverged(tasksDir);
   const running = tasks.filter(t => t.isInProgress).map(t => `T${t.taskNumber}`).join(',') || 'none';
-  return `Overview: running=${running} converged=${counts.converged} failed=${counts.failed} blocked=${counts.blocked} pending=${counts.pending} (tick ${tick})`;
+  return `Overview: running=${running} converged=${convergedCount} failed=${counts.failed} blocked=${counts.blocked} pending=${counts.pending} (tick ${tick})`;
 }
 
 export async function printOverview(tasksDir: string, tick: number): Promise<void> {
@@ -56,8 +53,9 @@ export async function printOverview(tasksDir: string, tick: number): Promise<voi
 export async function formatRunSummary(tasksDir: string, ticks: number): Promise<string[]> {
   const tasks = sortedTasks(await TaskState.scan(tasksDir));
   const counts = countTasks(tasks);
+  const convergedCount = TaskState.countConverged(tasksDir);
   const lines = [
-    `Summary: converged=${counts.converged} failed=${counts.failed} blocked=${counts.blocked} pending=${counts.pending} in_progress=${counts.inProgress} (${ticks} ticks)`,
+    `Summary: converged=${convergedCount} failed=${counts.failed} blocked=${counts.blocked} pending=${counts.pending} in_progress=${counts.inProgress} (${ticks} ticks)`,
   ];
   for (const task of tasks) {
     const attempts = task.isPending ? '' : `  attempts=${task.failureCount}`;

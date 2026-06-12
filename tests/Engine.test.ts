@@ -62,7 +62,8 @@ describe('Engine', () => {
     const r = await engine.tick();
     expect(r.converged).toBe(true);
     const all = await TaskState.scan(dir);
-    expect(all.get('1')!.status).toBe(Status.CONVERGED);
+    expect(all.size).toBe(0); // T1 moved to converged shard, excluded from scan
+    expect(TaskState.countConverged(dir)).toBe(1);
   });
 
   it('non-zero benchmark marks FAILED', async () => {
@@ -310,8 +311,8 @@ describe('Engine', () => {
     const total = await new Engine(dir, { benchmark: zero }).loop();
     expect(total).toBe(CONVERGENCE_THRESHOLD * 2);
     const all = await TaskState.scan(dir);
-    expect(all.get('1')!.status).toBe(Status.CONVERGED);
-    expect(all.get('2')!.status).toBe(Status.CONVERGED);
+    expect(all.size).toBe(0); // both tasks converged, excluded from scan
+    expect(TaskState.countConverged(dir)).toBe(2);
   });
 
   it('loop with onTick callback', async () => {

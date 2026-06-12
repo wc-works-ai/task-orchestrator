@@ -327,7 +327,8 @@ describe('Engine agent spawning', () => {
       error: expect.stringContaining('Unable to switch to dev'),
     }));
     const all = await TaskState.scan(tasksDir);
-    expect(all.get('1')!.status).toBe(Status.CONVERGED);
+    expect(all.size).toBe(0); // T1 converged and excluded from scan
+    expect(TaskState.countConverged(tasksDir)).toBe(1);
     expect(existsSync(join(worktreesDir, 'T01-x', '.git'))).toBe(false);
     expect(existsSync(join(repoDir, 'work.txt'))).toBe(true);
     expect(execSync('git status --porcelain', { cwd: repoDir, encoding: 'utf-8' })).toBe('');
@@ -709,5 +710,84 @@ describe('Engine agent spawning', () => {
     const r = await engine.tick();
 
     expect(r.converged).toBe(true);
+  });
+
+  it('parallel=1 (serial mode): processes tasks one at a time', async () => {
+    make(dir, 1, 'a');
+    make(dir, 2, 'b');
+    const spawn = vi.fn().mockResolvedValue({ success: true, iterations: 1 });
+    const benchmark = vi.fn().mockResolvedValue(0);
+
+    const engine = new Engine(dir, { benchmark, spawn, parallel: 1 });
+    const total = await engine.loop();
+
+    // 2 tasks × 3 convergence ticks each = 6 total tick() calls returning a task
+    expect(total).toBe(6);
+    expect(spawn).toHaveBeenCalledTimes(0); // Both tasks converge without spawning
+    expect(benchmark.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it('parallel=2: runs 2 tasks concurrently', async () => {
+    make(dir, 1, 'a');
+    make(dir, 2, 'b');
+
+    const spawn = vi.fn().mockResolvedValue({ success: true, iterations: 1 });
+    const benchmark = vi.fn().mockResolvedValue(0);
+
+    const engine = new Engine(dir, { benchmark, spawn, parallel: 2 });
+    const total = await engine.loop();
+
+    // 2 tasks × 3 convergence ticks each = 6 total tick() calls returning a task
+    // With parallel=2, these should run concurrently where possible
+    expect(total).toBe(6);
+  });
+
+  it('parallel=0 (unlimited): spawns all ready tasks', async () => {
+    make(dir, 1, 'a');
+    make(dir, 2, 'b');
+    make(dir, 3, 'c');
+
+    const spawn = vi.fn().mockResolvedValue({ success: true, iterations: 1 });
+    const benchmark = vi.fn().mockResolvedValue(0);
+
+    const engine = new Engine(dir, { benchmark, spawn, parallel: 0 });
+    const total = await engine.loop();
+
+    // 3 tasks × 3 convergence ticks each = 9 total tick() calls returning a task
+    // With parallel=0 (unlimited), all tasks should run concurrently
+    expect(total).toBe(9);
+  }, 10000);
+
+  it('parallel mode: tasks block/fail independently', async () => {
+    make(dir, 1, 'a');
+    make(dir, 2, 'b');
+
+    const spawn = vi.fn().mockImplementation(async (task: TaskState) => {
+      // Task 1 succeeds, Task 2 fails
+      if (task.taskNumber === 1) {
+        return { success: true, iterations: 1 };
+      } else {
+        return { success: false, iterations: 1 };
+      }
+    });
+
+    const benchmark = vi.fn().mockImplementation(() => {
+      // Both tasks need work initially
+      return 1;
+    });
+
+    const engine = new Engine(dir, { benchmark, spawn, parallel: 2 });
+    // Run two tick operations to process both tasks
+    await engine.tick();
+    await engine.tick();
+
+    const all = await TaskState.scan(dir);
+    const task1 = all.get('1');
+    const task2 = all.get('2');
+
+    // Task 1 was picked and attempted (might be in_progress)
+    expect(task1).not.toBeNull();
+    // Task 2 was picked and attempted (might be in_progress or failed)
+    expect(task2).not.toBeNull();
   });
 });

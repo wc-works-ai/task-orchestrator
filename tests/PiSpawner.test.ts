@@ -224,7 +224,8 @@ describe('PiSpawner', () => {
         progressStatusInterval: 40,
       }).spawn(t, dir);
 
-      await new Promise(r => setTimeout(r, 70));
+      // Wait 55ms: safely within one interval [40, 80) so exactly 1 status line fires
+      await new Promise(r => setTimeout(r, 55));
       const statusLines = joinedCalls(logSpy).split('\n').filter(line => line.includes('still running:'));
       expect(statusLines.length).toBe(1);
 

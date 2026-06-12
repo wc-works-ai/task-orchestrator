@@ -39,7 +39,6 @@ describe('RunReport', () => {
     await expect(formatRunSummary(dir, 24)).resolves.toEqual([
       'Summary: converged=1 failed=1 blocked=1 pending=1 in_progress=1 (24 ticks)',
       '  ⬜ T2 pending',
-      '  ✅ T3 converged  attempts=2',
       '  🚫 T7 blocked  attempts=5',
       '  ❌ T9 failed  attempts=1',
       '  🔄 T10 in_progress  attempts=0',
@@ -89,5 +88,18 @@ describe('RunReport', () => {
     } finally {
       logSpy.mockRestore();
     }
+  });
+
+  it('counts archived converged tasks in the overview and summary', async () => {
+    dir = setup();
+    // One converged dir + one archived line
+    const { mkdirSync: mds, writeFileSync: wfs } = await import('node:fs');
+    mds(resolve(dir, 'converged', 'T02-archived-task'), { recursive: true });
+    wfs(resolve(dir, 'converged', '.archive.jsonl'), '{"T":1,"name":"T01-old"}\n');
+
+    await expect(formatOverview(dir, 5)).resolves.toContain('converged=2');
+    await expect(formatRunSummary(dir, 5)).resolves.toEqual([
+      'Summary: converged=2 failed=0 blocked=0 pending=0 in_progress=0 (5 ticks)',
+    ]);
   });
 });

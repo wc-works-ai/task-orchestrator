@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, renameSync, readdirSync, cpSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, renameSync, readdirSync, cpSync, appendFileSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { resolve, basename, join, dirname } from 'node:path';
 import { hostname } from 'node:os';
@@ -17,6 +17,7 @@ const F_DEPS     = '.dependencies';
 const D_CLAIM    = '.claim';
 const F_OWNER    = 'owner';
 const F_BEAT     = 'heartbeat';
+const F_CLAIM_LOCK = '.claim.lock';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 export interface TaskInfo {
@@ -207,10 +208,43 @@ export class TaskState {
     return null;
   }
 
+  // ── Cascade ─────────────────────────────────────────────────────────
+  /** Iteratively mark tasks BLOCKED whose dependencies are blocked. */
+  static cascadeBlockDependencies(tasksDir: string): void {
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const shard of ['pending', 'failed'] as const) {
+        let entries: string[];
+        try { entries = readdirSync(resolve(tasksDir, shard)); } catch { continue; }
+        for (const e of entries) {
+          if (!e.startsWith('T')) continue;
+          const task = new TaskState(resolve(tasksDir, shard, e));
+          if (task.isConverged || task.isBlocked || task.isInProgress) continue;
+          if (!task.hasBlockedDependency(tasksDir)) continue;
+          task.markBlocked();
+          changed = true;
+        }
+      }
+    }
+  }
+
   // ── Claim ───────────────────────────────────────────────────────────
   claim(instanceId: string): boolean {
     const p = join(this.#dir, D_CLAIM);
-    try { mkdirSync(p); } catch { return false; }
+    const lockFile = join(this.#dir, F_CLAIM_LOCK);
+    
+    // Try atomic claim: create lock file with exclusive write flag
+    // Only succeeds if file doesn't exist (atomic operation)
+    try {
+      writeFileSync(lockFile, `pid:${process.pid}\nstarted:${Date.now()}\ninstance:${instanceId}\nhost:${hostname()}\n`, { flag: 'wx' });
+    } catch {
+      // Lock file already exists - another process claimed it
+      return false;
+    }
+
+    // We own the lock now, create the claim directory for metadata
+    try { mkdirSync(p); } catch { /* may already exist from previous claim */ }
     writeFileSync(join(p, F_OWNER),
       `pid:${process.pid}\nstarted:${Date.now()}\ninstance:${instanceId}\nhost:${hostname()}\n`);
     writeFileSync(join(p, F_BEAT), '');
@@ -241,6 +275,7 @@ export class TaskState {
   release(newStatus: Status = Status.PENDING): void {
     this.status = newStatus;
     try { rmSync(join(this.#dir, D_CLAIM), { recursive: true, force: true }); } catch {}
+    try { rmSync(join(this.#dir, F_CLAIM_LOCK), { force: true }); } catch {}
   }
 
   markBlocked(): void {
@@ -249,58 +284,51 @@ export class TaskState {
   }
 
   // ── Metadata ────────────────────────────────────────────────────────
+  #readAutoresearch(): string {
+    try { return readFileSync(join(this.#dir, 'autoresearch.md'), 'utf-8'); }
+    catch { return ''; }
+  }
+
   get scope(): string[] {
-    try {
-      const c = readFileSync(join(this.#dir, 'autoresearch.md'), 'utf-8');
-      const m = c.match(/^## Scope([\s\S]*?)(?=## |$)/s);
-      const raw = m?.[1]?.trim() ?? '';
-      return raw ? raw.split('\n').map(s => s.replace(/^[-*]\s*/, '').trim()).filter(Boolean) : [];
-    } catch {
-      return [];
-    }
+    const c = this.#readAutoresearch();
+    if (!c) return [];
+    const m = c.match(/^## Scope([\s\S]*?)(?=## |$)/s);
+    const raw = m?.[1]?.trim() ?? '';
+    return raw ? raw.split('\n').map(s => s.replace(/^[-*]\s*/, '').trim()).filter(Boolean) : [];
   }
 
   get goal(): string {
-    try {
-      const c = readFileSync(join(this.#dir, 'autoresearch.md'), 'utf-8');
-      return (c.match(/^## Goal:?\s*(.+)/m)
-           || c.match(/^## Goal\s*\n(.+)/m)
-           || [])[1]?.trim() ?? this.taskName;
-    } catch { return this.taskName; }
+    const c = this.#readAutoresearch();
+    if (!c) return this.taskName;
+    return (c.match(/^## Goal:?\s*(.+)/m)
+         || c.match(/^## Goal\s*\n(.+)/m)
+         || [])[1]?.trim() ?? this.taskName;
   }
 
   get model(): string {
-    try {
-      return readFileSync(join(this.#dir, 'autoresearch.md'), 'utf-8')
-        .match(/\*\*Model:\*\*\s*(.+)/)?.[1]?.trim() ?? '';
-    } catch { return ''; }
+    return this.#readAutoresearch().match(/\*\*Model:\*\*\s*(.+)/)?.[1]?.trim() ?? '';
   }
 
   get reasoning(): string {
-    try {
-      return readFileSync(join(this.#dir, 'autoresearch.md'), 'utf-8')
-        .match(/\*\*Reasoning:\*\*\s*(.+)/)?.[1]?.trim() ?? '';
-    } catch { return ''; }
+    return this.#readAutoresearch().match(/\*\*Reasoning:\*\*\s*(.+)/)?.[1]?.trim() ?? '';
   }
 
   get maxFailures(): number {
-    try {
-      const raw = readFileSync(join(this.#dir, 'autoresearch.md'), 'utf-8')
-        .match(/\*\*Retry limit:\*\*\s*(.+)/i)?.[1]?.trim() ?? '';
-      if (/^(infinite|unlimited|inf)$/i.test(raw)) return Infinity;
-      if (!/^\d+$/.test(raw)) return MAX_FAILURES;
-      const n = Number(raw);
-      return n >= 1 ? n : MAX_FAILURES;
-    } catch { return MAX_FAILURES; }
+    const raw = this.#readAutoresearch().match(/\*\*Retry limit:\*\*\s*(.+)/i)?.[1]?.trim() ?? '';
+    if (/^(infinite|unlimited|inf)$/i.test(raw)) return Infinity;
+    if (!/^\d+$/.test(raw)) return MAX_FAILURES;
+    const n = Number(raw);
+    return n >= 1 ? n : MAX_FAILURES;
   }
 
   // ── Static ──────────────────────────────────────────────────────────
 
-  /** Scan all shards and return a Map of task number → TaskState */
+  /** Scan active shards (pending, in_progress, failed, blocked) and return a Map of task number → TaskState.
+   *  Converged tasks are excluded — they are terminal and counted separately via countConverged(). */
   static async scan(tasksDir: string): Promise<Map<string, TaskState>> {
     TaskState.#cache.clear();
     const all = new Map<string, TaskState>();
-    for (const shard of SHARDS) {
+    for (const shard of ['pending', 'in_progress', 'failed', 'blocked'] as const) {
       try {
         for (const entry of await readdir(resolve(tasksDir, shard))) {
           const m = entry.match(/^T(\d+)-/);
@@ -314,6 +342,44 @@ export class TaskState {
       } catch { /* shard doesn't exist */ }
     }
     return all;
+  }
+
+  /** Remove oldest converged task dirs beyond `keep`, archiving summaries to .archive.jsonl.
+   *  keep=0 means unlimited (no pruning). */
+  static pruneConverged(tasksDir: string, keep: number): void {
+    if (keep === 0) return;
+    const convergedDir = resolve(tasksDir, 'converged');
+    let entries: string[];
+    try { entries = readdirSync(convergedDir); } catch { return; }
+
+    const taskDirs = entries
+      .filter(e => /^T\d+/.test(e))
+      .map(e => ({ name: e, num: parseInt(e.slice(1), 10) }))
+      .sort((a, b) => a.num - b.num);
+
+    const toPrune = taskDirs.slice(0, Math.max(0, taskDirs.length - keep));
+    for (const { name } of toPrune) {
+      const dir = resolve(convergedDir, name);
+      const t = new TaskState(dir);
+      const summary = JSON.stringify({ T: t.taskNumber, name: t.taskName, goal: t.goal, convergedAt: Date.now() });
+      try { appendFileSync(resolve(convergedDir, '.archive.jsonl'), summary + '\n'); } catch {}
+      try { rmSync(dir, { recursive: true, force: true }); } catch {}
+    }
+  }
+
+  /** Count total converged tasks: task dirs in converged/ plus lines in .archive.jsonl */
+  static countConverged(tasksDir: string): number {
+    const convergedDir = resolve(tasksDir, 'converged');
+    let dirCount = 0;
+    let archiveCount = 0;
+    try {
+      dirCount = readdirSync(convergedDir).filter(e => /^T\d+/.test(e)).length;
+    } catch {}
+    try {
+      archiveCount = readFileSync(resolve(convergedDir, '.archive.jsonl'), 'utf-8')
+        .trim().split('\n').filter(Boolean).length;
+    } catch {}
+    return dirCount + archiveCount;
   }
 
   /** Pick the highest-priority actionable task. Returns null if none. */
@@ -338,6 +404,7 @@ export class TaskState {
 
         if (t.isClaimed && !t.isInProgress) {
           try { rmSync(join(t.directory, D_CLAIM), { recursive: true, force: true }); } catch {}
+          try { rmSync(join(t.directory, F_CLAIM_LOCK), { force: true }); } catch {}
         }
         if (t.isConverged || t.isBlocked) continue;
         if (t.isFailed && t.failureCount >= t.maxFailures) { t.markBlocked(); continue; }

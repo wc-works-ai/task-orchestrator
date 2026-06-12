@@ -15,6 +15,19 @@ function logLevel(value: string | undefined): 'quiet' | 'normal' | 'verbose' {
   return value === 'quiet' || value === 'verbose' ? value : 'normal';
 }
 
+function parallel(value: string | undefined): number {
+  const n = parseInt(value ?? '1', 10);
+  if (!Number.isFinite(n) || n < 0) {
+    console.warn(`⚠️  ORCH_PARALLEL must be 0-100; received '${value}', using default: 1`);
+    return 1;
+  }
+  if (n > 100) {
+    console.warn(`⚠️  ORCH_PARALLEL clamped to 100 (received: ${n})`);
+    return 100;
+  }
+  return n;
+}
+
 function ms(value: string | undefined, fallback: number): number {
   const n = parseInt(value ?? '', 10);
   return Number.isFinite(n) && n >= 0 ? n : fallback;
@@ -42,4 +55,9 @@ export const env = {
   get claimMaxMs()         { return parseInt(process.env.ORCH_CLAIM_MAX_MS ?? '1800000', 10); },
   get mergeLockMs()        { return parseInt(process.env.ORCH_MERGE_LOCK_MS ?? '600000', 10); },
   get verifyCmd()          { return process.env.ORCH_VERIFY_CMD || undefined; },
+  get keepConverged(): number {
+    const v = parseInt(process.env.ORCH_KEEP_CONVERGED ?? '', 10);
+    return Number.isFinite(v) && v >= 0 ? v : 100;
+  },
+  get parallelTasks()      { return parallel(process.env.ORCH_PARALLEL); },
 } as const;

@@ -13,6 +13,8 @@ describe('config', () => {
     'ORCH_KEEP_ALIVE',
     'ORCH_INFINITE',
     'ORCH_IDLE_SLEEP_MS',
+    'ORCH_PARALLEL',
+    'ORCH_KEEP_CONVERGED',
     'ORCH_CONVERGE',
     'ORCH_MAX_FAILURES',
     'ORCH_AUTO_STASH',
