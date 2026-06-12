@@ -204,6 +204,7 @@ const agent = createCodingAgent(values.agent || env.agent, {
   ...(values.model ? { model: values.model } : {}),
   workDir: repo,
 });
+console.log(`agent: ${agent.name}`);
 
 if (values.check) {
   const results = await Prerequisites.check(agent);
