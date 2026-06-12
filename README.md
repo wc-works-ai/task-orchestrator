@@ -51,6 +51,7 @@ Infinite/daemon mode (`--infinite`, `--loop`, or `ORCH_INFINITE`) never exits on
 | `orchestrator` | Run current repo until all tasks complete |
 | `orchestrator --once` | Process one tick and exit |
 | `orchestrator --status` | Show task dashboard |
+| `orchestrator --config` | Print resolved configuration and paths |
 | `orchestrator --check` | Check prerequisites |
 | `orchestrator --stop` | Signal running instances to stop |
 | `orchestrator --task <n>` | Force-pick specific task |
@@ -62,6 +63,11 @@ Infinite/daemon mode (`--infinite`, `--loop`, or `ORCH_INFINITE`) never exits on
 | `orchestrator --reasoning <level>` | Reasoning effort override for supported agents |
 | `orchestrator add <name>` | Scaffold a new task |
 | `orchestrator edit <n>` | Edit task metadata |
+
+### Inspect configuration
+
+- `orchestrator --config` prints the **effective** configuration: each resolved value, its source (`flag`, `env`, or `default`), and resolved paths. Use it before a long run to verify env vars and flags took effect.
+- `orchestrator --check` validates prerequisites and agent auth, such as `COPILOT_GITHUB_TOKEN` / `GITHUB_TOKEN` for copilot or `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` for pi.
 
 By default, tasks and worktrees are stored together under the state root:
 
@@ -76,27 +82,59 @@ Explicit `--tasks` and `--worktrees` paths override those derived locations.
 
 ## Environment variables
 
-| Variable | Default | Controls |
-|---|---|---|
-| `ORCH_REPO` | current directory | Target repo/folder override |
-| `ORCH_STATE_ROOT` | `<home>\task-orchestrator` | Orchestrator state root override |
-| `ORCH_TASKS` | `<state-root>\<repo-slug>\tasks` | Task directory override |
-| `ORCH_AGENT` | `pi` | Coding agent: `pi` or `copilot` |
-| `ORCH_MODEL` | agent default | Model override passed to the coding agent |
-| `ORCH_REASONING` | unset | Reasoning effort override for supported agents |
-| `ORCH_WORKTREES` | `<state-root>\<repo-slug>\worktrees` | Worktree directory override |
-| `ORCH_AUTO_STASH` | unset | Stash parent repo changes before merging when set to `1`, `true`, `yes`, or `on` |
-| `ORCH_CONVERGE` | `3` | Zero-runs to converge |
-| `ORCH_MAX_FAILURES` | `5` | Failed attempts before BLOCKED; integer >= 1 or `infinite` |
-| `ORCH_KEEP_ALIVE` | unset | Keep looping through transient idle/cooldown periods when set to `1`, `true`, `yes`, or `on` |
-| `ORCH_INFINITE` | unset | Never exit on idle; wait for new or addressed tasks until `--stop` |
-| `ORCH_IDLE_SLEEP_MS` | `5000` | Sleep interval between keep-alive/infinite idle ticks |
-| `ORCH_HEARTBEAT_MS` | `300000` | Heartbeat freshness window; a claim with a younger heartbeat is treated as alive |
-| `ORCH_CLAIM_MAX_MS` | `1800000` | Hard claim ceiling; a stale claim older than this is reclaimed even across machines |
-| `ORCH_MERGE_LOCK_MS` | `600000` | Merge-lock ceiling; a held merge lock older than this (a crashed merger) is broken |
-| `ORCH_AGENT_LOG_MAX_BYTES` | `10485760` | Maximum `agent.log` size before older output is truncated |
-| `ORCH_AGENT_LOG_RAW` | unset | Write raw spawned-agent stdout/stderr to `agent.log` when set to `1`, `true`, `yes`, or `on` |
-| `ORCH_LOG_LEVEL` | `normal` | Console verbosity: `quiet`, `normal`, or `verbose`; quiet still writes full `orchestrator.log` |
+Resolution order: CLI flag > env var > default.
+
+Boolean env vars accept `1`, `true`, `yes`, or `on`.
+
+### Paths
+
+| Variable | CLI flag | Default | Description |
+|---|---|---|---|
+| `ORCH_REPO` | `--repo` | current directory | Target repo/folder |
+| `ORCH_STATE_ROOT` | `--state-root` | `<home>\task-orchestrator` | Orchestrator state root |
+| `ORCH_TASKS` | `--tasks` | `<state-root>\<repo-slug>\tasks` | Task directory |
+| `ORCH_WORKTREES` | `--worktrees` | `<state-root>\<repo-slug>\worktrees` | Worktree directory |
+
+### Coding agent
+
+| Variable | CLI flag | Default | Description |
+|---|---|---|---|
+| `ORCH_AGENT` | `--agent` | `pi` | Coding agent: pi or copilot |
+| `ORCH_MODEL` | `--model` | agent default | Model override passed to the agent |
+| `ORCH_REASONING` | `--reasoning` | unset | Reasoning effort for supported agents |
+
+### Run mode
+
+| Variable | CLI flag | Default | Description |
+|---|---|---|---|
+| `ORCH_KEEP_ALIVE` | `--keep-alive` | off | Wait through transient idle/cooldown periods |
+| `ORCH_INFINITE` | `--infinite`, `--loop` | off | Daemon mode; wait for new/addressed tasks |
+| `ORCH_IDLE_SLEEP_MS` | env only | `5000` | Idle poll interval for keep-alive/infinite (ms) |
+
+### Convergence & merge
+
+| Variable | CLI flag | Default | Description |
+|---|---|---|---|
+| `ORCH_CONVERGE` | env only | `3` | Zero-metric runs required to converge |
+| `ORCH_MAX_FAILURES` | env only | `5` | Failed attempts before BLOCKED (int>=1 or `infinite`) |
+| `ORCH_AUTO_STASH` | `--auto-stash` | off | Stash parent repo changes before merging |
+| `ORCH_MERGE_LOCK_MS` | env only | `600000` | Break a merge lock held longer than this (crashed merger, ms) |
+
+### Concurrency & timeouts
+
+| Variable | CLI flag | Default | Description |
+|---|---|---|---|
+| `ORCH_HEARTBEAT_MS` | env only | `300000` | Claim heartbeat freshness window (ms) |
+| `ORCH_CLAIM_MAX_MS` | env only | `1800000` | Hard claim ceiling; reclaim stale claim even across machines (ms) |
+| `ORCH_PROGRESS_TIMEOUT` | env only | `120000` | Kill agent after no output for this long (ms) |
+
+### Logging
+
+| Variable | CLI flag | Default | Description |
+|---|---|---|---|
+| `ORCH_LOG_LEVEL` | env only | `normal` | Console verbosity: quiet \| normal \| verbose |
+| `ORCH_AGENT_LOG_RAW` | env only | off | Write raw spawned-agent output to agent.log |
+| `ORCH_AGENT_LOG_MAX_BYTES` | env only | `10485760` | Max agent.log size before truncation (bytes) |
 
 ## Task structure
 

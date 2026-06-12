@@ -14,6 +14,7 @@ import { env } from './env.js';
 import { resolveStatePaths } from './StatePaths.js';
 import { printOverview, printRunSummary } from './RunReport.js';
 import { parseMetrics, unmetSummary } from './metrics.js';
+import { formatEffectiveConfig, formatSettingsHelp } from './config.js';
 
 function isPathInside(child: string, parent: string): boolean {
   const rel = relative(parent, child);
@@ -67,6 +68,7 @@ const { values, positionals } = await parseArgs({
     metric: { type: 'string', default: '' },
     scope:  { type: 'string', default: '' },
     once:   { type: 'boolean', default: false },
+    config: { type: 'boolean', default: false },
     'keep-alive': { type: 'boolean', default: false },
     infinite: { type: 'boolean', default: false },
     'auto-stash': { type: 'boolean', default: false },
@@ -84,42 +86,17 @@ Task Orchestrator — autonomous task execution
   orchestrator --status
   orchestrator --check
   orchestrator --stop
+  orchestrator --config
   orchestrator --task <n>
-  orchestrator --keep-alive  wait through transient idle/cooldown periods
-  orchestrator --infinite    daemon mode; wait for new/addressed tasks, stop with --stop
   orchestrator --loop        alias for --infinite
-  orchestrator --auto-stash  stash parent repo changes before merging
-  orchestrator --repo <dir>     override target repo/folder (default: current directory)
-  orchestrator --state-root <dir> override state root (default: <home>\\task-orchestrator)
-  orchestrator --tasks <dir>    override derived task directory
-  orchestrator --worktrees <dir> override derived worktree directory
-  orchestrator --agent <name>    coding agent: pi (default) or copilot
-  orchestrator --model <model>   model override passed to the coding agent
-  orchestrator --reasoning <level> reasoning effort passed to supported agents
+  orchestrator edit <n> [--goal ...] [--metric ...] [--scope ...]
   orchestrator add <name>
   orchestrator add <name> --goal "..." --metric x --scope "a b"
+  orchestrator -h | --help
 
 Resolution order for optional settings: CLI flag > environment variable > derived default.
 
-Environment variables:
-  ORCH_REPO=<dir>            optional target repo/folder override
-  ORCH_STATE_ROOT=<dir>      optional state root override
-  ORCH_TASKS=<dir>           optional task directory override
-  ORCH_WORKTREES=<dir>       optional worktree directory override
-  ORCH_AGENT=<name>          coding agent: pi (default) or copilot
-  ORCH_MODEL=<model>         model override (uses agent default when unset)
-  ORCH_REASONING=<level>     reasoning effort override for supported agents
-  ORCH_AUTO_STASH=1          stash parent repo changes before merging
-  ORCH_CONVERGE=<n>          zero-runs to converge (default: 3)
-  ORCH_MAX_FAILURES=<n|infinite> failed attempts before BLOCKED (default: 5)
-  ORCH_KEEP_ALIVE=1          wait through transient idle/cooldown periods
-  ORCH_INFINITE=1            never exit on idle; wait for new or addressed tasks
-  ORCH_IDLE_SLEEP_MS=<ms>    keep-alive/infinite idle sleep interval (default: 5000)
-  ORCH_HEARTBEAT_MS=<ms>     stale claim timeout (default: 300000)
-  ORCH_PROGRESS_TIMEOUT=<ms> kill agent after no output (default: 120000)
-  ORCH_AGENT_LOG_MAX_BYTES=<bytes> cap agent.log size (default: 10485760)
-  ORCH_AGENT_LOG_RAW=1      write raw spawned-agent output to agent.log
-  ORCH_LOG_LEVEL=<quiet|normal|verbose> console verbosity (default: normal)
+${formatSettingsHelp()}
 `);
   process.exit(0);
 }
@@ -148,6 +125,17 @@ const infinite = values.infinite || values.loop || env.infinite;
 console.log(`repo: ${repo}`);
 console.log(`tasks: ${dir}`);
 console.log(`worktrees: ${worktreesDir}`);
+
+if (values.config) {
+  console.log(formatEffectiveConfig(values as Record<string, unknown>, process.env));
+  console.log('\nResolved paths');
+  console.log(`  repo:       ${paths.repo}`);
+  console.log(`  state root: ${paths.stateRoot}`);
+  console.log(`  tasks:      ${paths.tasks}`);
+  console.log(`  worktrees:  ${paths.worktrees}`);
+  console.log('\nAgent auth is validated by --check.');
+  process.exit(0);
+}
 
 if (!existsSync(repo)) {
   console.error(`\n  ❌ Repo folder not found: ${repo}\n`);

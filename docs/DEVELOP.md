@@ -16,29 +16,9 @@ TDD + SOLID. Read `TESTING.md` first for test conventions.
 3. `npm run all` — full pipeline (pre-push hook enforces)
 
 ### Environment variables
-| Variable | Default | What it controls |
-|---|---|---|
-| `ORCH_REPO` | current directory | Target repo/folder override |
-| `ORCH_STATE_ROOT` | `<home>\task-orchestrator` | Orchestrator state root override |
-| `ORCH_TASKS` | `<state-root>\<repo-slug>\tasks` | Task directory override |
-| `ORCH_AGENT` | `pi` | Coding agent: `pi` or `copilot` |
-| `ORCH_MODEL` | agent default | Model override passed to the coding agent |
-| `ORCH_REASONING` | unset | Reasoning effort override for supported agents |
-| `ORCH_AUTO_STASH` | unset | Stash parent repo changes before merging |
-| `ORCH_CONVERGE` | `3` | Zero-runs to converge |
-| `ORCH_MAX_FAILURES` | `5` | Failed attempts before BLOCKED; integer >= 1 or `infinite` |
-| `ORCH_KEEP_ALIVE` | unset | Keep looping through transient idle/cooldown periods |
-| `ORCH_INFINITE` | unset | Never exit on idle; wait for new or addressed tasks until stopped |
-| `ORCH_IDLE_SLEEP_MS` | `5000` | Sleep interval between keep-alive/infinite idle ticks |
-| `ORCH_WORKTREES` | `<state-root>\<repo-slug>\worktrees` | Worktree directory override |
-| `ORCH_HEARTBEAT_MS` | `300000` | Heartbeat freshness window; a claim with a younger heartbeat is treated as alive |
-| `ORCH_CLAIM_MAX_MS` | `1800000` | Hard claim ceiling; a stale claim older than this is reclaimed even across machines |
-| `ORCH_MERGE_LOCK_MS` | `600000` | Merge-lock ceiling; a held merge lock older than this (a crashed merger) is broken |
-| `ORCH_AGENT_LOG_MAX_BYTES` | `10485760` | Maximum `agent.log` size before older output is truncated |
-| `ORCH_AGENT_LOG_RAW` | unset | Write raw spawned-agent stdout/stderr to `agent.log` |
-| `ORCH_LOG_LEVEL` | `normal` | Console verbosity: `quiet`, `normal`, or `verbose`; quiet still writes full `orchestrator.log` |
-
+See `README.md` for the grouped configuration table.
 CLI flags override env vars. See `orchestrator --help`.
+Settings are defined once in `src/config.ts` (`CONFIG_SPEC`) and rendered into both `--help` and `--config`; inspect effective values with `orchestrator --config`.
 
 Loop mode prints an `Overview:` counts line after each tick and a final `Summary:` with one line per task. Infinite/daemon mode (`--infinite`, `--loop`, or `ORCH_INFINITE`) never exits on idle; it polls every `ORCH_IDLE_SLEEP_MS` for new tasks or for BLOCKED/FAILED tasks to be addressed, and exits only after `--stop`.
 
