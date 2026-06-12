@@ -42,6 +42,8 @@ npm run tick
 
 **Merge guards:** Before merge, benchmark runs again after syncing with base branch. Optional `ORCH_VERIFY_CMD` (e.g., `npm run tc`) can block merge. Conflicts keep worktree for inspection.
 
+**Metric hygiene:** Keep benchmark metric names task-specific (for example `review_report_gap`, not generic `branch_gap`) so live logs stay unambiguous. If needed, adopt strict expected-metric filtering from task metadata as a follow-up hardening option.
+
 **Multi-orchestrator safe:** File-based coordination via atomic claims and heartbeat monitoring. See `docs/DEVELOP.md` for details.
 
 **Loop mode (infinite mode):** Run with `--infinite` or `ORCH_INFINITE=1` to keep the orchestrator alive indefinitely. It will continuously poll for new tasks and wait for blocked/failed tasks to be addressed. Polling interval is configurable via `ORCH_IDLE_SLEEP_MS` (default: 5000ms). Exit with `--stop` or Ctrl+C.
