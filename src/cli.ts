@@ -301,7 +301,7 @@ const engine = new Engine(dir, {
     let out: string;
     try {
       out = execFileSync(process.execPath, [resolve(t.directory, 'benchmark.js')], {
-        timeout: 30_000, encoding: 'utf-8', cwd: t.cwd,
+        timeout: env.benchmarkTimeoutMs, encoding: 'utf-8', cwd: t.cwd,
       });
     } catch (e: unknown) {
       // Capture whatever the benchmark printed before crashing/timing out so the
@@ -310,7 +310,7 @@ const engine = new Engine(dir, {
       out = `${err.stdout ?? ''}${err.stderr ?? ''}`.trim() || (err.message ?? 'benchmark execution failed');
     }
     try { writeFileSync(reasonPath, out); } catch {}
-    const r = parseMetrics(out);
+    const r = parseMetrics(out, 1, t.metrics);
     if (r.total > 0) {
       const summary = unmetSummary(r) || `no METRIC lines emitted (treated as ${r.total})`;
       console.log(`T${t.number} unmet: ${summary}`);
@@ -347,8 +347,8 @@ if (values.task) {
   const task = await engine.pickByNumber(tn);
   if (!task) { console.error(`T${tn} not found`); process.exit(1); }
   try {
-    const out = execFileSync(process.execPath, [resolve(task.directory, 'benchmark.js')], { timeout: 30_000, encoding: 'utf-8', cwd: repo });
-    const metric = parseMetrics(out).total;
+    const out = execFileSync(process.execPath, [resolve(task.directory, 'benchmark.js')], { timeout: env.benchmarkTimeoutMs, encoding: 'utf-8', cwd: repo });
+    const metric = parseMetrics(out, 1, task.metricNames).total;
     console.log(`${metric === 0 ? '⏳' : '❌'} T${tn}: ${task.goal.slice(0, 60)} (metric=${metric})`);
   } catch { console.log(`❌ T${tn}: benchmark failed`); }
   process.exit(0);

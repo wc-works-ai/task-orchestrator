@@ -620,6 +620,26 @@ describe('TaskState', () => {
     expect(t.reasoning).toBe('');
   });
 
+  it('metricNames parses backtick-quoted names from the ## Metric section', () => {
+    const t = make(dir, 1, 'a', { status: Status.PENDING });
+    writeFileSync(join(t.directory, 'autoresearch.md'),
+      '## Goal\nTest\n## Metric\n`os_specific_test_gap` (lower is better) — Target: 0\n- os_specific_test_gap=0\n## Scope\nx');
+    expect(new TaskState(t.directory).metricNames).toEqual(['os_specific_test_gap']);
+  });
+
+  it('metricNames dedupes and supports multiple declared metrics', () => {
+    const t = make(dir, 1, 'a', { status: Status.PENDING });
+    writeFileSync(join(t.directory, 'autoresearch.md'),
+      '## Metric\n`lint` and `lint` and `coverage` are tracked\n');
+    expect(new TaskState(t.directory).metricNames).toEqual(['lint', 'coverage']);
+  });
+
+  it('metricNames is empty when no ## Metric section is declared', () => {
+    const t = make(dir, 1, 'a', { status: Status.PENDING });
+    writeFileSync(join(t.directory, 'autoresearch.md'), '## Goal\nTest');
+    expect(new TaskState(t.directory).metricNames).toEqual([]);
+  });
+
   it('maxFailures parses **Retry limit:** integer metadata', () => {
     const t = make(dir, 1, 'a', { status: Status.PENDING });
     writeFileSync(join(t.directory, 'autoresearch.md'), '- **Retry limit:** 3\n## Goal\nTest');

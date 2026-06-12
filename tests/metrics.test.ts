@@ -47,6 +47,40 @@ describe('metrics', () => {
       expect(result.total).toBe(42);
       expect(result.criteria).toEqual([{ name: 'x', value: 42 }]);
     });
+
+    it('with `only`, counts just the declared metric and ignores foreign ones', () => {
+      // A leaked `METRIC branch_gap=42.5` (e.g. from echoed test-suite output)
+      // must not pollute a task whose metric is `os_specific_test_gap`.
+      const result = parseMetrics(
+        'METRIC branch_gap=42.5\nnoise\nMETRIC os_specific_test_gap=0\n',
+        1,
+        ['os_specific_test_gap'],
+      );
+
+      expect(result.total).toBe(0);
+      expect(result.criteria).toEqual([{ name: 'os_specific_test_gap', value: 0 }]);
+    });
+
+    it('with `only`, takes the LAST value emitted for the declared metric', () => {
+      const result = parseMetrics('METRIC g=5\nMETRIC g=0\n', 1, ['g']);
+
+      expect(result.total).toBe(0);
+      expect(result.criteria).toEqual([{ name: 'g', value: 0 }]);
+    });
+
+    it('with `only`, falls back when the declared metric is absent', () => {
+      const result = parseMetrics('METRIC other=3\n', 7, ['g']);
+
+      expect(result.total).toBe(7);
+      expect(result.criteria).toEqual([]);
+    });
+
+    it('with `only`, sums multiple declared metrics', () => {
+      const result = parseMetrics('METRIC a=1\nMETRIC branch_gap=9\nMETRIC b=2\n', 1, ['a', 'b']);
+
+      expect(result.total).toBe(3);
+      expect(result.criteria).toEqual([{ name: 'a', value: 1 }, { name: 'b', value: 2 }]);
+    });
   });
 
   describe('unmetSummary', () => {

@@ -30,6 +30,8 @@ export interface TaskInfo {
   readonly status: string;
   /** Working directory for benchmarks (worktree root or repo root) */
   readonly cwd: string;
+  /** Declared metric name(s) from autoresearch.md `## Metric`; empty = count all */
+  readonly metrics: readonly string[];
 }
 
 export type BenchmarkFn = (task: TaskInfo) => Promise<number> | number;
@@ -95,6 +97,7 @@ export class TaskState {
       reasoning: this.reasoning,
       status: this.status,
       cwd: this.cwd,
+      metrics: this.metricNames,
     };
   }
   /** Default cwd — overridden by Engine with actual worktree/repo root */
@@ -354,6 +357,16 @@ export class TaskState {
 
   get reasoning(): string {
     return this.#readAutoresearch().match(/\*\*Reasoning:\*\*\s*(.+)/)?.[1]?.trim() ?? '';
+  }
+
+  /** Declared metric name(s) from the `## Metric` section of autoresearch.md
+   *  (the backtick-quoted identifiers). Used to count only the task's own
+   *  metric and ignore foreign metric-shaped lines leaked from benchmark output.
+   *  Empty when none is declared (caller then counts all metrics). */
+  get metricNames(): readonly string[] {
+    const section = this.#readAutoresearch().match(/^## Metric\b([\s\S]*?)(?=^## |$(?![\s\S]))/m)?.[1] ?? '';
+    const names = [...section.matchAll(/`([A-Za-z_]\w*)`/g)].map(m => m[1]!);
+    return [...new Set(names)];
   }
 
   get maxFailures(): number {

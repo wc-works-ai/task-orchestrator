@@ -8,12 +8,22 @@ export interface MetricResult {
   readonly criteria: Criterion[];
 }
 
-export function parseMetrics(stdout: string, fallback = 1): MetricResult {
-  const matches = stdout.matchAll(/METRIC\s+(\w+)=(\d+)/g);
-  const criteria = Array.from(matches, m => ({
+export function parseMetrics(stdout: string, fallback = 1, only: readonly string[] = []): MetricResult {
+  const all = Array.from(stdout.matchAll(/METRIC\s+(\w+)=(\d+)/g), m => ({
     name: m[1]!,
     value: parseInt(m[2]!, 10),
   }));
+
+  // When the task declares its metric name(s), read only those — taking the LAST
+  // value emitted for each. A benchmark prints its real metric last, so this
+  // ignores foreign metric-shaped lines leaked from echoed subprocess output
+  // (e.g. a `METRIC branch_gap=42.5` fixture printed while running a test suite).
+  const criteria = only.length > 0
+    ? only.flatMap(name => {
+        const hits = all.filter(c => c.name === name);
+        return hits.length > 0 ? [hits[hits.length - 1]!] : [];
+      })
+    : all;
 
   if (criteria.length === 0) return { total: fallback, criteria: [] };
 
