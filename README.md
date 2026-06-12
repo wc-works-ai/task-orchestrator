@@ -44,6 +44,49 @@ Agent summaries include total token usage when the spawned agent reports usage d
 Long loop runs print an `Overview:` counts line after each tick and a final `Summary:` with one icon-prefixed line per task.
 Infinite/daemon mode (`--infinite`, `--loop`, or `ORCH_INFINITE`) never exits on idle. It polls every `ORCH_IDLE_SLEEP_MS` for new tasks or for BLOCKED/FAILED tasks to be addressed; stop it with `orchestrator --stop`.
 
+## Acceptance Criteria
+
+1. **Benchmark decides pass/fail**
+   - Each task owns a `benchmark.js`.
+   - The benchmark must print one or more `METRIC name=value` lines.
+   - **Every metric must be `0`** for the task to count as passing.
+
+   ```js
+   console.log('METRIC failing_tests=0');
+   console.log('METRIC lint_errors=0');
+   console.log('METRIC type_errors=0');
+   ```
+
+2. **Convergence guards against flakes**
+   - One passing benchmark run is not enough.
+   - The task must pass for `ORCH_CONVERGE` consecutive runs.
+   - Default: `ORCH_CONVERGE=3`.
+
+3. **Failures send the task back to rework**
+   - Any non-zero metric resets convergence.
+   - The agent runs again until the benchmark is stable.
+
+4. **Post-sync re-verify must still pass**
+   - Before merge, the worktree syncs with the latest base branch.
+   - The benchmark runs again after sync.
+   - If sync breaks the task, it goes back to rework.
+
+5. **Optional global verification can block merge**
+   - Set `ORCH_VERIFY_CMD` to run one final repo-level check in the worktree.
+   - Example: enforce coverage before merge.
+
+   ```bash
+   ORCH_VERIFY_CMD="npm run tc" orchestrator
+   ```
+
+6. **Git merge happens last**
+   - Merge only happens after:
+     - all benchmark metrics are `0`
+     - convergence is satisfied
+     - post-sync re-verify passes
+     - `ORCH_VERIFY_CMD` passes, if set
+   - If any step fails, the task returns to rework.
+
 ## CLI
 
 | Command | Description |

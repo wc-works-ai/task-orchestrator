@@ -156,7 +156,7 @@ if (positionals[0] === 'edit') {
   const ar = readFileSync(join(task.directory, 'autoresearch.md'), 'utf-8');
   let updated = ar;
   if (values.goal) updated = updated.replace(/^## Goal.*$/m, `## Goal: ${values.goal}`);
-  if (values.metric) updated = updated.replace(/\`[^`]+\` \(lower is better\)/, `\`${values.metric}\` (lower is better)`);
+  if (values.metric) updated = updated.replace(/\`[^`]+\` — task-specific deliverable/, `\`${values.metric}\` — task-specific deliverable`);
   if (values.scope) {
     const lines = values.scope.split(/\s+/).map(f => `- ${f}`).join('\n');
     updated = updated.replace(/^## Scope\n[\s\S]*?(?=^## |\Z)/m, `## Scope\n${lines}\n`);

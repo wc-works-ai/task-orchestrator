@@ -44,8 +44,12 @@ describe('addTask', () => {
     const dir = setupTasksDir();
     try {
       const task = addTask(dir, 'valid-name', { metric: 'good_metric' });
+      const benchmark = readFileSync(join(task.directory, 'benchmark.js'), 'utf-8');
       expect(task.metric).toBe('good_metric');
       expect(existsSync(join(task.directory, 'benchmark.js'))).toBe(true);
+      expect(benchmark).toContain("check('good_metric', 'node -e \"process.exit(1)\"');");
+      expect(benchmark).toContain("check('build', 'npm run c');");
+      expect(benchmark).toContain("check('test', 'npm run t');");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -72,6 +76,28 @@ describe('addTask', () => {
       const task = addTask(dir, 'scoped-task', { scope: ['src\\a.ts', 'src\\b.ts'] });
 
       expect(readFileSync(join(task.directory, 'autoresearch.md'), 'utf-8')).toContain('- src\\a.ts\n- src\\b.ts');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('writes a multi-metric benchmark scaffold and convergence guidance', () => {
+    const dir = setupTasksDir();
+    try {
+      const task = addTask(dir, 'scaffolded-task');
+      const benchmark = readFileSync(join(task.directory, 'benchmark.js'), 'utf-8');
+      const autoresearch = readFileSync(join(task.directory, 'autoresearch.md'), 'utf-8');
+
+      expect(benchmark).toContain("import { execSync } from 'node:child_process';");
+      expect(benchmark).toContain('const check = (name, command) => {');
+      expect(benchmark).toContain("check('goal', 'node -e \"process.exit(1)\"');");
+      expect(benchmark).toContain('Put repo-wide gates like coverage in ORCH_VERIFY_CMD');
+
+      expect(autoresearch).toContain('## Metrics');
+      expect(autoresearch).toContain('- Task benchmark: `benchmark.js` runs task-specific checks and emits `METRIC name=value` lines.');
+      expect(autoresearch).toContain('- Global verify: `ORCH_VERIFY_CMD` runs repo-wide gates before merge (for example `npm run tc` for coverage).');
+      expect(autoresearch).toContain('- ALL emitted metrics must be 0 for convergence.');
+      expect(autoresearch).toContain('- Convergence requires 3 consecutive zero runs.');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
