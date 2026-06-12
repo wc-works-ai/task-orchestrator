@@ -3,29 +3,14 @@ import { resolve, join, dirname, relative } from 'node:path';
 import { TaskState, Status, type BenchmarkFn, type TaskInfo, type TickResult, type TickNull } from './TaskState.js';
 import { Worktree, MergeConflictError } from './Worktree.js';
 import { env } from './env.js';
+import type { SpawnFn, TokenUsage } from './CodingAgent.js';
+
+// Re-export contract types so external importers keep working
+export type { SpawnResult, SpawnFn, TokenUsage } from './CodingAgent.js';
 
 const HEARTBEAT_MAX_MS = env.heartbeatMs;
 
 const retryLimitLabel = (limit: number): string => Number.isFinite(limit) ? String(limit) : 'infinite';
-
-export interface SpawnResult {
-  readonly success: boolean;
-  readonly iterations: number;
-  readonly tokenUsage?: TokenUsage;
-  readonly authFailure?: boolean;
-  readonly error?: string;
-  readonly logPath?: string;
-}
-
-export type SpawnFn = (task: TaskState, worktreePath?: string, signal?: AbortSignal) => Promise<SpawnResult>;
-
-export interface TokenUsage {
-  readonly input: number;
-  readonly output: number;
-  readonly cacheRead: number;
-  readonly cacheWrite: number;
-  readonly totalTokens: number;
-}
 
 type LogCategory = 'routine' | 'transition' | 'always';
 type SleepFn = (ms: number) => Promise<void>;

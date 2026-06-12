@@ -1,11 +1,19 @@
-import { PiSpawner, type PiSpawnerOptions } from './PiSpawner.js';
+import { PiSpawner } from './PiSpawner.js';
 import { CopilotCliAgent } from './CopilotCliAgent.js';
-import type { CodingAgent } from './CodingAgent.js';
+import type { CodingAgent, CodingAgentOptions } from './CodingAgent.js';
 
-const SUPPORTED_AGENTS = 'pi, copilot';
+const REGISTRY: Record<string, (opts: CodingAgentOptions) => CodingAgent> = {
+  pi: (opts) => new PiSpawner(opts),
+  copilot: (opts) => new CopilotCliAgent(opts),
+};
 
-export function createCodingAgent(name: string | undefined, opts: PiSpawnerOptions): CodingAgent {
-  if (name === undefined || name === '' || name === 'pi') return new PiSpawner(opts);
-  if (name === 'copilot') return new CopilotCliAgent(opts);
-  throw new Error(`Unsupported coding agent "${name}". Supported agents: ${SUPPORTED_AGENTS}`);
+export const SUPPORTED_AGENTS = Object.keys(REGISTRY);
+
+export function createCodingAgent(name: string | undefined, opts: CodingAgentOptions): CodingAgent {
+  const key = name === undefined || name === '' ? 'pi' : name;
+  const make = REGISTRY[key];
+  if (!make) {
+    throw new Error(`Unsupported coding agent "${name}". Supported agents: ${SUPPORTED_AGENTS.join(', ')}`);
+  }
+  return make(opts);
 }

@@ -1,11 +1,11 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { TaskState } from './TaskState.js';
 import { env } from './env.js';
 import { piCommand } from './PiCommand.js';
 import { appendAgentLog, openAgentLog } from './AgentLog.js';
-import type { SpawnResult, TokenUsage } from './Engine.js';
+import type { SpawnResult, TokenUsage, PrerequisiteResult, CodingAgentOptions } from './CodingAgent.js';
 import type { CodingAgent } from './CodingAgent.js';
 
 
@@ -21,23 +21,15 @@ const AUTH_SCAN_TAIL = 512;
 const ITERATION_MARKER = 'log_experiment';
 type MutableTokenUsage = { -readonly [K in keyof TokenUsage]: TokenUsage[K] };
 
-export interface PiSpawnerOptions {
-  /** Optional model override when task doesn't specify one */
-  readonly model?: string;
-  /** Optional reasoning-effort override when task doesn't specify one */
-  readonly reasoning?: string;
+export interface PiSpawnerOptions extends CodingAgentOptions {
   /** Optional fallback model if primary fails */
   readonly fallbackModel?: string;
-  /** Working directory for the agent */
-  readonly workDir?: string;
   /** Max ms with no output before killing the agent (default: 120_000 / 2 min) */
   readonly progressTimeout?: number;
   /** Interval (ms) for progress checks (default: 10_000). Only overridden in tests. */
   readonly progressCheckInterval?: number;
   /** Min silent time (ms) before quiet running status lines (default: 30_000). Only overridden in tests. */
   readonly progressStatusInterval?: number;
-  /** Max agent.log size in bytes (default: 10 MiB). */
-  readonly agentLogMaxBytes?: number;
   /** Write raw spawned-agent stdout/stderr to agent.log (default: false). */
   readonly agentLogRaw?: boolean;
 }
@@ -77,6 +69,31 @@ export class PiSpawner implements CodingAgent {
 
   resolveReasoning(task: TaskState): string | undefined {
     return task.reasoning || this.#reasoning;
+  }
+
+  checkPrerequisites(): PrerequisiteResult[] {
+    return [PiSpawner.#checkBinary(), PiSpawner.#checkAuth()];
+  }
+
+  static #checkBinary(): PrerequisiteResult {
+    const command = piCommand(['--version']);
+    const r = spawnSync(command.command, command.args, { timeout: 5000, encoding: 'utf-8' });
+    return {
+      name: 'pi',
+      ok: r.status === 0,
+      message: r.status === 0
+        ? (r.stdout?.trim() || r.stderr?.trim() || 'installed')
+        : 'pi CLI not found — install with: npm install -g @earendil-works/pi-coding-agent',
+    };
+  }
+
+  static #checkAuth(): PrerequisiteResult {
+    const key = process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY || '';
+    return {
+      name: 'auth',
+      ok: key.length > 0,
+      message: key.length > 0 ? 'API key found' : 'set OPENROUTER_API_KEY or ANTHROPIC_API_KEY',
+    };
   }
 
   async spawn(task: TaskState, worktreePath?: string, signal?: AbortSignal): Promise<SpawnResult> {

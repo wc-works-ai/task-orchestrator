@@ -130,6 +130,15 @@ A *task-specific* failure is different: the agent ran but the metric is still no
 
 Copilot limitations: install the `copilot` CLI and authenticate with `COPILOT_GITHUB_TOKEN` (or gh/GITHUB_TOKEN). Token usage is not reported in `-p -s` mode. Copilot runs a shell-based benchmark loop (`node <taskDir>\benchmark.js`) instead of pi's experiment tools.
 
+The CLI preflights the SELECTED agent's prerequisites (binary + auth) before running.
+
+### Adding a new coding agent
+
+1. Create `src/<Name>Agent.ts` implementing `CodingAgent` (`name`, `checkPrerequisites()`, `spawn()`); accept `CodingAgentOptions` (extend it if you need extra options).
+2. Register it in `src/agents.ts` `REGISTRY` (one line: `name: (opts) => new <Name>Agent(opts)`).
+3. (Optional) Export it from `src/index.ts`.
+4. Run `npm run all`. No `Engine.ts` changes are needed.
+
 ## Development
 
 See `docs/DEVELOP.md` for TDD workflow, SOLID principles, and code conventions. See `docs/TESTING.md` for test conventions.

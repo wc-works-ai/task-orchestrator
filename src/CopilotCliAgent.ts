@@ -1,10 +1,10 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { join } from 'node:path';
 import { TaskState } from './TaskState.js';
 import { env } from './env.js';
 import { resolveCliCommand } from './PiCommand.js';
 import { appendAgentLog, openAgentLog } from './AgentLog.js';
-import type { SpawnResult } from './Engine.js';
+import type { SpawnResult, PrerequisiteResult, CodingAgentOptions } from './CodingAgent.js';
 import type { CodingAgent } from './CodingAgent.js';
 
 const F_AGENT_LOG = 'agent.log';
@@ -13,15 +13,8 @@ const METRIC_MARKER = 'METRIC ';
 const AUTH_SCAN_TAIL = 256;
 const AUTH_FAILURE_RE = /(not logged in|authentication|COPILOT_GITHUB_TOKEN)/i;
 
-export interface CopilotCliAgentOptions {
-  /** Optional model override when task doesn't specify one */
-  readonly model?: string;
-  /** Optional reasoning-effort override when task doesn't specify one */
-  readonly reasoning?: string;
-  /** Working directory for the agent */
-  readonly workDir?: string;
-  /** Max agent.log size in bytes (default: 10 MiB). */
-  readonly agentLogMaxBytes?: number;
+export interface CopilotCliAgentOptions extends CodingAgentOptions {
+  // CopilotCliAgent accepts exactly CodingAgentOptions; no extras
 }
 
 export class CopilotCliAgent implements CodingAgent {
@@ -47,6 +40,33 @@ export class CopilotCliAgent implements CodingAgent {
 
   resolveReasoning(task: TaskState): string | undefined {
     return task.reasoning || this.#reasoning;
+  }
+
+  checkPrerequisites(): PrerequisiteResult[] {
+    return [CopilotCliAgent.#checkBinary(), CopilotCliAgent.#checkAuth()];
+  }
+
+  static #checkBinary(): PrerequisiteResult {
+    const command = resolveCliCommand('copilot', ['--version']);
+    const r = spawnSync(command.command, command.args, { timeout: 5000, encoding: 'utf-8' });
+    return {
+      name: 'copilot',
+      ok: r.status === 0,
+      message: r.status === 0
+        ? (r.stdout?.trim() || r.stderr?.trim() || 'installed')
+        : 'copilot CLI not found — install GitHub Copilot CLI',
+    };
+  }
+
+  static #checkAuth(): PrerequisiteResult {
+    const token = process.env.COPILOT_GITHUB_TOKEN || process.env.GITHUB_TOKEN || '';
+    if (token.length > 0) return { name: 'auth', ok: true, message: 'GitHub token found' };
+    const r = spawnSync('gh', ['auth', 'status'], { timeout: 5000, encoding: 'utf-8', stdio: 'pipe' });
+    return {
+      name: 'auth',
+      ok: r.status === 0,
+      message: r.status === 0 ? 'GitHub authenticated (gh)' : 'authenticate with: gh auth login (or set COPILOT_GITHUB_TOKEN)',
+    };
   }
 
   spawn(task: TaskState, worktreePath?: string, signal?: AbortSignal): Promise<SpawnResult> {

@@ -1,18 +1,8 @@
-import { spawnSync } from 'node:child_process';
-import { piCommand } from './PiCommand.js';
-
-export interface PrerequisiteResult {
-  readonly name: string;
-  readonly ok: boolean;
-  readonly message: string;
-}
+import type { CodingAgent, PrerequisiteResult } from './CodingAgent.js';
 
 export class Prerequisites {
-  static async check(): Promise<PrerequisiteResult[]> {
-    const nodeResult = Prerequisites.checkNode();
-    const piResult = Prerequisites.checkPi();
-    const apiResult = Prerequisites.checkAuth();
-    return [nodeResult, piResult, apiResult];
+  static async check(agent?: CodingAgent): Promise<PrerequisiteResult[]> {
+    return [Prerequisites.checkNode(), ...(agent ? agent.checkPrerequisites() : [])];
   }
 
   private static checkNode(): PrerequisiteResult {
@@ -20,31 +10,6 @@ export class Prerequisites {
     /* v8 ignore next: ?? fallback for undefined array index */
     const major = parseInt(v.slice(1).split('.')[0] ?? '0', 10);
     return { name: 'node', ok: major >= 22, message: `Node ${v} (need >=22)` };
-  }
-
-  private static checkPi(): PrerequisiteResult {
-    const command = piCommand(['--version']);
-    const r = spawnSync(command.command, command.args, { timeout: 5000, encoding: 'utf-8' });
-    return {
-      name: 'pi',
-      ok: r.status === 0,
-      message: r.status === 0
-        ? (r.stdout?.trim() || r.stderr?.trim() || 'installed')
-        : 'pi CLI not found — install with: npm install -g @earendil-works/pi-coding-agent',
-    };
-  }
-
-  private static checkAuth(): PrerequisiteResult {
-    const key = process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY || '';
-    if (key.length > 0) return { name: 'auth', ok: true, message: 'API key found' };
-    // Check GitHub Copilot auth via gh CLI
-    const r = spawnSync('gh', ['auth', 'status'], { timeout: 5000, encoding: 'utf-8', stdio: 'pipe' });
-    if (r.status === 0) return { name: 'auth', ok: true, message: 'GitHub Copilot authenticated' };
-    return {
-      name: 'auth',
-      ok: false,
-      message: 'set OPENROUTER_API_KEY or ANTHROPIC_API_KEY, or auth with gh',
-    };
   }
 
   static format(results: PrerequisiteResult[]): string {

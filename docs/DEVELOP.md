@@ -61,6 +61,15 @@ Task-agnostic (environment) failures — missing/invalid API key or agent auth, 
 
 Copilot requires the `copilot` CLI plus `COPILOT_GITHUB_TOKEN` (or gh/GITHUB_TOKEN) auth. It does not report token usage in `-p -s` mode and uses a shell benchmark loop instead of pi's experiment tools.
 
+The orchestrator interacts with every agent ONLY through the `CodingAgent` interface (`checkPrerequisites` + `spawn`), and the CLI preflights the SELECTED agent's prerequisites.
+
+#### Adding a new coding agent
+
+1. Create `src/<Name>Agent.ts` implementing `CodingAgent` (`name`, `checkPrerequisites()`, `spawn()`); accept `CodingAgentOptions` (extend it if you need extra options).
+2. Register it in `src/agents.ts` `REGISTRY` (one line: `name: (opts) => new <Name>Agent(opts)`).
+3. (Optional) Export it from `src/index.ts`.
+4. Run `npm run all`. No `Engine.ts` changes are needed.
+
 ---
 
 ## TDD: Red → Green → Refactor

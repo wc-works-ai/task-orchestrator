@@ -192,8 +192,14 @@ if (positionals[0] === 'add') {
   process.exit(0);
 }
 
+const agent = createCodingAgent(values.agent || env.agent, {
+  ...(values.reasoning ? { reasoning: values.reasoning } : {}),
+  ...(values.model ? { model: values.model } : {}),
+  workDir: repo,
+});
+
 if (values.check) {
-  const results = await Prerequisites.check();
+  const results = await Prerequisites.check(agent);
   console.log(Prerequisites.format(results));
   process.exit(results.every(r => r.ok) ? 0 : 1);
 }
@@ -224,19 +230,13 @@ if (values.status) {
 }
 
 // Quick prerequisite check before running
-const prereqs = await Prerequisites.check();
+const prereqs = await Prerequisites.check(agent);
 const failed = prereqs.filter(r => !r.ok);
 if (failed.length > 0) {
   console.error(Prerequisites.format(prereqs));
   if (failed.some(r => r.name === 'node')) process.exit(1);
-  // pi/API key missing — warn but continue (user might have custom benchmark)
+  // agent prereqs missing — warn but continue (user might have custom benchmark)
 }
-
-const agent = createCodingAgent(values.agent || env.agent, {
-  ...(values.reasoning ? { reasoning: values.reasoning } : {}),
-  ...(values.model ? { model: values.model } : {}),
-  workDir: repo,
-});
 
 if (values.stop) {
   const { writeFileSync } = await import('node:fs');

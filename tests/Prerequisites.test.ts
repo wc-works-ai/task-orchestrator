@@ -1,30 +1,36 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { describe, it, expect } from 'vitest';
 import { Prerequisites } from '../src/Prerequisites.js';
 
-vi.mock('node:child_process', () => ({ spawnSync: vi.fn() }));
-
-function spawnResult(status: number | null, stdout = '', stderr = ''): ReturnType<typeof spawnSync> {
-  return { status, stdout, stderr } as ReturnType<typeof spawnSync>;
-}
-
-const defaultSpawnSync = ((command: string | URL) => {
-  if (String(command) === 'where.exe') return spawnResult(1);
-  if (String(command) === 'pi') return spawnResult(0, '0.79.0\n');
-  if (String(command) === 'gh') return spawnResult(0);
-  return spawnResult(1);
-}) as typeof spawnSync;
-
 describe('Prerequisites', () => {
-  beforeEach(() => {
-    vi.mocked(spawnSync).mockImplementation(defaultSpawnSync);
-  });
-
   it('checks node version', async () => {
     const results = await Prerequisites.check();
     const node = results.find(r => r.name === 'node');
     expect(node).toBeDefined();
     expect(node!.ok).toBe(true);
+  });
+
+  it('returns only node when no agent provided', async () => {
+    const results = await Prerequisites.check();
+    expect(results).toHaveLength(1);
+    expect(results[0]!.name).toBe('node');
+  });
+
+  it('node check passes when version >= 22', async () => {
+    const results = await Prerequisites.check();
+    const node = results.find(r => r.name === 'node')!;
+    expect(node.ok).toBe(true);
+  });
+
+  it('node check fails when version < 22', async () => {
+    const prev = process.version;
+    Object.defineProperty(process, 'version', { value: 'v20.0.0', configurable: true });
+    try {
+      const results = await Prerequisites.check();
+      const node = results.find(r => r.name === 'node')!;
+      expect(node.ok).toBe(false);
+    } finally {
+      Object.defineProperty(process, 'version', { value: prev, configurable: true });
+    }
   });
 
   it('env var checks do not throw when missing', async () => {
@@ -66,155 +72,5 @@ describe('Prerequisites', () => {
     expect(out).toContain('✅ node: Node v22');
     expect(out).toContain('❌ pi: not found');
     expect(out).toContain('1 issue(s) found. Fix before running.');
-  });
-
-  it('auth check passes via gh when no API keys', async () => {
-    const prev = process.env.OPENROUTER_API_KEY;
-    const prevA = process.env.ANTHROPIC_API_KEY;
-    delete process.env.OPENROUTER_API_KEY;
-    delete process.env.ANTHROPIC_API_KEY;
-    try {
-      const results = await Prerequisites.check();
-      const api = results.find(r => r.name === 'auth')!;
-      // Passes if machine has gh authed; otherwise should fail with setup instructions
-      if (!api.ok) {
-        expect(api.message).toContain('set');
-      }
-    } finally {
-      if (prev) process.env.OPENROUTER_API_KEY = prev;
-      if (prevA) process.env.ANTHROPIC_API_KEY = prevA;
-    }
-  });
-
-  it('auth check passes with API key', async () => {
-    const prev = process.env.OPENROUTER_API_KEY;
-    process.env.OPENROUTER_API_KEY = 'sk-test';
-    try {
-      const results = await Prerequisites.check();
-      const api = results.find(r => r.name === 'auth')!;
-      expect(api.ok).toBe(true);
-    } finally {
-      if (prev) process.env.OPENROUTER_API_KEY = prev;
-      else delete process.env.OPENROUTER_API_KEY;
-    }
-  });
-
-  it('node check passes when version >= 22', async () => {
-    const results = await Prerequisites.check();
-    const node = results.find(r => r.name === 'node')!;
-    expect(node.ok).toBe(true);
-  });
-
-  it('node check fails when version < 22', async () => {
-    const prev = process.version;
-    Object.defineProperty(process, 'version', { value: 'v20.0.0', configurable: true });
-    try {
-      const results = await Prerequisites.check();
-      const node = results.find(r => r.name === 'node')!;
-      expect(node.ok).toBe(false);
-    } finally {
-      Object.defineProperty(process, 'version', { value: prev, configurable: true });
-    }
-  });
-
-  it('checkAuth fails when no env vars and gh not authed', async () => {
-    const prevO = process.env.OPENROUTER_API_KEY;
-    const prevA = process.env.ANTHROPIC_API_KEY;
-    vi.mocked(spawnSync).mockImplementation(((command: string | URL) => {
-      if (String(command) === 'where.exe') return spawnResult(1);
-      if (String(command) === 'pi') return spawnResult(0, '0.79.0\n');
-      if (String(command) === 'gh') return spawnResult(1);
-      return spawnResult(1);
-    }) as typeof spawnSync);
-    delete process.env.OPENROUTER_API_KEY;
-    delete process.env.ANTHROPIC_API_KEY;
-    try {
-      const results = await Prerequisites.check();
-      const api = results.find(r => r.name === 'auth')!;
-      // Passes if gh is authed on this machine
-      if (!api.ok) {
-        expect(api.message).toBe('set OPENROUTER_API_KEY or ANTHROPIC_API_KEY, or auth with gh');
-      }
-    } finally {
-      if (prevO) process.env.OPENROUTER_API_KEY = prevO;
-      else delete process.env.OPENROUTER_API_KEY;
-      if (prevA) process.env.ANTHROPIC_API_KEY = prevA;
-      else delete process.env.ANTHROPIC_API_KEY;
-    }
-  });
-
-  it('gh check fails when no API keys and gh is not in PATH', async () => {
-    const prevPath = process.env.PATH;
-    const prevO = process.env.OPENROUTER_API_KEY;
-    const prevA = process.env.ANTHROPIC_API_KEY;
-    vi.mocked(spawnSync).mockImplementation(((command: string | URL) => {
-      if (String(command) === 'where.exe') return spawnResult(1);
-      if (String(command) === 'pi') return spawnResult(0, '0.79.0\n');
-      if (String(command) === 'gh') return spawnResult(1);
-      return spawnResult(1);
-    }) as typeof spawnSync);
-    delete process.env.OPENROUTER_API_KEY;
-    delete process.env.ANTHROPIC_API_KEY;
-    process.env.PATH = '/usr/bin:/bin';
-    try {
-      const results = await Prerequisites.check();
-      const auth = results.find(r => r.name === 'auth')!;
-      expect(auth.ok).toBe(false);
-      expect(auth.message).toBe('set OPENROUTER_API_KEY or ANTHROPIC_API_KEY, or auth with gh');
-    } finally {
-      process.env.PATH = prevPath;
-      if (prevO) process.env.OPENROUTER_API_KEY = prevO;
-      else delete process.env.OPENROUTER_API_KEY;
-      if (prevA) process.env.ANTHROPIC_API_KEY = prevA;
-      else delete process.env.ANTHROPIC_API_KEY;
-    }
-  });
-
-  it('pi check fails when pi is not in PATH', async () => {
-    const prevPath = process.env.PATH;
-    vi.mocked(spawnSync).mockImplementation(((command: string | URL) => {
-      if (String(command) === 'where.exe') return spawnResult(1);
-      if (String(command) === 'pi') return spawnResult(1);
-      if (String(command) === 'gh') return spawnResult(0);
-      return spawnResult(1);
-    }) as typeof spawnSync);
-    process.env.PATH = '/usr/bin:/bin';
-    try {
-      const results = await Prerequisites.check();
-      const pi = results.find(r => r.name === 'pi')!;
-      expect(pi.ok).toBe(false);
-      expect(pi.message).toBe('pi CLI not found — install with: npm install -g @earendil-works/pi-coding-agent');
-    } finally {
-      process.env.PATH = prevPath;
-    }
-  });
-
-  it('pi check reports version emitted on stderr', async () => {
-    vi.mocked(spawnSync).mockImplementation(((command: string | URL) => {
-      if (String(command) === 'where.exe') return spawnResult(1);
-      if (String(command) === 'pi') return spawnResult(0, '', '0.79.0\n');
-      if (String(command) === 'gh') return spawnResult(0);
-      return spawnResult(1);
-    }) as typeof spawnSync);
-
-    const results = await Prerequisites.check();
-    const pi = results.find(r => r.name === 'pi')!;
-
-    expect(pi.ok).toBe(true);
-    expect(pi.message).toBe('0.79.0');
-  });
-
-  it('checkAuth covers true branch with key set', async () => {
-    const prevO = process.env.OPENROUTER_API_KEY;
-    process.env.OPENROUTER_API_KEY = 'test-api-key-12345';
-    try {
-      const results = await Prerequisites.check();
-      const api = results.find(r => r.name === 'auth')!;
-      expect(api.ok).toBe(true);
-      expect(api.message).toBe('API key found');
-    } finally {
-      if (prevO) process.env.OPENROUTER_API_KEY = prevO;
-      else delete process.env.OPENROUTER_API_KEY;
-    }
   });
 });
