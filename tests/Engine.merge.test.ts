@@ -1,10 +1,11 @@
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { rm } from 'node:fs/promises';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { Engine } from '../src/Engine.js';
-import { TaskState } from '../src/TaskState.js';
+import { Worktree } from '../src/Worktree.js';
+import { TaskState, type TaskInfo } from '../src/TaskState.js';
 
 const LOCK = '.orchestrator-merge-lock';
 
@@ -33,16 +34,52 @@ function scenario(dir: string) {
   return { repoDir, tasksDir, worktreesDir, spawn };
 }
 
+function scenarioWithTwoTasks(dir: string) {
+  const repoDir = resolve(dir, 'repo');
+  const tasksDir = resolve(dir, 'tasks');
+  const worktreesDir = resolve(dir, 'worktrees');
+  mkdirSync(repoDir, { recursive: true });
+  execSync('git init && git config user.email test@test && git config user.name test && git commit --allow-empty -m init', { cwd: repoDir });
+  for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
+    mkdirSync(resolve(tasksDir, s), { recursive: true });
+  }
+  for (const taskName of ['T01-a', 'T02-b']) {
+    const d = resolve(tasksDir, 'pending', taskName);
+    mkdirSync(d, { recursive: true });
+    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+  }
+
+  const spawn = vi.fn().mockImplementation(async (task: TaskState, wtPath?: string) => {
+    if (!wtPath) throw new Error('missing worktree path');
+    writeFileSync(join(wtPath, `work-${task.taskNumber}.txt`), `work-${task.taskNumber}`);
+    execSync(`git add work-${task.taskNumber}.txt && git commit -m "work-${task.taskNumber}"`, { cwd: wtPath });
+    return { success: true, iterations: 1 };
+  });
+  return { repoDir, tasksDir, worktreesDir, spawn };
+}
+
 function writeLock(repoDir: string, startedMs: number): void {
   const lockDir = join(repoDir, LOCK);
   mkdirSync(lockDir, { recursive: true });
   writeFileSync(join(lockDir, 'owner'), `pid:999999\nhost:other\nstarted:${startedMs}\n`);
 }
 
+function readLockToken(repoDir: string): string {
+  return readFileSync(join(repoDir, LOCK, 'owner'), 'utf-8').match(/token:(.+)/)?.[1] ?? '';
+}
+
 describe('Engine merge robustness', () => {
   let dir = '';
-  beforeEach(() => { dir = mkdtempSync(resolve('/tmp', 'eng-merge-')); });
-  afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
+  beforeEach(() => {
+    const root = resolve('test-artifacts');
+    mkdirSync(root, { recursive: true });
+    dir = mkdtempSync(resolve(root, 'eng-merge-'));
+  });
+  afterEach(async () => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    await rm(dir, { recursive: true, force: true });
+  });
 
   it('defers the merge when another orchestrator holds the merge lock', async () => {
     const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir);
@@ -76,6 +113,79 @@ describe('Engine merge robustness', () => {
     expect(existsSync(join(repoDir, LOCK))).toBe(false);      // lock released
   });
 
+  it('keeps a newer fenced merge lock when a stale holder releases late', async () => {
+    const { repoDir, tasksDir, worktreesDir, spawn } = scenarioWithTwoTasks(dir);
+    const runs = new Map<number, number>();
+    const benchmark = vi.fn(async (task: TaskInfo) => {
+      const taskNumber = parseInt(task.directory.match(/T(\d+)-/)?.[1] ?? '0', 10);
+      const count = (runs.get(taskNumber) ?? 0) + 1;
+      runs.set(taskNumber, count);
+      return count === 1 ? 1 : 0;
+    });
+    const engine1 = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir, instanceId: 'engine-1' });
+    const engine2 = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir, instanceId: 'engine-2' });
+
+    await engine1.tick();
+    await engine2.tick();
+    await engine1.tick();
+    await engine2.tick();
+
+    let syncCalls = 0;
+    let signalFirstSync = () => {};
+    const firstSyncEntered = new Promise<void>((resolveFirst) => {
+      signalFirstSync = resolveFirst;
+    });
+    let releaseFirstSync = () => {};
+    const firstSyncGate = new Promise<void>((resolveFirst) => {
+      releaseFirstSync = resolveFirst;
+    });
+    let signalSecondSync = () => {};
+    const secondSyncEntered = new Promise<void>((resolveSecond) => {
+      signalSecondSync = resolveSecond;
+    });
+    let releaseSecondSync = () => {};
+    const secondSyncGate = new Promise<void>((resolveSecond) => {
+      releaseSecondSync = resolveSecond;
+    });
+
+    vi.spyOn(Worktree.prototype, 'syncWithBase').mockImplementation(async () => {
+      syncCalls++;
+      if (syncCalls === 1) {
+        signalFirstSync();
+        await firstSyncGate;
+        throw new Error('late stale holder');
+      }
+      if (syncCalls === 2) {
+        signalSecondSync();
+        await secondSyncGate;
+      }
+    });
+
+    const firstMerge = engine1.tick();
+    await firstSyncEntered;
+    const firstToken = readLockToken(repoDir);
+    writeFileSync(
+      join(repoDir, LOCK, 'owner'),
+      `pid:999999\nhost:other\nstarted:${Date.now() - 700_000}\ntoken:${firstToken}\n`,
+    );
+
+    const secondMerge = engine2.tick();
+    await secondSyncEntered;
+    const secondToken = readLockToken(repoDir);
+
+    expect(secondToken).toBeTruthy();
+    expect(secondToken).not.toBe(firstToken);
+
+    releaseFirstSync();
+    await expect(firstMerge).resolves.toMatchObject({ converged: false, metric: 0 });
+    expect(existsSync(join(repoDir, LOCK))).toBe(true);
+    expect(readLockToken(repoDir)).toBe(secondToken);
+
+    releaseSecondSync();
+    await expect(secondMerge).resolves.toMatchObject({ converged: true, metric: 0 });
+    expect(existsSync(join(repoDir, LOCK))).toBe(false);
+  }, 15_000);
+
   it('sends the task back to the agent when base drift breaks acceptance after sync', async () => {
     const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir);
     // pre, post (tick1), tick2, tick3, then the post-sync re-verify reports
@@ -96,4 +206,37 @@ describe('Engine merge robustness', () => {
     expect(t.convergenceCount).toBe(0); // reset so acceptance must be re-proven
     expect(existsSync(join(worktreesDir, 'T01-x', '.git'))).toBe(true); // worktree kept
   });
+
+  it('heartbeats during the pre-spawn benchmark before the agent starts', async () => {
+    vi.useFakeTimers();
+    const tasksDir = resolve(dir, 'tasks');
+    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
+      mkdirSync(resolve(tasksDir, s), { recursive: true });
+    }
+    const d = resolve(tasksDir, 'pending', 'T01-heartbeat');
+    mkdirSync(d, { recursive: true });
+    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+
+    const heartbeat = vi.spyOn(TaskState.prototype, 'heartbeat');
+    const spawn = vi.fn().mockResolvedValue({ success: false, iterations: 0 });
+    let benchmarkCalls = 0;
+    const benchmark = vi.fn(async () => {
+      benchmarkCalls++;
+      if (benchmarkCalls === 1) {
+        await new Promise<void>(resolve => setTimeout(resolve, 35_000));
+      }
+      return 1;
+    });
+    const engine = new Engine(tasksDir, { benchmark, spawn });
+
+    const ticking = engine.tick();
+    await vi.waitFor(() => expect(benchmark).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(heartbeat).toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await ticking;
+  }, 15_000);
 });

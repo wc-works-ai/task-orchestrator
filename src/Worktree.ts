@@ -91,8 +91,12 @@ export class Worktree {
     try {
       this.#gitInWT('merge', '--no-edit', this.#base);
     } catch (e: unknown) {
+      const hasConflict = this.#hasUnmergedPaths(this.#path);
       try { this.#gitInWT('merge', '--abort'); } catch {}
-      throw new MergeConflictError(`Conflict updating ${this.#branch} with ${this.#base} in ${this.#name}; branch kept to merge after the block is released: ${gitErrorMessage(e)}`);
+      if (hasConflict) {
+        throw new MergeConflictError(`Conflict updating ${this.#branch} with ${this.#base}: ${gitErrorMessage(e)}`);
+      }
+      throw new Error(`Failed to merge ${this.#base} into ${this.#branch}: ${gitErrorMessage(e)}`);
     }
   }
 
@@ -108,13 +112,13 @@ export class Worktree {
     try {
       this.#git('merge', '--no-ff', this.#branch, '-m', `Merge ${this.#branch}`);
     } catch (e: unknown) {
-      // Conflict: do not auto-resolve — never silently discard anyone's work.
-      // Abort the merge, restore the previous branch so the main checkout stays
-      // clean, and keep this branch as-is so it can be merged after the block is
-      // released.
+      const hasConflict = this.#hasUnmergedPaths(this.#repo);
       try { this.#git('merge', '--abort'); } catch {}
       try { this.#git('checkout', prevBranch); } catch {}
-      throw new MergeConflictError(`Merge conflict in ${this.#name}; branch ${this.#branch} kept to merge after the block is released: ${gitErrorMessage(e)}`);
+      if (hasConflict) {
+        throw new MergeConflictError(`Merge conflict in ${this.#name}; branch ${this.#branch} kept: ${gitErrorMessage(e)}`);
+      }
+      throw new Error(`Merge of ${this.#branch} failed: ${gitErrorMessage(e)}`);
     }
   }
 
@@ -145,6 +149,14 @@ export class Worktree {
 
   #gitInWT(...args: string[]): string {
     return execFileSync('git', args, { cwd: this.#path, encoding: 'utf-8' });
+  }
+
+  #hasUnmergedPaths(cwd: string): boolean {
+    try {
+      return execFileSync('git', ['ls-files', '--unmerged'], { cwd, encoding: 'utf-8' }).trim().length > 0;
+    } catch {
+      return false;
+    }
   }
 
   #gitConfig(key: string): string {

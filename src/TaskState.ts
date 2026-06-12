@@ -105,7 +105,7 @@ export class TaskState {
     const cacheBase = isInProgress(v) ? Status.PENDING : (v as Status);
     // Write the status file FIRST — ensures the status is always recorded
     // even if the subsequent shard rename fails.
-    const tmp = join(this.#dir, F_STATUS + '.tmp');
+    const tmp = join(this.#dir, `.status.${process.pid}.${Date.now()}.tmp`);
     writeFileSync(tmp, `${v}\n`);
     renameSync(tmp, join(this.#dir, F_STATUS));
     // Then migrate to the correct shard (best-effort).
@@ -116,12 +116,15 @@ export class TaskState {
       const root = dirname(dirname(this.#dir));
       const dest = resolve(root, target, basename(this.#dir));
       mkdirSync(dirname(dest), { recursive: true });
-      try { renameSync(this.#dir, dest); this.#dir = dest; } catch {
+      try { renameSync(this.#dir, dest); this.#dir = dest; } catch (err: unknown) {
         /* v8 ignore start: cross-device rename fallback — requires different filesystem mounts */
-        // If rename fails (e.g., cross-device), fall back to copy + delete
-        cpSync(this.#dir, dest, { recursive: true });
-        rmSync(this.#dir, { recursive: true, force: true });
-        this.#dir = dest;
+        if ((err as NodeJS.ErrnoException).code === 'EXDEV') {
+          cpSync(this.#dir, dest, { recursive: true });
+          rmSync(this.#dir, { recursive: true, force: true });
+          this.#dir = dest;
+        } else {
+          throw err;
+        }
         /* v8 ignore stop */
       }
     }
@@ -236,8 +239,8 @@ export class TaskState {
   }
 
   release(newStatus: Status = Status.PENDING): void {
-    try { rmSync(join(this.#dir, D_CLAIM), { recursive: true, force: true }); } catch {}
     this.status = newStatus;
+    try { rmSync(join(this.#dir, D_CLAIM), { recursive: true, force: true }); } catch {}
   }
 
   markBlocked(): void {
@@ -333,6 +336,9 @@ export class TaskState {
           new RegExp(`^T0*${tn}-`).test(e))!;
         const t = new TaskState(resolve(tasksDir, shard, dirName));
 
+        if (t.isClaimed && !t.isInProgress) {
+          try { rmSync(join(t.directory, D_CLAIM), { recursive: true, force: true }); } catch {}
+        }
         if (t.isConverged || t.isBlocked) continue;
         if (t.isFailed && t.failureCount >= t.maxFailures) { t.markBlocked(); continue; }
         if (t.isInProgress) {

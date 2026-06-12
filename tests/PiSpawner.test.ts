@@ -5,19 +5,21 @@ import { resolve, join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
 import { TaskState, Status } from '../src/TaskState.js';
-import { PiSpawner } from '../src/PiSpawner.js';
+import { PiSpawner, killTree } from '../src/PiSpawner.js';
 
 vi.mock('node:child_process', () => ({
+  execFileSync: vi.fn(),
   spawn: vi.fn(),
   spawnSync: vi.fn(() => ({ status: 1, stdout: '' })),
 }));
 
-const { spawn } = await vi.importMock<typeof import('node:child_process')>('node:child_process');
+const { execFileSync, spawn } = await vi.importMock<typeof import('node:child_process')>('node:child_process');
 
 class MockChild extends EventEmitter {
+  pid = 4321;
   stdout = new EventEmitter();
   stderr = new EventEmitter();
-  kill = vi.fn();
+  kill = vi.fn(() => true);
 }
 
 function mockChild(): ChildProcess {
@@ -25,9 +27,15 @@ function mockChild(): ChildProcess {
 }
 
 function setup() {
-  const dir = mkdtempSync(resolve('/tmp', 'pi-spawn-'));
+  const dir = mkdtempSync(join(process.cwd(), 'pi-spawn-'));
   for (const s of ['pending', 'in_progress']) mkdirSync(resolve(dir, s), { recursive: true });
   return dir;
+}
+
+function makeWorktree(dir: string): string {
+  const worktree = join(dir, 'worktree');
+  mkdirSync(worktree, { recursive: true });
+  return worktree;
 }
 
 function make(dir: string, n: number, name: string, goal?: string): TaskState {
@@ -48,11 +56,13 @@ describe('PiSpawner', () => {
   beforeEach(() => {
     dir = setup();
     vi.clearAllMocks();
+    vi.useRealTimers();
     delete process.env.ORCH_MODEL;
     delete process.env.ORCH_AGENT_LOG_MAX_BYTES;
     delete process.env.ORCH_AGENT_LOG_RAW;
   });
   afterEach(async () => {
+    vi.useRealTimers();
     delete process.env.ORCH_MODEL;
     delete process.env.ORCH_AGENT_LOG_MAX_BYTES;
     delete process.env.ORCH_AGENT_LOG_RAW;
@@ -102,13 +112,14 @@ describe('PiSpawner', () => {
     t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
+    const worktree = makeWorktree(dir);
 
-    const p = new PiSpawner().spawn(t, '/tmp/worktree');
+    const p = new PiSpawner().spawn(t, worktree);
     setTimeout(() => mock.emit('close', 0), 5);
     const r = await p;
     expect(r.success).toBe(true);
     expect(spawn).toHaveBeenCalledWith('pi', expect.arrayContaining(['--model', 'test-model']),
-      expect.objectContaining({ cwd: '/tmp/worktree' }));
+      expect.objectContaining({ cwd: worktree }));
   });
 
   it('omits --model so pi can use its default when no model is configured', async () => {
@@ -116,8 +127,9 @@ describe('PiSpawner', () => {
     t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
+    const worktree = makeWorktree(dir);
 
-    const p = new PiSpawner().spawn(t, '/tmp/worktree');
+    const p = new PiSpawner().spawn(t, worktree);
     setTimeout(() => mock.emit('close', 0), 5);
     const r = await p;
     expect(r.success).toBe(true);
@@ -280,8 +292,9 @@ describe('PiSpawner', () => {
     t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
+    const worktree = makeWorktree(dir);
 
-    const p = new PiSpawner().spawn(t, '/tmp/worktree');
+    const p = new PiSpawner().spawn(t, worktree);
     // Emit data before close — each log_experiment = 1 iteration
     setTimeout(() => {
       mock.stdout!.emit('data', Buffer.from('Running...\n'));
@@ -724,23 +737,78 @@ describe('PiSpawner', () => {
 
   // ── Progress timeout ───────────────────────────────────────────────
 
-  it('progress timeout kills child when no output within timeout', async () => {
+  it('progress timeout waits for close before resolving', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
     t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
-
-    // Use check interval > timeout so only ONE check fires past the timeout
-    // First check at ~100ms: diff=100ms >= 50ms → kill once, clearInterval, done
+    vi.useFakeTimers();
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      const p = new PiSpawner({ progressTimeout: 50, progressCheckInterval: 100 }).spawn(t, dir);
+      const p = new PiSpawner({ progressTimeout: 50, progressCheckInterval: 25 }).spawn(t, dir);
+      let resolved = false;
+      void p.then(() => { resolved = true; });
 
+      await vi.advanceTimersByTimeAsync(50);
+      expect(mock.kill).toHaveBeenCalledTimes(1);
+      await Promise.resolve();
+      expect(resolved).toBe(false);
+
+      mock.emit('close', 1);
       const result = await p;
       expect(result.success).toBe(false);
-      expect(mock.kill).toHaveBeenCalled();
-      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('No agent output for'));
+      expect(result.error).toContain('No agent output for');
+      expect(result.error).not.toContain('pi exited with code');
       expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('stopped pi'));
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('abort resolves after force-kill escalation when child ignores kill', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+    vi.mocked(execFileSync).mockImplementation(() => {
+      mock.emit('close', null);
+      return Buffer.alloc(0);
+    });
+    vi.useFakeTimers();
+    const controller = new AbortController();
+
+    const p = new PiSpawner().spawn(t, dir, controller.signal);
+    let resolved = false;
+    void p.then(() => { resolved = true; });
+
+    controller.abort();
+    expect(mock.kill).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(execFileSync).not.toHaveBeenCalled();
+    expect(resolved).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+    const result = await p;
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('pi spawn aborted');
+    expect(execFileSync).toHaveBeenCalledWith('taskkill', ['/pid', String(mock.pid), '/T', '/F'], { stdio: 'ignore' });
+  });
+
+  it('progress timeout force-resolves when close never arrives', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    t.status = Status.PENDING;
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+    vi.useFakeTimers();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const p = new PiSpawner({ progressTimeout: 50, progressCheckInterval: 25 }).spawn(t, dir);
+      await vi.advanceTimersByTimeAsync(10_050);
+      const result = await p;
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('No agent output for');
+      expect(execFileSync).toHaveBeenCalledWith('taskkill', ['/pid', String(mock.pid), '/T', '/F'], { stdio: 'ignore' });
     } finally {
       errorSpy.mockRestore();
     }
@@ -775,5 +843,13 @@ describe('PiSpawner', () => {
     expect(() => new PiSpawner({ progressTimeout: 5000 })).not.toThrow();
     expect(() => new PiSpawner({ progressTimeout: 0 })).not.toThrow();
     expect(() => new PiSpawner({})).not.toThrow();
+  });
+
+  it('killTree does not throw for a missing pid', () => {
+    vi.mocked(execFileSync).mockImplementation(() => {
+      throw new Error('missing process');
+    });
+
+    expect(() => killTree(999_999)).not.toThrow();
   });
 });

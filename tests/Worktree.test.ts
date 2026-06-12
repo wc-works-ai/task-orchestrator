@@ -243,6 +243,22 @@ describe('Worktree', () => {
     expect(execSync('git branch --show-current', { cwd: wt.path, encoding: 'utf-8' }).trim()).toBe('orchestrator/T01-test');
   });
 
+  it('syncWithBase throws plain Error for non-conflict merge failures', async () => {
+    const { writeFileSync } = await import('node:fs');
+    const wt = new Worktree(repo, { name: 'T01-test', baseBranch: 'master' });
+    await wt.create();
+
+    writeFileSync(join(wt.path, 'shared.txt'), 'local uncommitted change');
+    writeFileSync(join(repo, 'shared.txt'), 'base committed change');
+    execSync('git add shared.txt && git commit -m "base change"', { cwd: repo });
+
+    const error = await wt.syncWithBase().catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(MergeConflictError);
+    expect((error as Error).message).toContain('Failed to merge master into orchestrator/T01-test');
+    expect(() => execSync('git rev-parse -q --verify MERGE_HEAD', { cwd: wt.path, encoding: 'utf-8' })).toThrow();
+  });
+
   it('create reuses a branch left behind by a crashed run (preserves work)', async () => {
     const { writeFileSync } = await import('node:fs');
     // Simulate a crash that left the task branch (with work) but no worktree.
@@ -266,5 +282,23 @@ describe('Worktree', () => {
     const wt2 = new Worktree(repo, { name: 'T01-test', baseBranch: 'master' });
     const path = await wt2.create(); // first add fails → prune → retry succeeds
     expect(existsSync(join(path, '.git'))).toBe(true);
+  });
+
+  it('merge throws plain Error for non-conflict merge failures', async () => {
+    const { writeFileSync } = await import('node:fs');
+    const wt = new Worktree(repo, { name: 'T01-test', baseBranch: 'master' });
+    await wt.create();
+
+    writeFileSync(join(wt.path, 'shared.txt'), 'branch committed change');
+    execSync('git add shared.txt && git commit -m "branch change"', { cwd: wt.path });
+
+    writeFileSync(join(repo, 'shared.txt'), 'main uncommitted change');
+
+    const error = await wt.merge().catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(MergeConflictError);
+    expect((error as Error).message).toContain('Merge of orchestrator/T01-test failed');
+    expect(execSync('git branch --show-current', { cwd: repo, encoding: 'utf-8' }).trim()).toBe('master');
+    expect(() => execSync('git rev-parse -q --verify MERGE_HEAD', { cwd: repo, encoding: 'utf-8' })).toThrow();
   });
 });

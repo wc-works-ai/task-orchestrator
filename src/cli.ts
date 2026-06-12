@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { existsSync, mkdirSync } from 'node:fs';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { addTask } from './addTask.js';
 import { Engine, MergeRecoveryAction, type MergeRecoveryFailure } from './Engine.js';
 import { TaskState, type TaskInfo } from './TaskState.js';
@@ -254,7 +254,7 @@ const engine = new Engine(dir, {
   spawn: (task, worktreePath, signal) => agent.spawn(task, worktreePath, signal),
   benchmark: async (t: TaskInfo) => {
     try {
-      const out = execSync(`node ${t.directory}/benchmark.js`, {
+      const out = execFileSync(process.execPath, [resolve(t.directory, 'benchmark.js')], {
         timeout: 30_000, encoding: 'utf-8',
         cwd: isPathInside(t.directory, effectiveWorktreesDir) ? t.cwd : repo,
       });
@@ -272,7 +272,7 @@ if (values.task) {
   const task = await engine.pickByNumber(tn);
   if (!task) { console.error(`T${tn} not found`); process.exit(1); }
   try {
-    const out = execSync(`node ${task.directory}/benchmark.js`, { timeout: 30_000, encoding: 'utf-8', cwd: repo });
+    const out = execFileSync(process.execPath, [resolve(task.directory, 'benchmark.js')], { timeout: 30_000, encoding: 'utf-8', cwd: repo });
     const metric = parseMetrics(out).total;
     console.log(`${metric === 0 ? '⏳' : '❌'} T${tn}: ${task.goal.slice(0, 60)} (metric=${metric})`);
   } catch { console.log(`❌ T${tn}: benchmark failed`); }

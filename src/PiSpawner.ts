@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { TaskState } from './TaskState.js';
@@ -15,6 +15,7 @@ const F_AGENT_LOG = 'agent.log';
 const AUTH_FAILURE_RE = /No API key found for ([^\s.]+)\./g;
 const SUMMARY_MAX = 120;
 const PROGRESS_STATUS_INTERVAL = 30_000;
+const KILL_GRACE_MS = 5_000;
 const DEFAULT_AGENT_LOG_MAX_BYTES = 10 * 1024 * 1024;
 const MAX_JSON_LINE_BUFFER = 1_000_000;
 const AUTH_SCAN_TAIL = 512;
@@ -32,6 +33,17 @@ export interface PiSpawnerOptions extends CodingAgentOptions {
   readonly progressStatusInterval?: number;
   /** Write raw spawned-agent stdout/stderr to agent.log (default: false). */
   readonly agentLogRaw?: boolean;
+}
+
+export function killTree(pid: number): void {
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  try {
+    if (process.platform === 'win32') {
+      execFileSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' });
+      return;
+    }
+    process.kill(-pid, 'SIGKILL');
+  } catch {}
 }
 
 export class PiSpawner implements CodingAgent {
@@ -158,16 +170,10 @@ export class PiSpawner implements CodingAgent {
         cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
         timeout: 600_000, // 10 min
+        ...(process.platform !== 'win32' ? { detached: true } : {}),
       });
 
-      // Kill child if stop signal fires mid-spawn
-      // Use an aborted flag instead of calling done() from both abort and close
-      // handlers to eliminate the race on platforms where kill() synchronously
-      // emits 'close' (which previously called done() after done()).
       let aborted = false;
-      /* c8 ignore next 1 */
-      signal?.addEventListener('abort', () => { aborted = true; child.kill(); }, { once: true });
-
       let iterations = 0;
       let lineBuf = '';
       let iterationTail = '';
@@ -177,10 +183,49 @@ export class PiSpawner implements CodingAgent {
       let lastProgress = Date.now();
       let lastStatus = Date.now();
       let rawBytes = 0;
+      let progressStale = false;
+      let terminationError = '';
+      let progressTimer: NodeJS.Timeout | undefined;
+      let forceKillTimer: NodeJS.Timeout | undefined;
+      let forceResolveTimer: NodeJS.Timeout | undefined;
       const result = (r: Omit<SpawnResult, 'tokenUsage'>): SpawnResult =>
         PiSpawner.#hasTokenUsage(tokenUsage)
           ? { ...r, tokenUsage: { ...tokenUsage } }
           : r;
+      const clearKillTimers = () => {
+        if (forceKillTimer) clearTimeout(forceKillTimer);
+        if (forceResolveTimer) clearTimeout(forceResolveTimer);
+        forceKillTimer = undefined;
+        forceResolveTimer = undefined;
+      };
+      const cleanup = () => {
+        if (progressTimer) clearInterval(progressTimer);
+        clearKillTimers();
+        if (signal) signal.removeEventListener('abort', onAbort);
+      };
+      const forceResolve = (error: string) => {
+        cleanup();
+        done(result({ success: false, iterations, error, logPath }));
+      };
+      const escalateTermination = (error: string) => {
+        terminationError = error;
+        clearKillTimers();
+        child.kill();
+        forceKillTimer = setTimeout(() => {
+          if (typeof child.pid === 'number') {
+            killTree(child.pid);
+          }
+          forceResolveTimer = setTimeout(() => {
+            forceResolve(error);
+          }, KILL_GRACE_MS);
+        }, KILL_GRACE_MS);
+      };
+      const onAbort = () => {
+        aborted = true;
+        escalateTermination('pi spawn aborted');
+      };
+      /* c8 ignore next 1 */
+      signal?.addEventListener('abort', onAbort, { once: true });
 
       const logPath = join(task.directory, F_AGENT_LOG);
       const agentLog = openAgentLog(logPath, this.#agentLogMaxBytes);
@@ -224,8 +269,7 @@ export class PiSpawner implements CodingAgent {
       child.stderr?.on('data', (d: Buffer) => { lastProgress = Date.now(); handleData(d.toString()); });
 
       // Progress check: kill child if no output for progressTimeout ms
-      let progressStale = false;
-      const progressTimer = setInterval(() => {
+      progressTimer = setInterval(() => {
         if (progressStale) return;
         const now = Date.now();
         const quietFor = now - lastProgress;
@@ -233,8 +277,7 @@ export class PiSpawner implements CodingAgent {
           progressStale = true;
           const error = `No agent output for ${PiSpawner.#formatDuration(quietFor)}; stopped pi`;
           console.error(`  ❌ ${error}. See ${logPath}`);
-          child.kill();
-          done(result({ success: false, iterations: 0, error, logPath }));
+          escalateTermination(error);
           return;
         }
         if (quietFor < this.#progressStatusInterval) return;
@@ -247,9 +290,11 @@ export class PiSpawner implements CodingAgent {
       }, this.#progressCheckInterval);
 
       child.on('close', (code: number | null) => {
-        clearInterval(progressTimer);
+        cleanup();
         const authError = PiSpawner.#authError(authProviders);
-        const failure = aborted
+        const failure = progressStale
+          ? terminationError
+          : aborted
           ? 'pi spawn aborted'
           : code !== 0 && !authError
             ? `pi exited with code ${code ?? 'unknown'}`
@@ -270,9 +315,9 @@ export class PiSpawner implements CodingAgent {
           console.error(`[PiSpawner] failed to finalize ${F_AGENT_LOG}: ${e instanceof Error ? e.message : String(e)}`);
         }
         /* c8 ignore stop */
-        // If the signal was aborted, the kill may have triggered this close;
-        // report as a failure regardless of exit code.
-        if (!aborted && code !== 0 && authError) {
+        if (progressStale) {
+          done(result({ success: false, iterations, error: terminationError, logPath }));
+        } else if (!aborted && code !== 0 && authError) {
           done(result({ success: false, iterations, authFailure: true, error: authError, logPath }));
         } else if (aborted) {
           done(result({ success: false, iterations, error: 'pi spawn aborted', logPath }));
@@ -284,7 +329,7 @@ export class PiSpawner implements CodingAgent {
       });
 
       child.on('error', (e: Error) => {
-        clearInterval(progressTimer);
+        cleanup();
         done(result({ success: false, iterations: 0, error: e.message, logPath }));
       });
     });

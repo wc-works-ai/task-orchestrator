@@ -8,6 +8,12 @@ export interface AddTaskOptions {
 }
 
 export function addTask(tasksDir: string, name: string, opts: AddTaskOptions = {}) {
+  if (!name || /[/\\<>:"|?*]/.test(name) || name.includes('..') || /^\s|\s$/.test(name)) {
+    throw new Error(`Invalid task name "${name}": must not contain path separators, shell metacharacters, or leading/trailing whitespace`);
+  }
+  if (opts.metric && !/^\w+$/.test(opts.metric)) {
+    throw new Error(`Invalid metric name "${opts.metric}": must match /^\\w+$/ (letters, digits, underscore)`);
+  }
   let next = 0;
   for (const s of ['pending','in_progress','converged','failed','blocked']) {
     try { for (const e of readdirSync(resolve(tasksDir, s))) {

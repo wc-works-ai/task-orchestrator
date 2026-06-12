@@ -1,13 +1,15 @@
-import { describe, it, beforeEach, afterEach, expect } from 'vitest';
+import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { rm } from 'node:fs/promises';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { TaskState, Status, CONVERGENCE_THRESHOLD, inProgress } from '../src/TaskState.js';
 import { MAX_FAILURES } from '../src/Status.js';
 import { statusToShard } from '../src/Status.js';
 
 function setup() {
-  const dir = mkdtempSync(resolve('/tmp', 'ts-test-'));
+  const base = resolve(process.cwd(), '.test-tmp');
+  mkdirSync(base, { recursive: true });
+  const dir = mkdtempSync(join(base, 'ts-test-'));
   for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
     mkdirSync(resolve(dir, s), { recursive: true });
   }
@@ -30,7 +32,12 @@ describe('TaskState', () => {
   let dir = '';
 
   beforeEach(() => { dir = setup(); });
-  afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    vi.doUnmock('node:fs');
+    vi.resetModules();
+    await rm(dir, { recursive: true, force: true });
+  });
 
   it('defaults to PENDING when status file missing', () => {
     expect(new TaskState(resolve(dir, 'pending', 'T01-x')).status).toBe(Status.PENDING);
@@ -41,6 +48,52 @@ describe('TaskState', () => {
     t.status = Status.CONVERGED;
     expect(t.status).toBe(Status.CONVERGED);
     expect(new TaskState(t.directory).status).toBe(Status.CONVERGED);
+  });
+
+  it('uses a unique temp status filename per write', async () => {
+    vi.resetModules();
+    const originalProcess = globalThis.process;
+    const tempWrites: string[] = [];
+
+    vi.doMock('node:fs', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('node:fs')>();
+      return {
+        ...actual,
+        writeFileSync: vi.fn((path: Parameters<typeof actual.writeFileSync>[0], ...args: unknown[]) => {
+          const file = String(path);
+          if (file.includes('.status.') && file.endsWith('.tmp')) tempWrites.push(file);
+          return (actual.writeFileSync as (...callArgs: unknown[]) => void)(path, ...args);
+        }),
+      };
+    });
+
+    const { TaskState: MockedTaskState, Status: MockedStatus } = await import('../src/TaskState.js');
+    const taskDir = resolve(dir, 'pending', 'T01-a');
+    mkdirSync(taskDir, { recursive: true });
+    const first = new MockedTaskState(taskDir);
+    const second = new MockedTaskState(taskDir);
+
+    const fakeProcess = (pid: number): NodeJS.Process => {
+      const next = Object.create(originalProcess) as NodeJS.Process;
+      Object.defineProperty(next, 'pid', { value: pid });
+      return next;
+    };
+    vi.spyOn(Date, 'now').mockReturnValue(1234567890);
+
+    try {
+      globalThis.process = fakeProcess(1111);
+      first.status = MockedStatus.PENDING;
+      globalThis.process = fakeProcess(2222);
+      second.status = MockedStatus.FAILED;
+    } finally {
+      globalThis.process = originalProcess;
+    }
+
+    expect(tempWrites).toHaveLength(2);
+    expect(tempWrites[0]).not.toBe(tempWrites[1]);
+    expect(tempWrites[0]).toContain('.status.1111.1234567890.tmp');
+    expect(tempWrites[1]).toContain('.status.2222.1234567890.tmp');
+    expect(new MockedTaskState(resolve(dir, 'failed', 'T01-a')).status).toBe(MockedStatus.FAILED);
   });
 
   it('moves directory to correct shard on status change', () => {
@@ -135,6 +188,43 @@ describe('TaskState', () => {
     expect(t.status).toBe(Status.PENDING);
   });
 
+  it('release moves task before removing the claim', async () => {
+    vi.resetModules();
+    const releaseOrder: string[] = [];
+
+    vi.doMock('node:fs', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('node:fs')>();
+      return {
+        ...actual,
+        renameSync: vi.fn((source: Parameters<typeof actual.renameSync>[0], destination: Parameters<typeof actual.renameSync>[1]) => {
+          releaseOrder.push(`rename:${String(source)}->${String(destination)}`);
+          return actual.renameSync(source, destination);
+        }),
+        rmSync: vi.fn((target: Parameters<typeof actual.rmSync>[0], options?: Parameters<typeof actual.rmSync>[1]) => {
+          releaseOrder.push(`rm:${String(target)}`);
+          return actual.rmSync(target, options);
+        }),
+      };
+    });
+
+    const { TaskState: MockedTaskState, Status: MockedStatus } = await import('../src/TaskState.js');
+    const taskDir = resolve(dir, 'pending', 'T01-a');
+    mkdirSync(taskDir, { recursive: true });
+    const t = new MockedTaskState(taskDir);
+
+    t.claim('A');
+    releaseOrder.length = 0;
+    t.release(MockedStatus.PENDING);
+
+    expect(t.directory).toBe(resolve(dir, 'pending', 'T01-a'));
+    expect(t.status).toBe(MockedStatus.PENDING);
+    expect(t.isClaimed).toBe(false);
+    expect(releaseOrder.some(step => step.startsWith('rename:'))).toBe(true);
+    expect(releaseOrder.some(step => step.startsWith('rm:'))).toBe(true);
+    expect(releaseOrder.findIndex(step => step.startsWith('rename:')))
+      .toBeLessThan(releaseOrder.findIndex(step => step.startsWith('rm:')));
+  });
+
   it('markBlocked moves to blocked shard', () => {
     const t = make(dir, 1, 'a');
     t.claim('A');
@@ -214,20 +304,36 @@ describe('TaskState', () => {
     expect(second!.taskNumber).toBe(1);
   });
 
-  it('pick skips task when claim fails', async () => {
+  it('pick skips in-progress tasks claimed by another orchestrator', async () => {
     const { mkdirSync, writeFileSync } = await import('node:fs');
     const { join } = await import('node:path');
-    const taskDir = resolve(dir, 'pending', 'T01-claimed');
+    const taskDir = resolve(dir, 'in_progress', 'T01-claimed');
     mkdirSync(taskDir, { recursive: true });
     const claimDir = join(taskDir, '.claim');
     mkdirSync(claimDir, { recursive: true });
-    writeFileSync(join(claimDir, 'owner'), 'pid:1\nstarted:1\ninstance:other\n');
-    writeFileSync(join(taskDir, '.status'), 'PENDING\n');
+    writeFileSync(join(claimDir, 'owner'), 'pid:1\nstarted:1\ninstance:other\nhost:test\n');
+    writeFileSync(join(claimDir, 'heartbeat'), '');
+    writeFileSync(join(taskDir, '.status'), 'IN_PROGRESS:other\n');
     make(dir, 2, 'b', { status: Status.PENDING });
     await TaskState.scan(dir);
     const picked = await TaskState.pick(dir, 'test');
     expect(picked).not.toBeNull();
     expect(picked!.taskNumber).toBe(2);
+  });
+
+  it('pick removes orphan claims from pending tasks and makes them pickable', async () => {
+    const taskDir = resolve(dir, 'pending', 'T01-orphan');
+    mkdirSync(join(taskDir, '.claim'), { recursive: true });
+    writeFileSync(join(taskDir, '.status'), 'PENDING\n');
+    writeFileSync(join(taskDir, '.claim', 'owner'), 'pid:1\nstarted:1\ninstance:other\nhost:test\n');
+    writeFileSync(join(taskDir, '.claim', 'heartbeat'), '');
+
+    const picked = await TaskState.pick(dir, 'test');
+
+    expect(existsSync(join(taskDir, '.claim'))).toBe(false);
+    expect(picked).not.toBeNull();
+    expect(picked!.taskNumber).toBe(1);
+    expect(picked!.isClaimed).toBe(true);
   });
 
   it('dependenciesMet handles missing shard directory', async () => {
@@ -500,6 +606,87 @@ describe('TaskState', () => {
     // Setting PENDING when already in pending shard → target === dirname → no migration
     t.status = Status.PENDING;
     expect(t.directory).toBe(resolve(dir, 'pending', 'T01-a'));
+  });
+
+  it('status setter rethrows non-EXDEV shard rename failures', async () => {
+    vi.resetModules();
+    const copyCalls: string[] = [];
+    const removeCalls: string[] = [];
+
+    vi.doMock('node:fs', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('node:fs')>();
+      return {
+        ...actual,
+        renameSync: vi.fn((source: Parameters<typeof actual.renameSync>[0], destination: Parameters<typeof actual.renameSync>[1]) => {
+          if (String(source).includes('.status.') && String(destination).endsWith('.status')) {
+            return actual.renameSync(source, destination);
+          }
+          const err = new Error('denied') as NodeJS.ErrnoException;
+          err.code = 'EACCES';
+          throw err;
+        }),
+        cpSync: vi.fn((source: Parameters<typeof actual.cpSync>[0], destination: Parameters<typeof actual.cpSync>[1], options?: Parameters<typeof actual.cpSync>[2]) => {
+          copyCalls.push(`${String(source)}->${String(destination)}`);
+          return actual.cpSync(source, destination, options);
+        }),
+        rmSync: vi.fn((target: Parameters<typeof actual.rmSync>[0], options?: Parameters<typeof actual.rmSync>[1]) => {
+          removeCalls.push(String(target));
+          return actual.rmSync(target, options);
+        }),
+      };
+    });
+
+    const { TaskState: MockedTaskState, Status: MockedStatus } = await import('../src/TaskState.js');
+    const taskDir = resolve(dir, 'pending', 'T01-a');
+    mkdirSync(taskDir, { recursive: true });
+    const t = new MockedTaskState(taskDir);
+
+    expect(() => { t.status = MockedStatus.CONVERGED; }).toThrowError(expect.objectContaining({ code: 'EACCES' }));
+    expect(copyCalls).toEqual([]);
+    expect(removeCalls).toEqual([]);
+  });
+
+  it('status setter falls back to copy/delete only for EXDEV', async () => {
+    vi.resetModules();
+    const copyCalls: string[] = [];
+    const removeCalls: string[] = [];
+
+    vi.doMock('node:fs', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('node:fs')>();
+      return {
+        ...actual,
+        renameSync: vi.fn((source: Parameters<typeof actual.renameSync>[0], destination: Parameters<typeof actual.renameSync>[1]) => {
+          if (String(source).includes('.status.') && String(destination).endsWith('.status')) {
+            return actual.renameSync(source, destination);
+          }
+          const err = new Error('cross-device') as NodeJS.ErrnoException;
+          err.code = 'EXDEV';
+          throw err;
+        }),
+        cpSync: vi.fn((source: Parameters<typeof actual.cpSync>[0], destination: Parameters<typeof actual.cpSync>[1], options?: Parameters<typeof actual.cpSync>[2]) => {
+          copyCalls.push(`${String(source)}->${String(destination)}`);
+          return actual.cpSync(source, destination, options);
+        }),
+        rmSync: vi.fn((target: Parameters<typeof actual.rmSync>[0], options?: Parameters<typeof actual.rmSync>[1]) => {
+          removeCalls.push(String(target));
+          return actual.rmSync(target, options);
+        }),
+      };
+    });
+
+    const { TaskState: MockedTaskState, Status: MockedStatus } = await import('../src/TaskState.js');
+    const taskDir = resolve(dir, 'pending', 'T01-a');
+    mkdirSync(taskDir, { recursive: true });
+    const t = new MockedTaskState(taskDir);
+
+    t.status = MockedStatus.CONVERGED;
+
+    expect(copyCalls).toHaveLength(1);
+    expect(removeCalls).toContain(resolve(dir, 'pending', 'T01-a'));
+    expect(t.directory).toBe(resolve(dir, 'converged', 'T01-a'));
+    expect(t.status).toBe(MockedStatus.CONVERGED);
+    expect(existsSync(resolve(dir, 'converged', 'T01-a', '.status'))).toBe(true);
+    expect(existsSync(resolve(dir, 'pending', 'T01-a'))).toBe(false);
   });
 
   it('statusCache returns the internal cache', () => {

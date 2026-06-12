@@ -74,6 +74,7 @@ export class Engine {
   readonly #worktrees = new Map<number, Worktree>();
   /** Track last failure time per task for retry cooldown */
   readonly #retryCooldowns = new Map<number, number>();
+  #currentLockToken: string | null = null;
 
   constructor(tasksDir: string, opts: EngineOptions = {}) {
     this.#dir = tasksDir;
@@ -182,77 +183,78 @@ export class Engine {
       if (wt) await wt.resetForRetry();
     }
 
-    let metric = await this.#run(task);
-    this.#log(`T${task.taskNumber} check: metric=${metric}${metric === 0 ? ' (done)' : ' (needs work; target is 0)'}`);
-
-    if (metric === 0) return await this.#handleZero(task, metric);
-
-    // Non-zero: try spawner if available
-    task.resetConvergence();
-
-    if (this.#spawn) {
-      let wt = this.#worktrees.get(task.taskNumber) ?? null;
-      let spawnTask = task;
-      const ac = new AbortController();
-      let hb: ReturnType<typeof setInterval> | undefined;
-      try {
-        // Create worktree if needed
-        if (!wt && existsSync(resolve(this.#repo, '.git'))) {
-          wt = new Worktree(this.#repo, { name: task.taskName, baseBranch: this.#baseBranch, ...(this.#worktreesDir ? { worktreesDir: this.#worktreesDir } : {}) });
-          await wt.create();
-          this.#worktrees.set(task.taskNumber, wt);
-        }
-        if (wt) {
-          // Copy task directory into worktree (tasks/ not tracked in git)
-          const wtTaskDir = this.#taskDirectoryInWorktree(task, wt.path);
-          try {
-            cpSync(task.directory, wtTaskDir, { recursive: true, filter: (f: string) => !f.endsWith('agent.log') });
-            spawnTask = new TaskState(wtTaskDir);
-          } catch {}
-          // Copy node_modules for isolated npm commands (no symlink — avoids circular chain risk)
-          const wtNm = join(wt.path, 'node_modules');
-          if (!existsSync(wtNm)) {
-            try { cpSync(join(this.#repo, 'node_modules'), wtNm, { recursive: true }); } catch {}
-          }
-        }
-        this.#log(`T${task.taskNumber} action: starting agent because metric is ${metric}`);
-        /* c8 ignore start */
-        hb = setInterval(() => {
-          task.heartbeat();
-          if (existsSync(this.#stopFile)) {
-            ac.abort();
-          }
-        }, 30_000);
-        /* c8 ignore stop */
-        const spawnResult = await this.#spawn(spawnTask, wt?.path, ac.signal);
-        this.#log(
-          `T${task.taskNumber} agent ${spawnResult.success ? 'finished' : 'stopped without finishing'} ` +
-          `(${this.#experimentLabel(spawnResult.iterations)}` +
-          `${spawnResult.tokenUsage ? `; tokens: ${this.#tokenUsageLabel(spawnResult.tokenUsage)}` : ''}` +
-          `${spawnResult.error ? `; reason: ${this.#singleLine(spawnResult.error)}` : ''}` +
-          `${spawnResult.logPath ? `; details: ${spawnResult.logPath}` : ''})`,
-        );
-        if (spawnResult.authFailure) {
-          return this.#handleEnvironmentalFailure(task, metric, spawnResult.error ?? 'coding agent authentication failed');
-        }
-        metric = await this.#run(task, wt?.path);
-        this.#log(`T${task.taskNumber} check after agent: metric=${metric}${metric === 0 ? ' (done)' : ' (still needs work)'}`);
-        if (metric === 0) return await this.#handleZero(task, metric, wt);
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        if (msg.includes('conflict')) {
-          task.status = Status.FAILED;
-          this.#retryCooldowns.set(task.taskNumber, Date.now());
-          console.error(`  ⚠️  T${task.taskNumber}: merge conflict — task FAILED, worktree kept for inspection`);
-        } else {
-          this.#log(`T${task.taskNumber} unexpected error during spawn/worktree setup: ${this.#singleLine(msg)}; releasing task`, 'transition');
-        }
-      } finally {
-        if (hb) clearInterval(hb);
+    const ac = new AbortController();
+    /* c8 ignore start */
+    const hb = setInterval(() => {
+      task.heartbeat();
+      if (existsSync(this.#stopFile)) {
+        ac.abort();
       }
-    }
+    }, 30_000);
+    /* c8 ignore stop */
+    try {
+      let metric = await this.#run(task);
+      this.#log(`T${task.taskNumber} check: metric=${metric}${metric === 0 ? ' (done)' : ' (needs work; target is 0)'}`);
 
-    return this.#handleFailure(task, metric);
+      if (metric === 0) return await this.#handleZero(task, metric);
+
+      // Non-zero: try spawner if available
+      task.resetConvergence();
+
+      if (this.#spawn) {
+        let wt = this.#worktrees.get(task.taskNumber) ?? null;
+        let spawnTask = task;
+        try {
+          // Create worktree if needed
+          if (!wt && existsSync(resolve(this.#repo, '.git'))) {
+            wt = new Worktree(this.#repo, { name: task.taskName, baseBranch: this.#baseBranch, ...(this.#worktreesDir ? { worktreesDir: this.#worktreesDir } : {}) });
+            await wt.create();
+            this.#worktrees.set(task.taskNumber, wt);
+          }
+          if (wt) {
+            // Copy task directory into worktree (tasks/ not tracked in git)
+            const wtTaskDir = this.#taskDirectoryInWorktree(task, wt.path);
+            try {
+              cpSync(task.directory, wtTaskDir, { recursive: true, filter: (f: string) => !f.endsWith('agent.log') });
+              spawnTask = new TaskState(wtTaskDir);
+            } catch {}
+            // Copy node_modules for isolated npm commands (no symlink — avoids circular chain risk)
+            const wtNm = join(wt.path, 'node_modules');
+            if (!existsSync(wtNm)) {
+              try { cpSync(join(this.#repo, 'node_modules'), wtNm, { recursive: true }); } catch {}
+            }
+          }
+          this.#log(`T${task.taskNumber} action: starting agent because metric is ${metric}`);
+          const spawnResult = await this.#spawn(spawnTask, wt?.path, ac.signal);
+          this.#log(
+            `T${task.taskNumber} agent ${spawnResult.success ? 'finished' : 'stopped without finishing'} ` +
+            `(${this.#experimentLabel(spawnResult.iterations)}` +
+            `${spawnResult.tokenUsage ? `; tokens: ${this.#tokenUsageLabel(spawnResult.tokenUsage)}` : ''}` +
+            `${spawnResult.error ? `; reason: ${this.#singleLine(spawnResult.error)}` : ''}` +
+            `${spawnResult.logPath ? `; details: ${spawnResult.logPath}` : ''})`,
+          );
+          if (spawnResult.authFailure) {
+            return this.#handleEnvironmentalFailure(task, metric, spawnResult.error ?? 'coding agent authentication failed');
+          }
+          metric = await this.#run(task, wt?.path);
+          this.#log(`T${task.taskNumber} check after agent: metric=${metric}${metric === 0 ? ' (done)' : ' (still needs work)'}`);
+          if (metric === 0) return await this.#handleZero(task, metric, wt);
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (msg.includes('conflict')) {
+            task.status = Status.FAILED;
+            this.#retryCooldowns.set(task.taskNumber, Date.now());
+            console.error(`  ⚠️  T${task.taskNumber}: merge conflict — task FAILED, worktree kept for inspection`);
+          } else {
+            this.#log(`T${task.taskNumber} unexpected error during spawn/worktree setup: ${this.#singleLine(msg)}; releasing task`, 'transition');
+          }
+        }
+      }
+
+      return this.#handleFailure(task, metric);
+    } finally {
+      clearInterval(hb);
+    }
   }
 
   // ── Loop ────────────────────────────────────────────────────────────
@@ -503,12 +505,17 @@ export class Engine {
     if (this.#tryMakeMergeLock()) return true;
     if (this.#mergeLockAgeMs() < env.mergeLockMs) return false;
     try { rmSync(this.#mergeLockDir, { recursive: true, force: true }); } catch {}
-    return this.#tryMakeMergeLock();
+    if (!this.#tryMakeMergeLock()) return false;
+    if (this.#mergeLockToken() === this.#currentLockToken) return true;
+    this.#currentLockToken = null;
+    return false;
   }
 
   #tryMakeMergeLock(): boolean {
     try { mkdirSync(this.#mergeLockDir); } catch { return false; }
-    try { writeFileSync(join(this.#mergeLockDir, 'owner'), `pid:${process.pid}\nhost:${hostname()}\nstarted:${Date.now()}\n`); } catch {}
+    const token = `${process.pid}-${Date.now()}-${randomUUID().slice(0, 8)}`;
+    this.#currentLockToken = token;
+    try { writeFileSync(join(this.#mergeLockDir, 'owner'), `pid:${process.pid}\nhost:${hostname()}\nstarted:${Date.now()}\ntoken:${token}\n`); } catch {}
     return true;
   }
 
@@ -520,8 +527,22 @@ export class Engine {
     return Infinity;
   }
 
+  #mergeLockToken(): string | null {
+    try {
+      return readFileSync(join(this.#mergeLockDir, 'owner'), 'utf-8').match(/token:(.+)/)?.[1] ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   #releaseMergeLock(): void {
-    try { rmSync(this.#mergeLockDir, { recursive: true, force: true }); } catch {}
+    try {
+      if (this.#currentLockToken !== null && this.#mergeLockToken() === this.#currentLockToken) {
+        rmSync(this.#mergeLockDir, { recursive: true, force: true });
+      }
+    } catch {} finally {
+      this.#currentLockToken = null;
+    }
   }
 
   #recover(): void {
