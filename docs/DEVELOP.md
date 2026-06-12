@@ -2,61 +2,56 @@
 
 TDD + SOLID. Read `TESTING.md` first for test conventions.
 
-**First-time setup:** `git config core.hooksPath .githooks` (enables pre-commit + pre-push hooks)
+**Setup:** `git config core.hooksPath .githooks` (enables pre-commit + pre-push hooks)
 
-**TypeScript strict** — `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noUnusedLocals`
-- **Private fields** — `#name`, never `private name`
-- **Imports** — `import type` for type-only, `verbatimModuleSyntax`
-- **Files** — one class per file, barrel exports in `index.ts`
-- **Tests** — see `TESTING.md`
+**TypeScript strict:**
+- `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noUnusedLocals`
+- Private fields: `#name`, never `private name`
+- Imports: `import type` for type-only, `verbatimModuleSyntax`
+- Files: one class per file, barrel exports in `index.ts`
 
-### Before committing
-1. `npm run c` — zero type errors (~2s, pre-commit hook enforces)
-2. `npm run t` — all tests pass (~3s, pre-commit hook enforces)
-3. `npm run tc` — 100% coverage — coverage regressions block merge (mandatory)
-4. `npm run all` — full pipeline (pre-push hook enforces)
+## Before committing
 
-### Environment variables
-See `README.md` for the grouped configuration table.
-CLI flags override env vars. See `orchestrator --help`.
-Settings are defined once in `src/config.ts` (`CONFIG_SPEC`) and rendered into both `--help` and `--config`; inspect effective values with `orchestrator --config`.
+1. `npm run c` — zero type errors
+2. `npm run t` — all tests pass
+3. `npm run tc` — 100% coverage (mandatory; blocks merge)
+4. `npm run all` — full pipeline
+
+## Environment variables
+
+See `README.md` for configuration tables. CLI flags override env vars. Settings defined once in `src/config.ts` (`CONFIG_SPEC`).
+
+Use `orchestrator --config` to inspect effective values and their sources.
 
 #### Style conventions
-- File naming: PascalCase for class modules (`Engine.ts`, `TaskState.ts`); lowercase for utilities/entrypoints (`env.ts`, `cli.ts`, `config.ts`).
-- Constants: `UPPER_CASE` for module constants; PascalCase members for enum-like objects (`MergeRecoveryAction.StashAndRetry`).
-- Top-level helpers: `function` declarations for utilities; arrow-consts for single-expression helpers/lambdas.
 
-Loop mode prints an `Overview:` counts line after each tick and a final `Summary:` with one line per task. Infinite/daemon mode (`--infinite`, `--loop`, or `ORCH_INFINITE`) never exits on idle; it polls every `ORCH_IDLE_SLEEP_MS` for new tasks or for BLOCKED/FAILED tasks to be addressed, and exits only after `--stop`.
+- File naming: PascalCase for classes (`Engine.ts`); lowercase for utilities (`env.ts`, `cli.ts`)
+- Constants: `UPPER_CASE` for module constants; PascalCase for enum-like objects
+- Top-level helpers: `function` for utilities; arrow-const for single-expression helpers
 
-Unrecoverable merge failures park the task as BLOCKED, keep its worktree, and let the run continue.
+## Task metadata
 
-### Task metadata
+| Field | Controls |
+|---|---|
+| `**Model:**` | Task-level model override |
+| `**Reasoning:**` | Task-level reasoning override |
+| `**Retry limit:**` | Failed attempts before BLOCKED |
 
-| Field | Values | What it controls |
-|---|---|---|
-| `**Model:**` | agent-specific model name | Task-level model override; falls back to `--model` / `ORCH_MODEL` |
-| `**Reasoning:**` | agent-specific effort level | Task-level reasoning override; falls back to `--reasoning` / `ORCH_REASONING` |
-| `**Retry limit:**` | integer >= 1, `infinite`, `unlimited`, or `inf` | Failed attempts before BLOCKED; falls back to `ORCH_MAX_FAILURES` |
+Dependencies wait for all referenced tasks to converge. If any is terminally BLOCKED, dependents auto-BLOCKED.
 
-Dependencies wait for all referenced tasks to converge; if any dependency is terminally BLOCKED, dependents are automatically BLOCKED transitively, while still-retrying FAILED dependencies keep dependents waiting.
+Environment failures (missing API key, agent auth) fail fast — affected task is FAILED without consuming a retry.
 
-Task-agnostic (environment) failures — missing/invalid API key or agent auth, surfaced as `authFailure` by the agent adapter — are not the task's fault and would hit every task identically. The orchestrator fails fast: the first such failure stops the whole run in all modes, including `--infinite`, leaves the task `FAILED` without consuming a retry, and exits non-zero with `Environment issue: <reason>`. Task-specific failures (non-zero metric, merge conflict) still consume the retry budget.
+## Coding agents
 
-### Coding agents
+`pi` (default) uses pi's experiment tools. `copilot` uses the GitHub Copilot CLI.
 
-`pi` is the default agent and uses pi's experiment tools. `copilot` uses the standalone GitHub Copilot CLI with:
-`copilot -p "<prompt>" -s --allow-all-tools --no-ask-user [--model <model>] [--reasoning-effort <level>]`.
+Both interact with orchestrator ONLY through `CodingAgent` interface (`checkPrerequisites` + `spawn`).
 
-Copilot requires the `copilot` CLI plus `COPILOT_GITHUB_TOKEN` (or gh/GITHUB_TOKEN) auth. It does not report token usage in `-p -s` mode and uses a shell benchmark loop instead of pi's experiment tools.
+### Adding a new coding agent
 
-The orchestrator interacts with every agent ONLY through the `CodingAgent` interface (`checkPrerequisites` + `spawn`), and the CLI preflights the SELECTED agent's prerequisites.
-
-#### Adding a new coding agent
-
-1. Create `src/<Name>Agent.ts` implementing `CodingAgent` (`name`, `checkPrerequisites()`, `spawn()`); accept `CodingAgentOptions` (extend it if you need extra options).
-2. Register it in `src/agents.ts` `REGISTRY` (one line: `name: (opts) => new <Name>Agent(opts)`).
-3. (Optional) Export it from `src/index.ts`.
-4. Run `npm run all`. No `Engine.ts` changes are needed.
+1. Create `src/<Name>Agent.ts` implementing `CodingAgent` interface
+2. Register in `src/agents.ts` `REGISTRY`
+3. Run `npm run all`
 
 ---
 
@@ -72,46 +67,37 @@ The orchestrator interacts with every agent ONLY through the `CodingAgent` inter
 
 ## Before writing tests — map every branch
 
-Read source, enumerate: **happy path**, **edge cases** (null, empty), **error paths** (every try/catch, guard clause, continue).
+Read source and enumerate: **happy path**, **edge cases** (null, empty), **error paths** (every try/catch, guard, continue).
 
-```
-TaskState.pick() branches:
-- Shard order: pending → in_progress → failed
-- Per task: converged?→skip | blocked?→skip | failed+max_failures?→block
-           | in_progress+unclaimed?→release | our claim?→return | actionable+claimable?→return
-```
+Each branch = one test case. Example:
 
-Each branch = one test case. Group by method:
 ```ts
-describe('TaskState', () => {
-  describe('pick', () => {
-    it('returns pending task in numeric order', ...);
-    it('skips converged tasks', ...);
-    it('releases unclaimed in-progress tasks to FAILED', ...);
-  });
+describe('TaskState.pick', () => {
+  it('returns pending task in numeric order', ...);
+  it('skips converged tasks', ...);
+  it('releases unclaimed in-progress tasks to FAILED', ...);
 });
 ```
 
 ## SOLID — applied
 
-| Principle | What it means here |
+| Principle | Means |
 |---|---|
-| **S**ingle Responsibility | One class = one concern (`Status.ts` = enums, `TaskState.ts` = file state, `Engine.ts` = orchestration loop) |
-| **O**pen/Closed | Depend on interfaces (`SpawnFn`, `BenchmarkFn`) — new behavior = new impl, not Engine changes |
-| **L**iskov | Callback params are contravariant; return types covariant. Don't widen types in overrides. |
-| **I**nterface Segregation | Keep interfaces focused (`TaskInfo` has 7 fields, not 20). Prefer `Pick<TaskInfo, 'directory'>` over full type. |
-| **D**ependency Inversion | `Engine` depends on `SpawnFn` (abstraction), not `PiSpawner` (concretion). Wired by `cli.ts`. |
+| **S** | One class = one concern (Status.ts = enums, TaskState.ts = file state) |
+| **O** | Depend on interfaces (`SpawnFn`, `BenchmarkFn`) — new behavior = new impl |
+| **L** | Don't widen types in overrides |
+| **I** | Keep interfaces focused (`TaskInfo` = 7 fields, not 20) |
+| **D** | `Engine` depends on abstraction, not concretion (wired in `cli.ts`) |
 
 ## Code review checklist
 
-- [ ] Test written before code? (RED → GREEN)
-- [ ] Every branch in source has a test case?
-- [ ] `npm run tc` — 100% branch for changed files?
-- [ ] `npm run c` — zero type errors?
+- [ ] Test written first (RED → GREEN)?
+- [ ] Every branch tested?
+- [ ] `npm run tc` — 100% coverage?
 - [ ] `import type` for type-only imports?
 - [ ] `#privateField` not `private fieldName`?
-- [ ] Isolated filesystem (`mkdtempSync`), mock at module boundary (`vi.mock('node:child_process')`)?
-- [ ] `npm run all` — green?
+- [ ] Isolated filesystem, mocked at module boundary?
+- [ ] `npm run all` passes?
 
 ## Adding a new file
 

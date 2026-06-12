@@ -32,60 +32,31 @@ npm run tick
 
 ## How it works
 
-1. **Define a task** in `<state-root>/<repo-slug>/tasks/pending/<name>/autoresearch.md` with goal, metric, scope, and acceptance criteria
-2. **Run the orchestrator** — it picks the highest-priority task, runs the benchmark, and spawns an AI agent
-3. **Agent iterates** — reads the task, runs experiments, edits files in an isolated git worktree
-4. **Convergence** — when every metric reaches 0 for 3 consecutive runs, the task is merged back
-
-If merge-back is blocked, the task is marked BLOCKED and the worktree is kept for inspection while the run continues. Interactive runs may auto-stash parent repo changes and retry the merge immediately.
-
-Agent summaries include total token usage when the spawned agent reports usage data. `agent.log` is summary-only by default for `pi`; set `ORCH_AGENT_LOG_RAW=1` to also write raw spawned-agent stdout/stderr. Raw logs are capped at 10 MiB by default and keep the latest output when truncated.
-
-Long loop runs print an `Overview:` counts line after each tick and a final `Summary:` with one icon-prefixed line per task.
-Infinite/daemon mode (`--infinite`, `--loop`, or `ORCH_INFINITE`) never exits on idle. It polls every `ORCH_IDLE_SLEEP_MS` for new tasks or for BLOCKED/FAILED tasks to be addressed; stop it with `orchestrator --stop`.
+1. **Define a task** in `<state-root>/<repo-slug>/tasks/pending/<name>/autoresearch.md`
+2. **Run orchestrator** — picks task, runs benchmark, spawns AI agent
+3. **Agent iterates** — runs experiments in isolated git worktree
+4. **Convergence** — when every metric reaches 0 for 3 consecutive runs, task is merged
 
 ## Acceptance Criteria
 
-1. **Benchmark decides pass/fail**
-   - Each task owns a `benchmark.js`.
-   - The benchmark must print one or more `METRIC name=value` lines.
-   - **Every metric must be `0`** for the task to count as passing.
+**Benchmark decides pass/fail:**
+- Each task owns a `benchmark.js` that prints `METRIC name=value` lines.
+- **Every metric must be `0`** for the task to pass.
 
-   ```js
-   console.log('METRIC failing_tests=0');
-   console.log('METRIC lint_errors=0');
-   console.log('METRIC type_errors=0');
-   ```
+```js
+console.log('METRIC failing_tests=0');
+console.log('METRIC lint_errors=0');
+```
 
-2. **Convergence guards against flakes**
-   - One passing benchmark run is not enough.
-   - The task must pass for `ORCH_CONVERGE` consecutive runs.
-   - Default: `ORCH_CONVERGE=3`.
+**Convergence & merge guards:**
+- Task must pass benchmark for `ORCH_CONVERGE` consecutive runs (default: 3).
+- Any non-zero metric resets convergence → agent runs again.
+- If merge conflicts occur, task is marked BLOCKED and worktree kept for inspection.
+- Before merge: benchmark runs again after syncing with base branch.
+- Optional `ORCH_VERIFY_CMD` can block merge (e.g., enforce coverage).
 
-3. **Failures send the task back to rework**
-   - Any non-zero metric resets convergence.
-   - The agent runs again until the benchmark is stable.
-
-4. **Post-sync re-verify must still pass**
-   - Before merge, the worktree syncs with the latest base branch.
-   - The benchmark runs again after sync.
-   - If sync breaks the task, it goes back to rework.
-
-5. **Optional global verification can block merge**
-   - Set `ORCH_VERIFY_CMD` to run one final repo-level check in the worktree.
-   - Example: enforce coverage before merge.
-
-   ```bash
-   ORCH_VERIFY_CMD="npm run tc" orchestrator
-   ```
-
-6. **Git merge happens last**
-   - Merge only happens after:
-     - all benchmark metrics are `0`
-     - convergence is satisfied
-     - post-sync re-verify passes
-     - `ORCH_VERIFY_CMD` passes, if set
-   - If any step fails, the task returns to rework.
+**Merge happens last:**
+- Only after all metrics are 0, convergence satisfied, post-sync re-verify passes, and optional `ORCH_VERIFY_CMD` passes.
 
 ## CLI
 
@@ -186,64 +157,48 @@ Boolean env vars accept `1`, `true`, `yes`, or `on`.
 tasks/pending/T01-my-task/
 ├── autoresearch.md   # Goal, metric, scope, acceptance criteria
 ├── autoresearch.sh   # Auto-generated experiment runner
-└── benchmark.js      # Measures metric, outputs "METRIC <name>=<value>"
+└── benchmark.js      # Outputs: METRIC <name>=<value> (all must be 0)
 ```
 
-A benchmark may print **multiple** `METRIC <name>=<value>` lines. The effective metric is the **sum** of all values, so a task converges only when **every** criterion is 0. Unmet criteria are listed in the console (`T<n> unmet: ...`). A benchmark that prints no METRIC line is treated as metric `1` (not done).
+A benchmark may print **multiple** `METRIC` lines. The effective metric is the **sum** of all values. A benchmark with no `METRIC` line is treated as metric `1` (not done).
 
-Optional `autoresearch.md` metadata:
+**Optional autoresearch.md metadata:**
+| Field | Controls |
+|---|---|
+| `**Model:**` | Task-level model override |
+| `**Reasoning:**` | Task-level reasoning override |
+| `**Retry limit:**` | Failed attempts before BLOCKED |
 
-| Field | Values | Controls |
-|---|---|---|
-| `**Model:**` | agent-specific model name | Task-level model override; falls back to `--model` / `ORCH_MODEL` |
-| `**Reasoning:**` | agent-specific effort level | Task-level reasoning override; falls back to `--reasoning` / `ORCH_REASONING` |
-| `**Retry limit:**` | integer >= 1, `infinite`, `unlimited`, or `inf` | Failed attempts before BLOCKED; falls back to `ORCH_MAX_FAILURES` |
-
-Dependencies wait for all referenced tasks to converge; if any dependency is terminally BLOCKED, dependents are automatically BLOCKED transitively, while still-retrying FAILED dependencies keep dependents waiting.
-
-### Task-agnostic (environment) failures
-
-A *task-agnostic* failure would hit every task the same way: the coding agent's environment is misconfigured or unavailable (for example, a missing or invalid API key). The orchestrator **fails fast**: on the first such failure it stops the whole run immediately, in every mode including `--infinite`.
-
-The affected task is left `FAILED` **without** consuming a retry. The CLI prints `Environment issue: <reason>` and exits non-zero, so operators or automation can fix the environment and rerun. Remaining pending tasks are not picked, which prevents one environment problem from churning every task into `FAILED`.
-
-A *task-specific* failure is different: the agent ran but the metric is still non-zero, or a merge conflict occurred. These failures consume the task's retry budget as usual.
+Dependencies wait for all referenced tasks to converge; if any is terminally BLOCKED, dependents auto-BLOCKED.
 
 ## Merging converged work
 
-When a task converges, its branch is merged back to the base with a layered, deterministic strategy — the orchestrator never auto-edits file contents:
-
-1. **Update before merge.** The latest base is first merged *into* the task branch (`syncWithBase`). This absorbs a base that advanced while the agent worked (e.g. a sibling task merged), so only genuinely overlapping edits remain a conflict.
-2. **Re-verify acceptance.** After absorbing the base, the benchmark runs again. If the base advance broke any criterion, the task is sent back to the agent (its convergence count resets) rather than merging broken work.
-3. **Serialize merges.** A repo-scoped merge lock (atomic `mkdir`, the same primitive as task claims) lets only one orchestrator merge into the shared base at a time. If the lock is held, the merge is deferred to the next tick; a lock left by a crashed merger (older than `ORCH_MERGE_LOCK_MS`) is broken.
-4. **Park, never discard.** A genuine overlapping conflict marks the task BLOCKED and keeps its branch and worktree for inspection — work is never silently dropped.
+When a task converges:
+1. **Update before merge** — latest base is merged into the task branch to absorb sibling changes
+2. **Re-verify acceptance** — benchmark runs again after absorbing base; if broken, send back to agent
+3. **Serialize merges** — one orchestrator merges at a time (atomic `mkdir`); stale merge locks are broken
+4. **Park, never discard** — genuine conflicts block the merge and keep the worktree for inspection
 
 ## Running multiple orchestrators
 
-Several orchestrators can safely share one task directory and repo. Coordination uses plain files — no database, no daemon:
+Several orchestrators can safely share one task directory and repo via file-based coordination:
 
-- **Atomic claim.** Picking a task creates a `.claim` directory with `mkdir` (atomic on every OS). If two orchestrators race, only one `mkdir` wins; the loser moves on. The claim records the owner's `pid`, `host`, start time, and a unique `instance` id.
-- **Liveness by heartbeat.** The owner refreshes a `heartbeat` file while it works. Others judge a claim **only** by heartbeat age, never by the owner's pid — a pid is meaningless on a different machine. A claim whose heartbeat is younger than `ORCH_HEARTBEAT_MS` is always left alone.
-- **Recovery.** If the heartbeat is stale, a claim is reclaimed only when either (a) the owner is on **this** machine and its pid is gone, or (b) the claim is older than the hard ceiling `ORCH_CLAIM_MAX_MS` (covers a crashed owner on another machine). Otherwise it is left alone until the ceiling, so a slow remote owner is never stolen from prematurely.
-- **Unique identity.** Each orchestrator gets a globally-unique instance id (`<pid>-<random>`), so two machines never mistake each other's claims for their own.
-
-Reclaiming a stale claim preserves the task's convergence count, so progress is never lost.
+- **Atomic claim** — picking a task creates `.claim` directory (atomic `mkdir`); only one wins; loser moves on
+- **Liveness by heartbeat** — owner refreshes heartbeat file; others only judge by heartbeat age, never by pid
+- **Recovery** — reclaim stale claim if: (a) owner on this machine and pid gone, or (b) claim older than `ORCH_CLAIM_MAX_MS`
+- **Unique identity** — each orchestrator gets globally-unique instance id (`<pid>-<random>`)
 
 ## Coding agents
 
-- `pi` is the default. It uses pi's experiment tools and accepts `--model` / `ORCH_MODEL`; reasoning is resolved but not passed because pi has no documented reasoning flag here.
-- `copilot` uses the standalone GitHub Copilot CLI: `copilot -p "<prompt>" -s --allow-all-tools --no-ask-user [--model <model>] [--reasoning-effort <level>]`.
+- `pi` (default) — uses pi's experiment tools; accepts `--model` / `ORCH_MODEL`
+- `copilot` — GitHub Copilot CLI with `copilot -p "<prompt>" -s --allow-all-tools --no-ask-user [--model <model>] [--reasoning-effort <level>]`
+  - Requires: `copilot` CLI + `COPILOT_GITHUB_TOKEN` (or gh/GITHUB_TOKEN)
+  - Limitation: doesn't report token usage; uses shell benchmark loop
 
-Copilot limitations: install the `copilot` CLI and authenticate with `COPILOT_GITHUB_TOKEN` (or gh/GITHUB_TOKEN). Token usage is not reported in `-p -s` mode. Copilot runs a shell-based benchmark loop (`node <taskDir>\benchmark.js`) instead of pi's experiment tools.
-
-The CLI preflights the SELECTED agent's prerequisites (binary + auth) before running.
-
-### Adding a new coding agent
-
-1. Create `src/<Name>Agent.ts` implementing `CodingAgent` (`name`, `checkPrerequisites()`, `spawn()`); accept `CodingAgentOptions` (extend it if you need extra options).
-2. Register it in `src/agents.ts` `REGISTRY` (one line: `name: (opts) => new <Name>Agent(opts)`).
-3. (Optional) Export it from `src/index.ts`.
-4. Run `npm run all`. No `Engine.ts` changes are needed.
+**Adding a new agent:**
+1. Create `src/<Name>Agent.ts` implementing `CodingAgent`
+2. Register in `src/agents.ts` `REGISTRY`
+3. Run `npm run all` — no Engine.ts changes needed
 
 ## Development
 
