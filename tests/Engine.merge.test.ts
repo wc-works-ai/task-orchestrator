@@ -319,8 +319,8 @@ describe('Engine merge robustness', () => {
       runs.set(taskNumber, count);
       return count === 1 ? 1 : 0;
     });
-    const engine1 = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir, instanceId: 'engine-1' });
-    const engine2 = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir, instanceId: 'engine-2' });
+    const engine1 = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir, instanceId: 'engine-1', autoStashBeforeMerge: false });
+    const engine2 = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir, instanceId: 'engine-2', autoStashBeforeMerge: false });
 
     await engine1.tick();
     await engine2.tick();

@@ -40,7 +40,7 @@ export const env = {
   get agent()        { return process.env.ORCH_AGENT || 'pi'; },
   get model()        { return process.env.ORCH_MODEL || undefined; },
   get reasoning()    { return process.env.ORCH_REASONING || undefined; },
-  get autoStash()    { return bool(process.env.ORCH_AUTO_STASH); },
+  get autoStash()    { return (process.env.ORCH_AUTO_STASH ?? 'true') !== 'false'; },
   get converge()     { return parseInt(process.env.ORCH_CONVERGE ?? '3', 10); },
   get maxFailures()  { return maxFailures(process.env.ORCH_MAX_FAILURES); },
   get worktreesDir() { return process.env.ORCH_WORKTREES || undefined; },

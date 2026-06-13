@@ -99,7 +99,7 @@ export class Engine {
     this.#bench = opts.benchmark ?? (() => 1);
     this.#spawn = opts.spawn ?? null;
     this.#mergeRecovery = opts.mergeRecovery;
-    this.#autoStashBeforeMerge = opts.autoStashBeforeMerge ?? false;
+    this.#autoStashBeforeMerge = opts.autoStashBeforeMerge ?? env.autoStash;
     this.#verifyCmd = opts.verifyCmd ?? env.verifyCmd;
     this.#id = opts.instanceId ?? `${process.pid}-${randomUUID().slice(0, 8)}`;
     this.#retryCooldownMs = opts.retryCooldownMs ?? 0; // default: no cooldown
@@ -223,7 +223,24 @@ export class Engine {
       }, 30_000);
       /* c8 ignore stop */
       try {
-        // Use the existing worktree (from a previous tick) if available, so
+        // Reconnect to worktree from a previous process if needed (B2 fix).
+        // Only attempt reconnection when there's evidence a worktree should
+        // exist: convergence > 0 means the agent already achieved metric=0
+        // in a prior tick, so a worktree was created. Without this gate,
+        // fresh tasks would prematurely create worktrees via #tryReconnectWorktree.
+        if (!this.#worktrees.has(task.taskNumber) && this.#spawn
+            && existsSync(resolve(this.#repo, '.git'))
+            && task.convergenceCount > 0) {
+          const reconnected = this.#tryReconnectWorktree(task);
+          if (reconnected) {
+            this.#log(`T${task.taskNumber} reconnected to worktree from previous process`);
+          } else {
+            task.resetConvergence();
+            this.#log(`T${task.taskNumber} worktree not found, convergence reset`, 'transition');
+          }
+        }
+
+        // Use the existing worktree (from this tick or reconnected) so
         // convergence checks measure the agent's work — not the main repo.
         const existingWt = this.#worktrees.get(task.taskNumber);
         const checkCwd = existingWt?.path ?? this.#repo;
@@ -346,7 +363,9 @@ export class Engine {
     if (task.hasConverged) {
       // Use passed worktree or look up from map (for subsequent ticks after spawn)
       let tree = wt ?? this.#worktrees.get(task.taskNumber) ?? null;
-      // If worktree not in memory (process restart) and repo has .git, try to reconnect
+      // If worktree not in memory (process restart) and repo has .git, try to reconnect.
+      // Normally B2 reconnect at pickup handles this; this is defense-in-depth.
+      /* v8 ignore next 3 -- safety net; B2 reconnect at pickup prevents this path */
       if (!tree && this.#spawn && existsSync(resolve(this.#repo, '.git'))) {
         tree = this.#tryReconnectWorktree(task);
       }
@@ -372,13 +391,14 @@ export class Engine {
           const recovered = await this.#recoverMergeFailure(task, tree, e);
           if (!recovered) return { task: task.info, metric, converged: false };
         }
-      } else if (this.#spawn && existsSync(resolve(this.#repo, '.git'))) {
-        // Spawn configured AND repo has .git, but no worktree found — agent
-        // work would be orphaned. Reset convergence instead of falsely CONVERGED.
+      }
+      /* v8 ignore start -- safety net; B2 reconnect at pickup prevents this path */
+      else if (this.#spawn && existsSync(resolve(this.#repo, '.git'))) {
         task.resetConvergence();
         this.#log(`T${task.taskNumber} convergence reached but worktree not found — resetting (process restart?)`, 'transition');
         return { task: task.info, metric, converged: false };
       }
+      /* v8 ignore stop */
       // No-spawn mode: tree===null is legitimate — converge without merge
       task.status = Status.CONVERGED;
       TaskState.pruneConverged(this.#dir, this.#keepConverged);

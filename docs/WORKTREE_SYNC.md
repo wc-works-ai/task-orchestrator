@@ -164,7 +164,7 @@ the metric=0 convergence path — the worktree is re-measured as-is.
 | 3.1 | Same process, worktree in memory, metric=0 | Convergence increments, no agent spawn, no worktree cleanup | ✅ SAFE — worktree unchanged, benchmark re-confirms |
 | 3.2 | Same process, worktree in memory, metric > 0 | `resetConvergence()` → 0. `#prepareWorktree()` → clean + sync → re-spawn agent | ✅ SAFE — base synced, agent retries |
 | 3.3 | Same process, base advanced, metric=0 in worktree | Convergence increments. Worktree NOT synced with new base | ⚠️ RISK — benchmark passes on stale worktree. Caught at merge: `syncWithBase()` + re-benchmark + verifyCmd guard against merging broken code. Not a bug but wastes convergence ticks if merge will rework |
-| 3.4 | **Process restarted**, convergence > 0 | `#worktrees` empty. Benchmark runs against main repo | 🔴 **BUG B2** — agent's committed work invisible. See B2 |
+| 3.4 | **Process restarted**, convergence > 0 | B2 reconnect: `#tryReconnectWorktree()` at pickup. If found → benchmark uses worktree. If not → convergence reset, retry from scratch | ✅ SAFE (fixed by B2) |
 | 3.5 | Process restarted, convergence = threshold−1, metric=0 in main repo | `#handleZero()` attempts `#tryReconnectWorktree()`. If worktree found → merge proceeds. If not found → convergence reset, retry from scratch | ✅ SAFE (fixed by B3) |
 | 3.6 | Process restarted, convergence > 0, metric > 0 in main repo | `resetConvergence()` → 0. `#prepareWorktree()` → reuses existing branch | ⚠️ RISK — convergence lost but committed work preserved. Agent rebuilds |
 | 3.7 | `.convergence_count` deleted between ticks | `convergenceCount` returns 0. Task restarts convergence from scratch | ✅ SAFE — no crash, just wasted progress |
@@ -189,7 +189,7 @@ Main repo may have uncommitted changes (user's work).
 | # | Scenario | Outcome | Status |
 |---|----------|---------|--------|
 | 4.1 | Clean main repo, clean merge | Merge succeeds, worktree + branch removed, task CONVERGED | ✅ SAFE |
-| 4.2 | Main repo has uncommitted changes | `git checkout base` fails | 🔴 **BUG B4** if `autoStashBeforeMerge=false` (default). Caught by recovery → BLOCKED. Error message confusing |
+| 4.2 | Main repo has uncommitted changes | Auto-stashed before merge (default). Restored after merge | ✅ SAFE (fixed by B4) — `autoStashBeforeMerge` now defaults to true. Disable with `ORCH_AUTO_STASH=false` |
 | 4.3 | Base advanced, no conflicts | `syncWithBase()` succeeds. Re-benchmark passes. Merge succeeds | ✅ SAFE |
 | 4.4 | Base advanced, syncWithBase() conflicts | MergeConflictError → BLOCKED, branch kept | ✅ SAFE |
 | 4.5 | Re-benchmark fails after sync | `resetConvergence()` → rework. Agent retries | ✅ SAFE |
@@ -288,41 +288,18 @@ works.
 
 ---
 
-### 🔴 B2: Process restart loses worktree reference
+### ✅ B2: Process restart loses worktree — FIXED (reconnect at pickup)
 
-**Severity:** High — every restart wastes convergence or triggers B3  
-**Scenarios:** 3.4, 3.5, 3.6  
-**Priority:** Next (B3's reconnect covers the merge path; B2 adds
-reconnection at pickup to also fix the benchmark-measures-wrong-tree
-problem)
+**Was:** High  
+**Status:** Fixed
 
-**Problem:** `#worktrees` is in-memory only. After restart, `existingWt`
-is undefined, so benchmark runs against main repo instead of worktree.
+**Solution:** In `tick()`, after `pick()` and before running the
+benchmark, if `convergenceCount > 0` and no worktree in memory,
+`#tryReconnectWorktree()` attempts to find the worktree on disk. If
+found, it's added to `#worktrees` and the benchmark runs against it. If
+not found, convergence is reset to 0 (fresh start).
 
-**Note:** B3 fix partially addresses this — at merge time,
-`#tryReconnectWorktree` will find the worktree. But convergence ticks
-between pickup and merge still measure the wrong tree until B2 is
-implemented.
-
-#### Implementation plan
-
-**File:** `src/Engine.ts` — `tick()` method, after `pick()` and before
-running the benchmark.
-
-**Change:** Reuse `#tryReconnectWorktree()` from B3 fix:
-
-```ts
-if (!this.#worktrees.has(task.taskNumber) && this.#spawn
-    && existsSync(resolve(this.#repo, '.git'))) {
-  const reconnected = this.#tryReconnectWorktree(task);
-  if (reconnected) {
-    this.#log(`T${task.taskNumber} reconnected to existing worktree`);
-  } else if (task.convergenceCount > 0) {
-    task.resetConvergence();
-    this.#log(`T${task.taskNumber} worktree not found, convergence reset`, 'transition');
-  }
-}
-```
+**Files changed:** `src/Engine.ts` (reconnect block in `tick()`).
 
 ---
 
@@ -342,43 +319,17 @@ than before).
 
 ---
 
-### ⚠️ B4: Main repo uncommitted changes block merge
+### ✅ B4: Main repo dirty blocks merge — FIXED (default autoStash)
 
-**Severity:** Medium — has working workaround  
-**Scenarios:** 4.2  
-**Priority:** Fix last
+**Was:** Medium  
+**Status:** Fixed
 
-**Problem:** `Worktree.merge()` calls `git checkout base` in the main
-repo. If the user has uncommitted changes, git refuses.
+**Solution:** `autoStashBeforeMerge` now defaults to `true` (was
+`false`). `env.autoStash` reads `ORCH_AUTO_STASH` with `'true'` as
+default. Set `ORCH_AUTO_STASH=false` to disable.
 
-**Current mitigation:** `autoStashBeforeMerge` option (default: false).
-
-#### Implementation plan
-
-**File:** `src/Engine.ts` — constructor (line 102)
-
-**Change:** Default `autoStashBeforeMerge` to `true`:
-```ts
-// Before:
-this.#autoStashBeforeMerge = opts.autoStashBeforeMerge ?? false;
-// After:
-this.#autoStashBeforeMerge = opts.autoStashBeforeMerge ?? true;
-```
-
-**Also:** Add `ORCH_AUTO_STASH` env var in `src/env.ts`:
-```ts
-get autoStash() { return (process.env.ORCH_AUTO_STASH ?? 'true') !== 'false'; },
-```
-
-Update constructor:
-```ts
-this.#autoStashBeforeMerge = opts.autoStashBeforeMerge ?? env.autoStash;
-```
-
-**Tests:**
-- Default behavior: main repo with uncommitted changes → stashed → merge succeeds → stash popped
-- `ORCH_AUTO_STASH=false` → old behavior (merge fails → BLOCKED)
-- Stash pop conflict after merge → logged but merge still succeeds
+**Files changed:** `src/env.ts` (default true), `src/Engine.ts`
+(reads `env.autoStash`).
 
 ---
 
@@ -447,7 +398,7 @@ B6 ─── ✅ FIXED
 |------------|---------|--------------|--------|
 | Clean | Same | Re-run benchmark in worktree | ✅ SAFE |
 | Advanced | Same | Re-run in stale worktree. Caught at merge | ⚠️ RISK |
-| Any | **New** | **B2:** benchmark in main repo, not worktree | 🔴 BUG |
+| Any | **New** | **B2 fixed:** reconnects worktree. If gone, resets convergence | ✅ SAFE |
 
 ### At merge (convergence = threshold)
 
@@ -456,7 +407,7 @@ B6 ─── ✅ FIXED
 | Clean | No | sync → benchmark → verify → merge | ✅ SAFE |
 | Advanced, no conflict | No | sync → merge | ✅ SAFE |
 | Advanced, conflict | No | MergeConflictError → BLOCKED | ✅ SAFE |
-| Any | **Yes** | **B4:** checkout fails → BLOCKED | ⚠️ RISK |
+| Any | **Yes** | **B4 fixed:** auto-stashed before merge (default) | ✅ SAFE |
 
 ---
 
@@ -465,18 +416,20 @@ B6 ─── ✅ FIXED
 | Bug | Severity | Fix | Files | Status |
 |-----|----------|-----|-------|--------|
 | **B3** | Critical | Guard `#handleZero()` + `#tryReconnectWorktree()` | Engine.ts | ✅ Fixed |
-| **B2** | High | Reconnect worktree in `tick()` (reuses B3 method) | Engine.ts | ✅ Partially fixed (B3's reconnect covers merge path; B2's pickup reconnect is TODO) |
+| **B2** | High | Reconnect worktree in `tick()` when convergence > 0 | Engine.ts | ✅ Fixed |
 | **B1** | High | Auto-commit after agent exits (`Worktree.autoCommit()`) | Engine.ts, Worktree.ts | ✅ Fixed |
 | **B5** | High | Crash detection + no-progress tracking + baseline regression | Engine.ts, TaskState.ts, cli.ts | 🔴 Open |
 | **B6** | High | Explicit `.target_branch` per task at creation time | addTask.ts, TaskState.ts, Engine.ts | ✅ Fixed |
-| **B4** | Medium | Default `autoStashBeforeMerge` to true + env var | Engine.ts, env.ts | 🔴 Open |
+| **B4** | Medium | Default `autoStashBeforeMerge` to true + env var | Engine.ts, env.ts | ✅ Fixed |
 
 ### Priority order
 
-1. **B3** — false CONVERGED is the worst outcome.
-2. **B2** — every restart wastes progress or triggers B3.
-3. **B5** — stale benchmark burns retries or causes false convergence.
-4. **B4** — has working workaround (`autoStashBeforeMerge`).
+1. ~~**B3**~~ ✅ Fixed
+2. ~~**B2**~~ ✅ Fixed
+3. ~~**B1**~~ ✅ Fixed
+4. ~~**B6**~~ ✅ Fixed
+5. ~~**B4**~~ ✅ Fixed
+6. **B5** — stale benchmark (3-layer plan documented, not yet implemented)
 
 ---
 

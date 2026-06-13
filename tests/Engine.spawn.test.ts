@@ -314,6 +314,7 @@ describe('Engine agent spawning', () => {
       repoDir,
       worktreesDir,
       mergeRecovery: recover,
+      autoStashBeforeMerge: false, // test recovery path, not pre-stash
     });
 
     await engine.tick();
