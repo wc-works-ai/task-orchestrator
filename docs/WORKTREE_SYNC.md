@@ -516,42 +516,63 @@ base is still the intended target.
 
 #### Implementation plan
 
-**Option A — Re-detect base before merge** (recommended)
+**Recommended: explicit target branch per task**
 
-**File:** `src/Engine.ts` — `#mergeAndRemove()` (line 380)
+The target branch should be an explicit property of the task, set at
+creation time — not an ambient detection from whatever `HEAD` happens to
+be.
 
-Before calling `wt.merge()`, verify the main repo is still on the
-expected base branch:
+**File:** `src/addTask.ts`
 
+At task creation, capture the current branch and persist it:
 ```ts
-const currentBranch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'],
-  { cwd: this.#repo, encoding: 'utf-8' }).trim();
-if (currentBranch !== this.#baseBranch) {
-  this.#log(`T${task.taskNumber} WARNING: main repo is on '${currentBranch}' ` +
-    `but task was created against '${this.#baseBranch}' — blocking task to avoid ` +
-    `merging into wrong branch`, 'always');
-  task.markBlocked();
-  return 'rework';
+// In addTask(), alongside .status, .dependencies:
+const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'],
+  { cwd: repoDir, encoding: 'utf-8' }).trim();
+writeFileSync(resolve(stagingDir, '.target_branch'), branch + '\n');
+```
+
+**File:** `src/TaskState.ts`
+
+Add a `targetBranch` getter:
+```ts
+get targetBranch(): string | undefined {
+  try { return readFileSync(join(this.#dir, '.target_branch'), 'utf-8').trim() || undefined; }
+  catch { return undefined; }
 }
 ```
 
-**Option B — Merge into worktree's own base (not main repo HEAD)**
+**File:** `src/Engine.ts`
 
-Change `Worktree.merge()` to always `git checkout <this.#base>` (which
-it already does) but add a post-merge step to restore the user's
-previous branch:
-
+Use `task.targetBranch` instead of `this.#baseBranch` when creating
+worktrees and merging:
 ```ts
-// After successful merge:
-if (prevBranch !== this.#base) {
-  try { this.#git('checkout', prevBranch); } catch {}
-}
+// In #prepareWorktree():
+const base = task.targetBranch ?? this.#baseBranch;
+wt = new Worktree(this.#repo, { name: task.taskName, baseBranch: base, ... });
+
+// In #mergeAndRemove() — verify before merge:
+const base = task.targetBranch ?? this.#baseBranch;
+// Worktree already uses its own #base, which was set from task.targetBranch
 ```
+
+**Benefits:**
+- Each task knows its target branch — explicit, auditable, on disk
+- Different tasks can target different branches (multi-branch support)
+- Survives process restarts (persisted, not in-memory)
+- `Engine.#baseBranch` becomes the fallback for tasks created before
+  this feature (backward compatible)
+- B6 is fully eliminated — merge always goes to the declared target
+
+**Backward compat:** Tasks without `.target_branch` fall back to
+`Engine.#baseBranch` (current behavior).
 
 **Tests:**
-- Main repo on branch B, task base is A → merge blocked with warning
-- Main repo on branch A (same as base) → merge succeeds normally
-- Post-merge: main repo restored to user's branch (Option B)
+- Task created with `.target_branch = main` → worktree branched from main, merged into main
+- Task created with `.target_branch = develop` → worktree branched from develop, merged into develop
+- Task without `.target_branch` → falls back to Engine's detected base (current behavior)
+- User switches main repo branch → merge still goes to task's declared target
+- Two tasks targeting different branches → each merges into its own target
 
 ---
 
