@@ -137,6 +137,17 @@ export class Worktree {
     try { this.#gitInWT('clean', '-fd'); } catch {}
   }
 
+  /** Commit any uncommitted changes in the worktree so merge captures
+   *  everything the benchmark validates. Returns true if a commit was made. */
+  autoCommit(message: string): boolean {
+    try {
+      if (!this.#gitInWT('status', '--porcelain').trim()) return false;
+      this.#gitInWT('add', '-A');
+      this.#gitInWT('commit', '-m', message);
+      return true;
+    } catch { return false; }
+  }
+
   /** Discard all worktree changes and reset the branch to the current base */
   resetForRetry(): void {
     try {

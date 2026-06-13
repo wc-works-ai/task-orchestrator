@@ -516,6 +516,11 @@ export class Engine {
       this.#handleEnvironmentalFailure(task, metric, spawnResult.error ?? 'coding agent authentication failed');
       return -1;
     }
+    // Auto-commit any uncommitted agent work so merge captures everything
+    // the benchmark validates (fixes B1: uncommitted changes lost at merge).
+    if (wt?.autoCommit('agent work (auto-committed by orchestrator)')) {
+      this.#log(`T${task.taskNumber} auto-committed uncommitted agent work`);
+    }
     const newMetric = await this.#run(task, wt?.path ?? this.#repo);
     this.#log(`T${task.taskNumber} check after agent (${wt ? 'worktree' : 'repo'}): metric=${newMetric}${newMetric === 0 ? ' (done)' : ' (still needs work)'}`);
     return newMetric;

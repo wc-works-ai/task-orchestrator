@@ -138,6 +138,28 @@ describe('Worktree', () => {
     expect(() => wt.resetForRetry()).not.toThrow();
   });
 
+  it('autoCommit commits dirty worktree and returns true', async () => {
+    const wt = new Worktree(repo, { name: 'T01-test' });
+    await wt.create();
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(join(wt.path, 'uncommitted.txt'), 'data');
+    expect(wt.autoCommit('test auto-commit')).toBe(true);
+    const log = execSync('git log --oneline -1', { cwd: wt.path, encoding: 'utf-8' });
+    expect(log).toContain('test auto-commit');
+  });
+
+  it('autoCommit returns false for clean worktree', async () => {
+    const wt = new Worktree(repo, { name: 'T01-test' });
+    await wt.create();
+    expect(wt.autoCommit('nothing to commit')).toBe(false);
+  });
+
+  it('autoCommit returns false on git failure', () => {
+    // Non-existent worktree — git commands will fail
+    const wt = new Worktree(repo, { name: 'T99-nonexistent' });
+    expect(wt.autoCommit('should fail')).toBe(false);
+  });
+
   it('reuses existing worktree without error', async () => {
     const wt = new Worktree(repo, { name: 'T01-test' });
     await wt.create();

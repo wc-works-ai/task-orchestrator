@@ -130,7 +130,7 @@ currently detected or logged.
 |---|----------|---------|--------|
 | 2.1 | Agent commits all work, metric=0 | `#handleZero()` → convergence=1 | ✅ SAFE — committed changes persist in worktree |
 | 2.2 | Agent commits all work, metric > 0 | `#handleFailure()` → FAILED, retry later | ✅ SAFE — on retry (same process), `resetForRetry()` runs `git reset --hard base` which wipes agent commits. Agent starts fresh from current base. This is by design: the previous attempt didn't achieve metric=0, so a clean start is correct |
-| 2.3 | Agent leaves uncommitted changes, metric=0 | `#handleZero()` → convergence=1 | 🔴 **BUG B1.** Benchmark passed against uncommitted code. At merge, only committed code is merged. Uncommitted changes silently lost |
+| 2.3 | Agent leaves uncommitted changes, metric=0 | `#handleZero()` → convergence=1 | ✅ SAFE (fixed) — `autoCommit()` runs after agent exits, before benchmark. All uncommitted work is committed so merge captures what the benchmark validated |
 | 2.4 | Agent leaves uncommitted changes, metric > 0 | `#handleFailure()` → FAILED | ⚠️ RISK — on retry, `cleanWorktree()` discards both tracked edits and untracked files. **All near-success agent work is silently destroyed** unless the agent committed it. No recoverability |
 | 2.5 | Agent crashes mid-work | Partial committed + uncommitted state | ⚠️ RISK — same as 2.3 or 2.4 depending on what was committed before crash |
 | 2.6 | Main repo advances while agent works | No immediate effect | ✅ SAFE — `syncWithBase()` runs at next `#prepareWorktree()` or at merge |
@@ -196,7 +196,7 @@ Main repo may have uncommitted changes (user's work).
 | 4.6 | verifyCmd fails after sync | `resetConvergence()` → rework | ✅ SAFE |
 | 4.7 | Merge conflicts (branch → base) | MergeConflictError → BLOCKED, branch kept | ✅ SAFE |
 | 4.8 | Another orchestrator holds merge lock | `return 'locked'` → retry next tick | ✅ SAFE |
-| 4.9 | Uncommitted changes passed benchmark but aren't committed | Only committed code merged. Uncommitted work lost | 🔴 **BUG B1** |
+| 4.9 | Agent had uncommitted changes that passed benchmark | Auto-committed before benchmark runs. Merge captures all validated code | ✅ SAFE (fixed) |
 | 4.10 | SIGKILL during merge | Main repo left on base branch, possibly mid-merge (`.git/MERGE_HEAD` set). Lock dir remains | ⚠️ RISK — neither `cleanWorktree()` nor `syncWithBase()` checks for in-progress merges before starting. Next retry: `merge()` fails → caught → `git merge --abort` → one tick wasted. `prevBranch` captured during recovery may be wrong (base instead of user's topic branch). Lock auto-reclaimed after timeout |
 | 4.11 | SIGKILL during syncWithBase (in worktree) | Worktree left with `.git/MERGE_HEAD`. `cleanWorktree()` does NOT abort merges. Next `syncWithBase()` fails → caught → rethrown → `resetForRetry()` → `git reset --hard base` **discards agent's committed work** | ⚠️ RISK — silent data loss. Same as F5 in Opus review |
 | 4.12 | Merge lock stale (previous holder crashed) | Lock reclaimed after `ORCH_MERGE_LOCK_MS` timeout. mkdir retried atomically | ✅ SAFE |
@@ -391,66 +391,19 @@ This reuses `#tryReconnectWorktree()` from the B3 fix. The four cases:
 
 ---
 
-### 🔴 B1: Uncommitted changes pass benchmark but are lost at merge
+### ✅ B1: Uncommitted changes — FIXED (auto-commit)
 
-**Severity:** High — especially critical for CopilotCliAgent (no commit
-instruction in prompt)  
-**Scenarios:** 2.3, 2.5, 2.10, 4.9, 7.2  
-**Priority:** Fix third
+**Was:** High  
+**Status:** Fixed
 
-**Problem:** The orchestrator does NOT auto-commit agent work. If the
-agent leaves uncommitted changes, the benchmark validates code that
-won't be in the merge.
+**Solution:** `Worktree.autoCommit()` runs in `Engine.#runSpawnCycle()`
+after the agent exits and before the benchmark. Any uncommitted work is
+committed with message `"agent work (auto-committed by orchestrator)"`.
+Best-effort — if the commit fails, the benchmark still runs (no worse
+than before).
 
-**Root cause:** No commit step between agent exit and benchmark run.
-
-#### Implementation plan
-
-**File:** `src/Engine.ts` — `#runSpawnCycle()` method (lines 500-517)
-
-**Change:** After line 509 (after logging spawn result) and before
-line 514 (`this.#run(task, ...)`), add auto-commit:
-
-```ts
-// Auto-commit any uncommitted agent work so merge captures everything
-// the benchmark validates. Use git status --porcelain for an explicit
-// dirty check (not exception-based flow).
-if (wt) {
-  try {
-    const dirty = execFileSync('git', ['status', '--porcelain'],
-      { cwd: wt.path, encoding: 'utf-8' }).trim();
-    if (dirty) {
-      execFileSync('git', ['add', '-A'], { cwd: wt.path });
-      execFileSync('git', ['commit', '-m',
-        'agent work (auto-committed by orchestrator)'],
-        { cwd: wt.path });
-      this.#log(`T${task.taskNumber} auto-committed uncommitted agent work`);
-    }
-  } catch {
-    // Best-effort; if commit fails, benchmark still runs and the
-    // B1 risk remains — but this is no worse than current behavior
-  }
-}
-```
-
-**Also:** Add `Worktree.autoCommit()` method to `src/Worktree.ts` for
-cleanliness:
-```ts
-/** Commit any uncommitted changes. Returns true if a commit was made. */
-autoCommit(message: string): boolean {
-  const dirty = this.#gitInWT('status', '--porcelain').trim();
-  if (!dirty) return false;
-  this.#gitInWT('add', '-A');
-  this.#gitInWT('commit', '-m', message);
-  return true;
-}
-```
-
-**Tests:**
-- Agent leaves uncommitted files → auto-committed before benchmark
-- Agent commits everything → no auto-commit (clean worktree)
-- Auto-commit fails (e.g., git lock) → swallowed, benchmark still runs
-- Verify merged code includes auto-committed changes
+**Files changed:** `src/Worktree.ts` (`autoCommit()` method),
+`src/Engine.ts` (`#runSpawnCycle()` calls `wt.autoCommit()`).
 
 ---
 
@@ -521,7 +474,7 @@ B2 (reconnect on pickup) ────── reuses ─────────�
         │
         │ (B2 prevents B3, but B3 is the safety net)
         │
-B1 (auto-commit) ─── independent ─── can be done in parallel
+B1 (auto-commit) ─── ✅ FIXED
         │
 B5 (stale benchmark) ─── independent ─── 3 layers, can be incremental
         │
@@ -578,7 +531,7 @@ B6 ─── ✅ FIXED
 |-----|----------|-----|-------|--------|
 | **B3** | Critical | Guard `#handleZero()` + `#tryReconnectWorktree()` | Engine.ts | 🔴 Open |
 | **B2** | High | Reconnect worktree in `tick()` (reuses B3 method) | Engine.ts | 🔴 Open |
-| **B1** | High | Auto-commit after agent exits (`Worktree.autoCommit()`) | Engine.ts, Worktree.ts | 🔴 Open |
+| **B1** | High | Auto-commit after agent exits (`Worktree.autoCommit()`) | Engine.ts, Worktree.ts | ✅ Fixed |
 | **B5** | High | Crash detection + no-progress tracking + baseline regression | Engine.ts, TaskState.ts, cli.ts | 🔴 Open |
 | **B6** | High | Explicit `.target_branch` per task at creation time | addTask.ts, TaskState.ts, Engine.ts | ✅ Fixed |
 | **B4** | Medium | Default `autoStashBeforeMerge` to true + env var | Engine.ts, env.ts | 🔴 Open |
@@ -587,9 +540,8 @@ B6 ─── ✅ FIXED
 
 1. **B3** — false CONVERGED is the worst outcome.
 2. **B2** — every restart wastes progress or triggers B3.
-3. **B1** — uncommitted changes create gap between validated and merged code.
-4. **B5** — stale benchmark burns retries or causes false convergence.
-5. **B4** — has working workaround (`autoStashBeforeMerge`).
+3. **B5** — stale benchmark burns retries or causes false convergence.
+4. **B4** — has working workaround (`autoStashBeforeMerge`).
 
 ---
 
