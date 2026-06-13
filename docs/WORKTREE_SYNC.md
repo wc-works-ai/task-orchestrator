@@ -200,6 +200,7 @@ Main repo may have uncommitted changes (user's work).
 | 4.10 | SIGKILL during merge | Main repo left on base branch, possibly mid-merge (`.git/MERGE_HEAD` set). Lock dir remains | ⚠️ RISK — neither `cleanWorktree()` nor `syncWithBase()` checks for in-progress merges before starting. Next retry: `merge()` fails → caught → `git merge --abort` → one tick wasted. `prevBranch` captured during recovery may be wrong (base instead of user's topic branch). Lock auto-reclaimed after timeout |
 | 4.11 | SIGKILL during syncWithBase (in worktree) | Worktree left with `.git/MERGE_HEAD`. `cleanWorktree()` does NOT abort merges. Next `syncWithBase()` fails → caught → rethrown → `resetForRetry()` → `git reset --hard base` **discards agent's committed work** | ⚠️ RISK — silent data loss. Same as F5 in Opus review |
 | 4.12 | Merge lock stale (previous holder crashed) | Lock reclaimed after `ORCH_MERGE_LOCK_MS` timeout. mkdir retried atomically | ✅ SAFE |
+| 4.13 | **User switched main repo from branch A to B** while task was in progress | `merge()` runs `git checkout A` (the cached base) → switches main repo from B to A without consent. Agent work merged into A, not B. After merge, main repo is left on A | 🔴 **BUG B6** — user silently loses their current branch context. Agent work may land on the wrong branch. See **B6** |
 
 ### Phase 5: Failure and retry
 
@@ -492,7 +493,67 @@ this.#autoStashBeforeMerge = opts.autoStashBeforeMerge ?? env.autoStash;
 
 ---
 
-## Implementation order and dependencies
+### 🔴 B6: User branch switch causes merge into wrong branch
+
+**Severity:** High — user silently loses current branch context  
+**Scenarios:** 4.13
+
+**Problem:** The base branch is captured once at Engine construction
+(`#detectBaseBranch()` → `this.#baseBranch`). If the user switches the
+main repo from branch A to branch B while tasks are running,
+`Worktree.merge()` still does `git checkout A` — silently switching the
+user's repo from B back to A and merging agent work into A.
+
+**Root cause:** `this.#base` in Worktree is a frozen string set at
+construction. `merge()` uses it for `git checkout` and `git merge`
+without checking what branch the repo is currently on or whether the
+base is still the intended target.
+
+**Impact:**
+- User's main repo is silently switched to branch A
+- Agent work merged into A even if user intended B
+- After merge, main repo is left on A (not restored to B)
+
+#### Implementation plan
+
+**Option A — Re-detect base before merge** (recommended)
+
+**File:** `src/Engine.ts` — `#mergeAndRemove()` (line 380)
+
+Before calling `wt.merge()`, verify the main repo is still on the
+expected base branch:
+
+```ts
+const currentBranch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'],
+  { cwd: this.#repo, encoding: 'utf-8' }).trim();
+if (currentBranch !== this.#baseBranch) {
+  this.#log(`T${task.taskNumber} WARNING: main repo is on '${currentBranch}' ` +
+    `but task was created against '${this.#baseBranch}' — blocking task to avoid ` +
+    `merging into wrong branch`, 'always');
+  task.markBlocked();
+  return 'rework';
+}
+```
+
+**Option B — Merge into worktree's own base (not main repo HEAD)**
+
+Change `Worktree.merge()` to always `git checkout <this.#base>` (which
+it already does) but add a post-merge step to restore the user's
+previous branch:
+
+```ts
+// After successful merge:
+if (prevBranch !== this.#base) {
+  try { this.#git('checkout', prevBranch); } catch {}
+}
+```
+
+**Tests:**
+- Main repo on branch B, task base is A → merge blocked with warning
+- Main repo on branch A (same as base) → merge succeeds normally
+- Post-merge: main repo restored to user's branch (Option B)
+
+---
 
 ```
 B3 (guard #handleZero)  ←──  depends on  ──→  #tryReconnectWorktree()
@@ -504,6 +565,8 @@ B2 (reconnect on pickup) ────── reuses ─────────�
         │
 B1 (auto-commit) ─── independent ─── can be done in parallel
         │
+B6 (branch check) ─── independent ─── can be done in parallel
+        │
 B5 (stale benchmark) ─── independent ─── 3 layers, can be incremental
         │
 B4 (default autoStash) ─── independent ─── trivial
@@ -514,10 +577,11 @@ B4 (default autoStash) ─── independent ─── trivial
 2. Implement B3 guard in `#handleZero()` (uses reconnect)
 3. Implement B2 reconnect in `tick()` (uses same method)
 4. Implement B1 auto-commit in `#runSpawnCycle()` (independent)
-5. Implement B5 layer 1: crash detection (independent, low complexity)
-6. Implement B5 layer 2: no-progress detection (independent)
-7. Implement B5 layer 3: baseline regression (independent)
-8. Implement B4 default flip (independent, trivial)
+5. Implement B6 base-branch check before merge (independent, low)
+6. Implement B5 layer 1: crash detection (independent, low complexity)
+7. Implement B5 layer 2: no-progress detection (independent)
+8. Implement B5 layer 3: baseline regression (independent)
+9. Implement B4 default flip (independent, trivial)
 
 ---
 
@@ -559,6 +623,7 @@ B4 (default autoStash) ─── independent ─── trivial
 | **B2** | High | Reconnect worktree in `tick()` (reuses B3 method) | Engine.ts | Medium |
 | **B1** | High | Auto-commit after agent exits (`Worktree.autoCommit()`) | Engine.ts, Worktree.ts | Low |
 | **B5** | High | Crash detection + no-progress tracking + baseline regression | Engine.ts, TaskState.ts, cli.ts | Medium–High |
+| **B6** | High | Verify base branch before merge or restore user branch after | Engine.ts, Worktree.ts | Low |
 | **B4** | Medium | Default `autoStashBeforeMerge` to true + env var | Engine.ts, env.ts | Low |
 
 ### Priority order
@@ -566,8 +631,9 @@ B4 (default autoStash) ─── independent ─── trivial
 1. **B3** — false CONVERGED is the worst outcome.
 2. **B2** — every restart wastes progress or triggers B3.
 3. **B1** — uncommitted changes create gap between validated and merged code.
-4. **B5** — stale benchmark burns retries or causes false convergence.
-5. **B4** — has working workaround (`autoStashBeforeMerge`).
+4. **B6** — user silently loses branch context on merge.
+5. **B5** — stale benchmark burns retries or causes false convergence.
+6. **B4** — has working workaround (`autoStashBeforeMerge`).
 
 ---
 
