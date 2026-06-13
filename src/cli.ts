@@ -106,34 +106,35 @@ OPERATIONS
   --task <n>        Run a single task by number
   --unblock <n|all> Reset blocked/failed task(s) to pending
   --stop            Send stop signal to a running loop
-  --config          Show all resolved configuration
+  --config          Show all resolved configuration with sources
 
-RUN MODES
+FLAGS (all optional — override env vars; env vars override defaults)
+  --repo <dir>      Target repository                 [default: cwd]
+  --agent <name>    Coding agent: pi | copilot        [default: pi]
+  --model <model>   Model override                    [default: agent picks]
+  --reasoning <lvl> Reasoning effort                  [default: off]
+  --parallel <n>    Concurrent tasks (0=unlimited)    [default: 1]
+  --auto-stash      Stash repo changes before merge   [default: on]
+  --keep-alive      Stay alive through idle periods   [default: off]
+  --loop            Daemon mode: never exit           [default: off]
   --once            Run one tick, then exit
-  --loop            Daemon mode: run forever, wait for new tasks
-  --keep-alive      Keep running through transient idle periods
-  --parallel <n>    Run up to n tasks concurrently
-
-COMMON FLAGS
-  --repo <dir>      Target repository
-  --agent <name>    Coding agent: pi or copilot
-  --model <model>   Model override (e.g. gpt-5, claude-opus)
-  --auto-stash      Stash repo changes before merge
   -h, --help        Show this help
 
-CURRENT SETTINGS
+  No flags are required. All have ORCH_* env var equivalents.
+  Priority: --flag > ORCH_* env var > default.
+
+CURRENT SETTINGS (from env vars / defaults — flags override these)
   agent=${a}  model=${m}  reasoning=${r}
   parallel=${p}  converge=${c}  max-failures=${mf}
   auto-stash=${as}  log-level=${ll}
   Run --config for full list with sources.
 
 EXAMPLES
-  orchestrator                     Run all tasks to completion
+  orchestrator                     Run with defaults
   orchestrator --loop              Daemon mode
-  orchestrator --status            Check progress
-  orchestrator add fix-tests       Create task "fix-tests"
-  orchestrator --unblock 3         Retry task T3
-  ORCH_PARALLEL=4 orchestrator     Run 4 tasks in parallel
+  orchestrator --agent copilot     Override agent for this run
+  ORCH_MODEL=gpt-5 orchestrator   Set model via env var
+  orchestrator --config            Verify effective configuration
 `);
   process.exit(0);
 }
