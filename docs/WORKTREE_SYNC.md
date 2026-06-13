@@ -1,8 +1,13 @@
 # Worktree synchronization: scenarios and risks
 
 This document catalogues every scenario where the main repo and worktree
-can drift out of sync during a task's lifecycle, the current behaviour in
-each case, and recommended mitigations.
+can drift out of sync during a task's lifecycle. Each scenario is marked:
+
+- ✅ **SAFE** — currently handled correctly
+- 🔴 **BUG** — current code has a defect
+- ⚠️ **RISK** — works but fragile or wasteful
+
+---
 
 ## Background
 
@@ -13,21 +18,62 @@ The orchestrator keeps two Git trees per task:
 | **Main repo** | The checkout the orchestrator runs in | Other tasks merging, manual commits, external CI |
 | **Worktree** | `<worktreesDir>/<taskName>` on branch `orchestrator/<taskName>` | The coding agent (pi / copilot CLI) |
 
-The worktree branch is created from the main repo's current branch (the
-"base branch") at task pickup. From that point the two diverge: the base
-advances as other work merges, and the worktree advances as the agent
-commits.
+The base branch is captured **once at Engine construction** (not per
+pickup). Worktrees are created **lazily** — only when metric > 0 and
+`.git` exists — inside `#prepareWorktree()`. If the branch
+`orchestrator/<taskName>` already exists (from a prior run), it is
+reused with its existing commits.
 
 ### Key data structures
 
 - **`.convergence_count`** — file on disk in the task directory.
-  Incremented each time benchmark returns metric=0. Convergence threshold
-  defaults to 3 (`ORCH_CONVERGE`).
-- **`#worktrees`** — in-memory `Map<number, Worktree>` in Engine. Lost
-  when the loop process restarts.
-- **Agent commits** — pi's `log_experiment` commits to the worktree
-  branch. Uncommitted changes are possible if the agent crashes or is
-  killed mid-work.
+  Incremented each time benchmark returns metric=0. Threshold is
+  configurable via `ORCH_CONVERGE` (default 3). If the file is missing
+  or corrupted, it is silently treated as 0.
+- **`#worktrees`** — **in-memory** `Map<number, Worktree>` in Engine.
+  **Lost when the loop process restarts.** This is the root cause of
+  bugs B2 and B3.
+- **Agent commits** — the orchestrator does NOT auto-commit agent work.
+  Behaviour depends on the agent backend:
+  - **PiSpawner**: prompt instructs the agent to use `log_experiment`,
+    which commits at experiment boundaries. Edits between
+    `log_experiment` calls remain uncommitted.
+  - **CopilotCliAgent**: prompt contains **no commit instruction**.
+    Copilot may or may not commit on its own. **B1 (silent loss of
+    uncommitted work) is the default failure mode** for every successful
+    Copilot run unless the agent independently decides to commit.
+  
+  Only committed changes survive cleanup and merge.
+- **Merge lock** — directory-based lock (`.orchestrator-merge-lock`) in
+  the repo. Only one orchestrator can merge at a time. Stale locks are
+  reclaimed after `ORCH_MERGE_LOCK_MS` timeout.
+- **Claims** — directory-based per-task lock (`.claim/`). Prevents two
+  orchestrator instances from processing the same task. Released on
+  completion, failure, or stale-heartbeat recovery.
+- **Base branch** — captured once at Engine construction
+  (`#detectBaseBranch()`), never refreshed. If the user switches branches
+  mid-run or `git pull` advances the base, the orchestrator is unaware.
+  "Base advanced" in this doc means the local branch pointer advanced
+  (e.g., another task merged), not that the remote was fetched.
+
+### What is safe by design
+
+These are NOT bugs — the architecture handles them correctly:
+
+| Area | Why it's safe |
+|------|---------------|
+| **Parallel ticks (same process)** | `#owned` Set prevents the same task from being processed by two concurrent ticks. Second tick skips and returns null |
+| **Parallel orchestrator instances** | Task claims (`.claim` directory + owner file) prevent two instances from picking the same task. Merge lock prevents concurrent merges |
+| **Same-task convergence serialization** | Convergence is serialized by claim ownership; only one process can increment convergence for a given task at a time |
+| **Cross-task worktree isolation** | Each task has its own worktree and branch. When task A merges (advancing base), task B's worktree stays stale until its next `syncWithBase()` — called at `#prepareWorktree()` and `#mergeAndRemove()` |
+| **Branch reuse on restart** | When a new process creates a Worktree for a task whose branch already exists, `#add()` reuses the branch. Previous agent commits survive. `cleanWorktree()` only removes uncommitted changes |
+| **Recovery preserves convergence** | `#recover()` releases stale claims (→ FAILED) but does NOT reset `.convergence_count`. The task can resume convergence from where it left off (modulo B2) |
+| **`--unblock` resets task state** | Clears failures, convergence, and claim. Moves task to PENDING. Does NOT delete the worktree or branch — agent's committed work is preserved for the next run |
+| **Convergence counter corruption** | If `.convergence_count` is deleted or unreadable, `convergenceCount` returns 0. The task re-enters the normal flow. No crash, no stuck state |
+| **Scope enforcement** | Advisory only (prompt-based). The orchestrator does not validate scope. Out-of-scope edits are handled by git: conflicts surface at `syncWithBase()` or merge, and `cleanWorktree()` discards uncommitted out-of-scope edits on retry |
+| **`node_modules` copy failure** | The copy (`cpSync`) is best-effort; failure is swallowed. The agent may encounter missing dependencies, but this manifests as a benchmark failure (metric > 0), not a crash. The task retries naturally |
+| **Task dependencies and convergence** | Dependent tasks wait for the dependency's `CONVERGED` status, not its convergence count. A task at convergence=2 does not unblock dependents. The stale-code risk from dependencies is really B3 (false CONVERGED) |
+| **No-spawn mode** | When no spawner is configured, no worktree is ever created. Tasks converge by benchmark alone with `cwd = repo`. `tree === null` at merge time is legitimate in this mode (see B3 nuance) |
 
 ---
 
@@ -44,23 +90,26 @@ tick()
 ```
 
 **State:** No worktree exists yet. Benchmark runs against the main repo.
+This is intentional — the initial check determines whether work is
+needed.
 
-| # | Scenario | Outcome | Risk |
-|---|----------|---------|------|
-| 1.1 | metric > 0 (normal) | `#prepareWorktree()` creates worktree from base, `cleanWorktree()` + `syncWithBase()`, spawns agent | ✅ Safe. Fresh worktree from current base |
-| 1.2 | metric = 0 already | `#handleZero()` → convergence=1. No worktree created | ⚠️ See Phase 3 issue P3.4 |
-| 1.3 | Benchmark crashes | Caught as metric=1 → same as 1.1 | ⚠️ Agent spawned against broken benchmark (separate issue) |
+| # | Scenario | Outcome | Status |
+|---|----------|---------|--------|
+| 1.1 | metric > 0 (normal) | `#prepareWorktree()` creates worktree from base, `cleanWorktree()` + `syncWithBase()`, spawns agent | ✅ SAFE — fresh worktree from current base |
+| 1.2 | metric = 0 already | `#handleZero()` → convergence=1. No worktree created | ✅ SAFE — if threshold is 1, task converges immediately (task was already done). If threshold > 1, re-checked next tick |
+| 1.3 | Benchmark crashes (process error) | Caught as metric=1 → same as 1.1 | ⚠️ RISK — agent spawned against broken benchmark. Separate issue |
 
 ### Phase 2: Agent works (worktree active)
 
 ```
 #prepareWorktree()
   → creates worktree (or reuses existing)
-  → cleanWorktree(): discards uncommitted changes
+  → cleanWorktree(): best-effort discard of uncommitted changes
   → syncWithBase(): merges latest base into worktree branch
+      on any error (conflict or otherwise): resetForRetry() (hard reset to base)
 #runSpawnCycle()
   → spawns agent (cwd = worktree)
-  → agent reads, edits, commits in worktree
+  → agent reads, edits, may or may not commit
   → run benchmark in worktree
 ```
 
@@ -68,17 +117,25 @@ tick()
 from agent. Main repo may have advanced (other tasks merging
 concurrently).
 
-| # | Scenario | Outcome | Risk |
-|---|----------|---------|------|
-| 2.1 | Agent commits, metric=0 | `#handleZero()` → convergence=1 | ✅ Safe. Committed changes persist in worktree |
-| 2.2 | Agent commits, metric > 0 | `#handleFailure()` → FAILED, retry later | ✅ Safe. On retry, `#prepareWorktree()` cleans uncommitted + syncs with base. Committed changes preserved |
-| 2.3 | Agent leaves uncommitted changes, metric=0 | `#handleZero()` → convergence=1 | **🔴 BUG.** Benchmark passed against uncommitted code. At merge time, only committed code is merged. Uncommitted changes are silently lost. See **B1** |
-| 2.4 | Agent leaves uncommitted changes, metric > 0 | `#handleFailure()` → FAILED | ✅ On retry, `#prepareWorktree()` calls `cleanWorktree()` which discards uncommitted changes. Agent starts fresh |
-| 2.5 | Agent crashes mid-commit | Partial state | ⚠️ Same as 2.3 or 2.4 depending on timing |
-| 2.6 | Main repo advances while agent works | No immediate effect | ✅ `syncWithBase()` runs at next `#prepareWorktree()` or at merge |
-| 2.7 | Another task merges to base during agent run, conflicting files | No immediate effect | ✅ Conflict detected at `syncWithBase()` or merge time |
+**Note on cleanup:** `cleanWorktree()` is best-effort — both
+`git checkout -- .` and `git clean -fd` swallow errors. If cleanup fails,
+the worktree may still be dirty when the agent starts. This is not
+currently detected or logged.
 
-### Phase 3: Convergence ticks (convergence 1 → 2 → 3)
+| # | Scenario | Outcome | Status |
+|---|----------|---------|--------|
+| 2.1 | Agent commits all work, metric=0 | `#handleZero()` → convergence=1 | ✅ SAFE — committed changes persist in worktree |
+| 2.2 | Agent commits all work, metric > 0 | `#handleFailure()` → FAILED, retry later | ✅ SAFE — on retry, `resetForRetry()` then `#prepareWorktree()` clean + sync. Committed changes preserved on branch |
+| 2.3 | Agent leaves uncommitted changes, metric=0 | `#handleZero()` → convergence=1 | 🔴 **BUG B1.** Benchmark passed against uncommitted code. At merge, only committed code is merged. Uncommitted changes silently lost |
+| 2.4 | Agent leaves uncommitted changes, metric > 0 | `#handleFailure()` → FAILED | ⚠️ RISK — on retry, `cleanWorktree()` discards both tracked edits and untracked files. **All near-success agent work is silently destroyed** unless the agent committed it. No recoverability |
+| 2.5 | Agent crashes mid-work | Partial committed + uncommitted state | ⚠️ RISK — same as 2.3 or 2.4 depending on what was committed before crash |
+| 2.6 | Main repo advances while agent works | No immediate effect | ✅ SAFE — `syncWithBase()` runs at next `#prepareWorktree()` or at merge |
+| 2.7 | Another task merges, conflicting files | No immediate effect | ✅ SAFE — conflict detected at `syncWithBase()` or merge time |
+| 2.8 | `syncWithBase()` fails during `#prepareWorktree()` | `resetForRetry()` — hard reset to base branch | ✅ SAFE — both MergeConflictError and plain Error fall through to catch. Agent starts fresh on latest base. Previous committed work on the branch is lost by the hard reset |
+| 2.9 | Agent edits files outside declared scope | Committed out-of-scope changes persist | ⚠️ RISK — no enforcement. May conflict with other tasks at sync/merge. Prompt-based scope is advisory only |
+| 2.10 | `cleanWorktree()` fails silently | Agent starts on dirty worktree | ⚠️ RISK — errors swallowed by try/catch. No detection or logging. Agent may see stale files from previous run |
+
+### Phase 3: Convergence ticks (convergence 1 → 2 → threshold)
 
 After metric=0, the task stays IN_PROGRESS and is re-picked on the next
 loop tick. The benchmark is re-run to confirm stability.
@@ -88,223 +145,230 @@ tick()
   → pick() re-picks our IN_PROGRESS task
   → existingWt = #worktrees.get(taskNumber)
   → if found: checkCwd = worktree (with agent's commits)
-  → if NOT found: checkCwd = main repo (WRONG!)
+  → if NOT found: checkCwd = main repo (see B2)
   → run benchmark
   → metric=0? → incrementConvergence
-  → convergence ≥ 3? → #mergeAndRemove()
+  → convergence ≥ threshold? → #mergeAndRemove()
 ```
 
 **State:** Worktree has agent's committed changes. Main repo may have
-advanced further.
+advanced further. No `syncWithBase()` or `cleanWorktree()` runs during
+the metric=0 convergence path — the worktree is re-measured as-is.
 
-| # | Scenario | Outcome | Risk |
-|---|----------|---------|------|
-| 3.1 | Same process, worktree in memory, metric=0 | convergence increments, no agent spawn, no worktree cleanup | ✅ Safe. Worktree unchanged, benchmark re-confirms |
-| 3.2 | Same process, worktree in memory, metric > 0 (regression) | `resetConvergence()` → back to 0. `#prepareWorktree()` → `cleanWorktree()` + `syncWithBase()` → re-spawn agent | ✅ Safe. Uncommitted junk cleaned, base synced |
-| 3.3 | Same process, base advanced between ticks, metric=0 | convergence increments. Benchmark passed against worktree (which has NOT synced with new base yet) | **⚠️ RISK.** Benchmark passes on stale worktree. Caught at merge (`syncWithBase` + re-benchmark in `#mergeAndRemove`). Not a bug but wasted convergence ticks |
-| 3.4 | **Process restarted** between convergence ticks | `#worktrees` map is empty. `existingWt = undefined`. `checkCwd = this.#repo` (main repo) | **🔴 BUG.** Benchmark runs against main repo, not the worktree. Agent's committed work is invisible. See **B2** |
-| 3.5 | Process restarted, convergence count was 2, metric=0 in main repo | convergence hits 3 → `#mergeAndRemove()` → but `#worktrees` is empty → `tree = null` → skips merge, marks CONVERGED | **🔴 BUG.** Task converges without merging agent's work. The worktree branch exists in git but is abandoned. See **B3** |
-| 3.6 | Process restarted, convergence count was 2, metric > 0 in main repo | `resetConvergence()` → back to 0. Agent re-spawned. `#prepareWorktree()` finds no existing worktree, creates new one from base | **⚠️ RISK.** Old worktree branch exists in git. New worktree reuses it (via `#add()`). Agent's previous commits are on the branch. `cleanWorktree()` only cleans uncommitted. `syncWithBase()` merges base in. Previous agent work survives. Could be confusing but not data loss |
+| # | Scenario | Outcome | Status |
+|---|----------|---------|--------|
+| 3.1 | Same process, worktree in memory, metric=0 | Convergence increments, no agent spawn, no worktree cleanup | ✅ SAFE — worktree unchanged, benchmark re-confirms |
+| 3.2 | Same process, worktree in memory, metric > 0 | `resetConvergence()` → 0. `#prepareWorktree()` → clean + sync → re-spawn agent | ✅ SAFE — base synced, agent retries |
+| 3.3 | Same process, base advanced, metric=0 in worktree | Convergence increments. Worktree NOT synced with new base | ⚠️ RISK — benchmark passes on stale worktree. Caught at merge: `syncWithBase()` + re-benchmark + verifyCmd guard against merging broken code. Not a bug but wastes convergence ticks if merge will rework |
+| 3.4 | **Process restarted**, convergence > 0 | `#worktrees` empty. Benchmark runs against main repo | 🔴 **BUG B2** — agent's committed work invisible. See B2 |
+| 3.5 | Process restarted, convergence = threshold−1, metric=0 in main repo | Convergence reaches threshold → `tree = null` → merge skipped → false CONVERGED | 🔴 **BUG B3** — agent's work orphaned. See B3 |
+| 3.6 | Process restarted, convergence > 0, metric > 0 in main repo | `resetConvergence()` → 0. `#prepareWorktree()` → reuses existing branch | ⚠️ RISK — convergence lost but committed work preserved. Agent rebuilds |
+| 3.7 | `.convergence_count` deleted between ticks | `convergenceCount` returns 0. Task restarts convergence from scratch | ✅ SAFE — no crash, just wasted progress |
 
-### Phase 4: Merge (convergence = 3)
+### Phase 4: Merge (convergence reaches threshold)
 
 ```
 #mergeAndRemove(task, wt)
-  → acquireMergeLock()
-  → stashParentChanges() (if autoStash)
+  → acquireMergeLock() (directory-based, cross-process safe)
+  → stashParentChanges() (if autoStash enabled)
   → syncWithBase(): merge latest base into worktree branch
-  → run benchmark in worktree (final check)
+  → run benchmark in worktree (final check after sync)
   → runVerifyCmd() (if configured)
-  → merge(): checkout base in main repo, merge --no-ff worktree branch
-  → remove(): remove worktree + delete branch
+  → merge(): git checkout base in MAIN REPO, git merge --no-ff branch
+      (main repo is left on the base branch after success)
+  → remove(): git worktree remove --force + git branch -D
 ```
 
 **State:** Worktree branch has agent's commits + latest base merged in.
 Main repo may have uncommitted changes (user's work).
 
-| # | Scenario | Outcome | Risk |
-|---|----------|---------|------|
-| 4.1 | Clean main repo, clean merge | ✅ Merge succeeds, worktree removed, task CONVERGED | ✅ Safe |
-| 4.2 | Main repo has uncommitted changes | `git checkout base` fails ("would overwrite local changes") | **🔴 BUG if autoStash=false (default).** Merge crashes. Caught by `#recoverMergeFailure()` → BLOCKED or stash+retry. But the error message is confusing. See **B4** |
-| 4.3 | Base advanced since last convergence tick, no conflicts | `syncWithBase()` succeeds. Re-benchmark passes. Merge succeeds | ✅ Safe. This is the designed path |
-| 4.4 | Base advanced, syncWithBase conflicts | MergeConflictError → task BLOCKED, branch kept | ✅ Safe. Human resolves |
-| 4.5 | Re-benchmark fails after syncWithBase | `resetConvergence()` → `return 'rework'`. Agent gets another round | ✅ Safe. Prevents merging broken code |
-| 4.6 | verifyCmd fails | `resetConvergence()` → `return 'rework'` | ✅ Safe |
-| 4.7 | Merge conflicts (branch→base) | MergeConflictError → BLOCKED, branch kept | ✅ Safe |
-| 4.8 | Another orchestrator holds the merge lock | `return 'locked'` → retry next tick | ✅ Safe |
-| 4.9 | Agent had uncommitted changes that passed benchmark but weren't committed | Only committed changes are merged. Uncommitted work lost | **🔴 BUG.** Same as B1 — silent data loss |
+| # | Scenario | Outcome | Status |
+|---|----------|---------|--------|
+| 4.1 | Clean main repo, clean merge | Merge succeeds, worktree + branch removed, task CONVERGED | ✅ SAFE |
+| 4.2 | Main repo has uncommitted changes | `git checkout base` fails | 🔴 **BUG B4** if `autoStashBeforeMerge=false` (default). Caught by recovery → BLOCKED. Error message confusing |
+| 4.3 | Base advanced, no conflicts | `syncWithBase()` succeeds. Re-benchmark passes. Merge succeeds | ✅ SAFE |
+| 4.4 | Base advanced, syncWithBase() conflicts | MergeConflictError → BLOCKED, branch kept | ✅ SAFE |
+| 4.5 | Re-benchmark fails after sync | `resetConvergence()` → rework. Agent retries | ✅ SAFE |
+| 4.6 | verifyCmd fails after sync | `resetConvergence()` → rework | ✅ SAFE |
+| 4.7 | Merge conflicts (branch → base) | MergeConflictError → BLOCKED, branch kept | ✅ SAFE |
+| 4.8 | Another orchestrator holds merge lock | `return 'locked'` → retry next tick | ✅ SAFE |
+| 4.9 | Uncommitted changes passed benchmark but aren't committed | Only committed code merged. Uncommitted work lost | 🔴 **BUG B1** |
+| 4.10 | SIGKILL during merge | Main repo left on base branch, possibly mid-merge (`.git/MERGE_HEAD` set). Lock dir remains | ⚠️ RISK — neither `cleanWorktree()` nor `syncWithBase()` checks for in-progress merges before starting. Next retry: `merge()` fails → caught → `git merge --abort` → one tick wasted. `prevBranch` captured during recovery may be wrong (base instead of user's topic branch). Lock auto-reclaimed after timeout |
+| 4.11 | SIGKILL during syncWithBase (in worktree) | Worktree left with `.git/MERGE_HEAD`. `cleanWorktree()` does NOT abort merges. Next `syncWithBase()` fails → caught → rethrown → `resetForRetry()` → `git reset --hard base` **discards agent's committed work** | ⚠️ RISK — silent data loss. Same as F5 in Opus review |
+| 4.12 | Merge lock stale (previous holder crashed) | Lock reclaimed after `ORCH_MERGE_LOCK_MS` timeout. mkdir retried atomically | ✅ SAFE |
 
 ### Phase 5: Failure and retry
 
 ```
-#handleFailure()
-  → incrementFailures()
-  → failures >= MAX_FAILURES? → markBlocked()
-  → else: release(FAILED)
-
-Next tick picks up FAILED task:
+tick() picks up FAILED task:
   → pick() moves to IN_PROGRESS
+  → if task.isFailed && worktree in memory: resetForRetry()
   → #prepareWorktree() → cleanWorktree() + syncWithBase()
   → agent re-spawned
 ```
 
-| # | Scenario | Outcome | Risk |
-|---|----------|---------|------|
-| 5.1 | Same process, worktree in memory | `#prepareWorktree()` cleans + syncs. Agent's committed changes on branch survive. Agent builds on previous work | ✅ Safe |
-| 5.2 | Process restarted, worktree not in memory | `#prepareWorktree()` creates new Worktree object. `#add()` finds existing branch, reuses it. Committed changes survive | ✅ Safe. `cleanWorktree()` + `syncWithBase()` bring it current |
-| 5.3 | Process restarted, worktree directory deleted externally | `#add()` → worktree prune + re-add. Branch may or may not exist | ⚠️ If branch exists, previous commits survive. If not, starts fresh. Both acceptable |
+Note: on retry with worktree in memory, `resetForRetry()` runs BEFORE
+`#prepareWorktree()`, so the worktree is cleaned twice (reset then
+clean+sync). Redundant but harmless.
+
+| # | Scenario | Outcome | Status |
+|---|----------|---------|--------|
+| 5.1 | Same process, worktree in memory | `resetForRetry()` + `#prepareWorktree()` clean + sync | ✅ SAFE |
+| 5.2 | Process restarted, worktree not in memory | `#prepareWorktree()` creates new Worktree, reuses existing branch. Committed changes survive **only if `syncWithBase()` succeeds**. If base conflicts with branch, catch block runs `resetForRetry()` → `git reset --hard base` → **agent's committed work on branch is silently lost** | ⚠️ RISK — silent data loss on conflict during retry |
+| 5.3 | Worktree directory deleted externally | `#add()` → prune + re-add from branch | ✅ SAFE |
+| 5.4 | Task blocked (MAX_FAILURES) | `markBlocked()`. Worktree and branch preserved for inspection | ✅ SAFE |
+
+### Phase 6: Recovery and special operations
+
+| # | Scenario | Outcome | Status |
+|---|----------|---------|--------|
+| 6.1 | Stale claim recovery (owner crashed) | Claim released → FAILED. Convergence preserved | ✅ SAFE (subject to B2 on next pickup) |
+| 6.2 | `--unblock` a blocked/failed task | Resets failures, convergence, claim → PENDING. Worktree/branch NOT deleted | ✅ SAFE |
+| 6.3 | `--stop` / `.stop` file mid-convergence | Convergence count persists on disk. Worktree untouched. Task stays IN_PROGRESS until claim recovery releases it | ✅ SAFE |
+| 6.4 | Auth/environment failure at convergence=2 | `#handleEnvironmentalFailure()` → task released FAILED (no retry consumed). Convergence NOT explicitly reset | ⚠️ RISK — convergence stays at 2 on disk. On rerun, if metric=0 on first check, convergence hits 3 and merges. This is actually correct (the work was done) but may be surprising |
+| 6.5 | EXDEV shard move (cross-device task dir) | Fallback: `cpSync()` + `rmSync()` — NOT atomic | ⚠️ RISK — crash between copy and delete can leave duplicate task dirs. `pick()` scans by name so duplicate visible. Confusing but recoverable |
+
+### Phase 7: Multiple orchestrators on one task tree
+
+When two or more `orchestrator --loop` instances run against the same
+task directory (e.g., on different machines via shared NFS):
+
+| # | Scenario | Outcome | Status |
+|---|----------|---------|--------|
+| 7.1 | Both try to pick the same PENDING task | Claim is atomic (`.claim.lock` written with `wx` flag). Exactly one wins | ✅ SAFE |
+| 7.2 | Orchestrator A dies, B reclaims stale task | `#recover()` checks heartbeat age → releases claim → FAILED. B's `#prepareWorktree()` constructs new Worktree pointing at same branch/dir. `cleanWorktree()` wipes A's uncommitted work (silent loss) | ⚠️ RISK — committed work survives, uncommitted is lost (same as B1 but triggered by handoff) |
+| 7.3 | Both try to merge different tasks simultaneously | Merge lock (`.orchestrator-merge-lock` dir) ensures only one merges at a time. Loser gets `'locked'` → retries | ✅ SAFE |
+| 7.4 | Convergence counter race (claim recovered mid-tick) | `incrementConvergence` is read-modify-write, not atomic. If claim transitions mid-flight, both processes can write the same value. Effect bounded: one count lost (never duplicated). Worst case: one extra convergence tick | ⚠️ RISK — bounded, non-critical |
+
+### node_modules synchronization
+
+On every `#prepareWorktree()`, Engine runs
+`cpSync(repo/node_modules, worktree/node_modules, { recursive: true })`.
+The call is wrapped in `try/catch` and **all errors are swallowed**.
+
+`#prepareWorktree()` is NOT called during convergence ticks (metric=0
+path). Worktree retains whatever node_modules was last copied.
+
+| Failure mode | Symptom | Status |
+|-------------|---------|--------|
+| ENOSPC / EACCES / no source dir | Silent. Benchmark fails with "Cannot find module" | ⚠️ RISK |
+| `npm install` between convergence ticks | Worktree uses stale copy until next `#prepareWorktree()` | ⚠️ RISK |
+| Package removed from repo (`npm uninstall`) | Worktree retains orphan; `require()` still resolves | ⚠️ RISK |
+| Copy succeeds normally | Worktree has matching dependencies | ✅ SAFE |
 
 ---
 
 ## Identified bugs
 
-### B1: Uncommitted changes pass benchmark but are lost at merge
+### 🔴 B1: Uncommitted changes pass benchmark but are lost at merge
+
+**Severity:** High  
+**Scenarios:** 2.3, 2.5, 4.9
 
 **Trigger:** Agent exits without committing all changes. Benchmark runs
 in worktree (sees uncommitted files). metric=0. Convergence increments.
 At merge, `git merge --no-ff` only includes committed changes.
 
-**Impact:** Task converges but the merged code is different from what the
+**Impact:** Task converges but the merged code differs from what the
 benchmark validated. Uncommitted changes are silently lost.
 
-**Why it happens:** `cleanWorktree()` (which would discard uncommitted
-changes) only runs inside `#prepareWorktree()`, which is only called
-when metric > 0 (agent needs to work). When metric=0, no cleanup
-happens.
+**Root cause:** The orchestrator does NOT auto-commit agent work.
 
-**Mitigation — auto-commit before benchmark:**
-After the agent exits and before running the benchmark, run
-`git add -A && git commit --allow-empty -m "agent work"` in the
-worktree. This ensures everything the agent touched is committed.
-Alternatively, check for uncommitted changes before `#handleZero()` and
-refuse to count it as convergence if the worktree is dirty.
-
-**Recommended fix:**
-In `#runSpawnCycle()`, after agent exits but before `this.#run(task, ...)`:
+**Recommended fix:** In `#runSpawnCycle()`, after agent exits but before
+running the benchmark, auto-commit any uncommitted work:
 ```ts
-// Commit any uncommitted agent work so merge captures everything
 if (wt) {
-  try {
+  const dirty = execFileSync('git', ['status', '--porcelain'], { cwd: wt.path, encoding: 'utf-8' }).trim();
+  if (dirty) {
     execFileSync('git', ['add', '-A'], { cwd: wt.path });
-    execFileSync('git', ['diff', '--cached', '--quiet'], { cwd: wt.path });
-  } catch {
-    // There are staged changes — commit them
-    execFileSync('git', ['commit', '-m', 'agent work (auto-committed by orchestrator)'],
-      { cwd: wt.path });
+    execFileSync('git', ['commit', '-m', 'agent work (auto-committed by orchestrator)'], { cwd: wt.path });
   }
 }
 ```
 
-### B2: Process restart loses worktree reference — benchmark measures wrong tree
+### 🔴 B2: Process restart loses worktree reference
 
-**Trigger:** Loop process restarts (Ctrl+C, crash, deploy). `#worktrees`
-is in-memory only. On next tick, `existingWt = undefined`, so benchmark
-runs against main repo instead of worktree.
+**Severity:** High  
+**Scenarios:** 3.4, 3.5, 3.6
 
-**Impact:** If convergence count > 0 from a previous process, the next
-tick's benchmark measures the main repo (which doesn't have the agent's
-work). This either: (a) gives metric > 0 → resets convergence
-unnecessarily, or (b) gives metric = 0 (main repo already satisfies the
-check) → increments convergence against the wrong tree.
+**Trigger:** Loop process restarts. `#worktrees` is in-memory only.
 
-**Why it happens:** Worktree associations are in-memory only. No
-persistence.
+**Impact:** Convergence re-checks measure the wrong tree (main repo
+instead of worktree).
 
-**Recommended fix:**
-On task pickup, if convergence count > 0 and no worktree in memory,
-check if the git branch `orchestrator/<taskName>` exists and the
-worktree directory is present. If so, reconstruct the Worktree object
-and add it to `#worktrees`.
+**Root cause:** Worktree associations are in-memory only.
 
-```ts
-// In tick(), after pick(), before running benchmark:
-if (task.convergenceCount > 0 && !this.#worktrees.has(task.taskNumber)) {
-  // Try to reconnect to the worktree from a previous process
-  const wt = new Worktree(this.#repo, { name: task.taskName, ... });
-  if (wt.exists) {
-    this.#worktrees.set(task.taskNumber, wt);
-  } else {
-    // Worktree is gone — convergence count is meaningless
-    task.resetConvergence();
-  }
-}
-```
+**Recommended fix:** On task pickup, if convergence > 0, try to
+reconnect to existing worktree. Handle four cases:
+1. **Branch + worktree dir exist** → reconnect
+2. **Branch exists, no worktree dir** → recreate worktree from branch
+3. **Worktree dir exists, no branch** → reset convergence (broken state)
+4. **Neither exists** → reset convergence (clean start)
 
-### B3: Convergence without merge (orphaned worktree branch)
+### 🔴 B3: Convergence without merge (orphaned worktree branch)
 
-**Trigger:** Process restarted at convergence count 2. Benchmark passes
-against main repo. `#handleZero()` sets convergence=3.
-`task.hasConverged = true`. `tree = null` (no worktree in memory). Code
-at line 371–372 skips merge and marks CONVERGED.
+**Severity:** Critical  
+**Scenarios:** 3.5
 
-**Impact:** Task is marked CONVERGED but the agent's work on branch
-`orchestrator/<taskName>` is never merged. The branch is orphaned.
+**Trigger:** Process restarted at convergence = threshold−1. Benchmark
+passes against main repo (B2). `#handleZero()` → `tree = null` → skips
+merge → marks CONVERGED.
 
-**Why it happens:** Same root cause as B2 — in-memory worktree map lost
-on restart.
+**Impact:** Agent's work is never merged. Branch is orphaned.
 
-**Recommended fix:** Same as B2 — reconnect worktree before convergence
-check. If the worktree cannot be found and convergence would trigger
-merge, reset convergence instead of skipping merge.
+**Nuance:** `tree === null` is legitimate in no-spawn mode (no worktree
+was ever created). The fix must distinguish "no worktree because
+no-spawn mode" from "worktree lost due to restart."
 
-### B4: Main repo uncommitted changes block merge
+**Recommended fix:** In `#handleZero()`:
+- If `hasConverged && tree === null && this.#spawn !== null`:
+  attempt worktree reconnection (B2 fix). If reconnection fails, reset
+  convergence and log warning instead of marking CONVERGED.
+- If `this.#spawn === null`: allow convergence (no-spawn mode, no
+  worktree expected).
 
-**Trigger:** User has uncommitted work in the main repo (editing files,
-running experiments). `merge()` calls `git checkout base` in the main
-repo. Git refuses: "Your local changes would be overwritten."
+### ⚠️ B4: Main repo uncommitted changes block merge
 
-**Impact:** Merge fails. Without `autoStashBeforeMerge`, the task ends
-up BLOCKED. Error message says "local changes" without clarifying it
-means the main repo, not the worktree.
+**Severity:** Medium  
+**Scenarios:** 4.2
 
-**Current mitigation:** `autoStashBeforeMerge` option (default: false).
-When enabled, stashes main repo changes before checkout.
+**Trigger:** User has uncommitted work in the main repo.
 
-**Recommended fix:** Enable `autoStashBeforeMerge` by default. The
-orchestrator should handle the common case autonomously. If stash fails,
-block the task with a clear message: "Main repo has uncommitted changes
-that conflict with checkout. Commit or stash your work, then unblock the
-task."
+**Impact:** Merge fails → task BLOCKED. Error message confusing.
+
+**Current mitigation:** `autoStashBeforeMerge` (default: false).
+
+**Recommended fix:** Default to true.
 
 ---
 
 ## Risk matrix: convergence count × process state × base state
 
-### Convergence count 0 (first agent run)
+### Convergence count 0 (first run)
 
-| Base state | Process state | What happens | Safe? |
-|------------|--------------|--------------|-------|
-| Clean, unchanged | Same process | Normal: create worktree, spawn agent | ✅ |
-| Advanced (other merge) | Same process | Normal: `syncWithBase()` during `#prepareWorktree()` | ✅ |
-| Advanced | New process | Normal: creates fresh worktree from current base | ✅ |
-| Has uncommitted changes | Same process | No effect (worktree is separate checkout) | ✅ |
+| Base state | Process | What happens | Status |
+|------------|---------|--------------|--------|
+| Clean | Same | Create worktree, spawn agent | ✅ SAFE |
+| Advanced | Same | `syncWithBase()` in `#prepareWorktree()` | ✅ SAFE |
+| Advanced | New | Fresh worktree from current base | ✅ SAFE |
+| Dirty | Same | No effect (worktree is separate) | ✅ SAFE |
 
-### Convergence count 1 (re-checking after first metric=0)
+### Convergence count 1+ (re-checking)
 
-| Base state | Process state | What happens | Safe? |
-|------------|--------------|--------------|-------|
-| Clean | Same process | Re-run benchmark in worktree. Worktree has agent's commits | ✅ |
-| Advanced | Same process | Re-run in worktree. Worktree has NOT synced yet (no `syncWithBase()` on metric=0 path). Base drift not visible until merge | ⚠️ Wasted tick if merge will fail |
-| Clean | **New process** | **B2:** `#worktrees` empty. Benchmark runs in main repo. May reset convergence unnecessarily or advance it against wrong tree | 🔴 |
-| Advanced | **New process** | **B2:** Same as above, compounded by base drift | 🔴 |
+| Base state | Process | What happens | Status |
+|------------|---------|--------------|--------|
+| Clean | Same | Re-run benchmark in worktree | ✅ SAFE |
+| Advanced | Same | Re-run in stale worktree. Caught at merge | ⚠️ RISK |
+| Any | **New** | **B2:** benchmark in main repo, not worktree | 🔴 BUG |
 
-### Convergence count 2 (one more pass needed)
+### At merge (convergence = threshold)
 
-| Base state | Process state | What happens | Safe? |
-|------------|--------------|--------------|-------|
-| Clean | Same process | Re-run in worktree. metric=0 → convergence=3 → merge | ✅ |
-| Advanced | Same process | Re-run in worktree (stale). metric=0 → merge → `syncWithBase()` at merge catches drift | ✅ (merge gate is robust) |
-| Clean | **New process** | **B2+B3:** Benchmark in main repo. If metric=0 → convergence=3 → merge skipped (no worktree). Task falsely CONVERGED | 🔴 |
-| Advanced | **New process** | Same as above. If metric > 0 in main repo → convergence reset. Agent re-spawned, previous work on branch reused (via `#add()`) | ⚠️ Convergence lost but work preserved |
-
-### At merge (convergence = 3)
-
-| Base state | Main repo dirty? | What happens | Safe? |
-|------------|-----------------|--------------|-------|
-| Clean | No | `syncWithBase()` → re-benchmark → merge | ✅ |
-| Advanced, no conflicts | No | `syncWithBase()` merges base → re-benchmark → merge | ✅ |
-| Advanced, conflicts | No | `syncWithBase()` → MergeConflictError → BLOCKED | ✅ |
-| Any | **Yes** | **B4:** `git checkout base` fails. BLOCKED or stash+retry | ⚠️ |
+| Base state | Dirty? | What happens | Status |
+|------------|--------|--------------|--------|
+| Clean | No | sync → benchmark → verify → merge | ✅ SAFE |
+| Advanced, no conflict | No | sync → merge | ✅ SAFE |
+| Advanced, conflict | No | MergeConflictError → BLOCKED | ✅ SAFE |
+| Any | **Yes** | **B4:** checkout fails → BLOCKED | ⚠️ RISK |
 
 ---
 
@@ -312,63 +376,48 @@ task."
 
 | Bug | Severity | Fix | Complexity |
 |-----|----------|-----|------------|
-| **B1** Uncommitted changes lost at merge | High | Auto-commit after agent exits, before benchmark | Low |
-| **B2** Process restart loses worktree | High | Reconnect worktree from git branch + directory on pickup | Medium |
-| **B3** Convergence without merge | Critical | Require worktree for merge. Reset convergence if worktree missing | Low |
-| **B4** Main repo dirty blocks merge | Medium | Default `autoStashBeforeMerge` to true | Low |
+| **B3** | Critical | Guard `tree===null` + reconnect. Allow null only in no-spawn mode | Low |
+| **B2** | High | Reconnect worktree from branch/dir on pickup when convergence > 0 | Medium |
+| **B1** | High | Auto-commit agent work after spawn, before benchmark | Low |
+| **B4** | Medium | Default `autoStashBeforeMerge` to true | Low |
 
 ### Priority order
 
-1. **B3** — fix first. A false CONVERGED is worse than any other outcome.
-   The fix is simple: in `#handleZero()`, if `hasConverged && tree === null`,
-   reset convergence and log a warning instead of marking CONVERGED.
-
-2. **B2** — fix second. Reconnect worktree on pickup. Without this, every
-   process restart resets convergence progress at best, and triggers B3
-   at worst.
-
-3. **B1** — fix third. Auto-commit agent work. Without this, uncommitted
-   agent changes create a gap between what the benchmark validates and
-   what gets merged.
-
-4. **B4** — fix last. Default autoStash to true. The current workaround
-   (setting the option) works; it's just not the default.
+1. **B3** — false CONVERGED is the worst outcome.
+2. **B2** — every restart wastes progress or triggers B3.
+3. **B1** — uncommitted changes create gap between validated and merged code.
+4. **B4** — has working workaround (`autoStashBeforeMerge`).
 
 ---
 
-## Appendix: Full tick lifecycle diagram
+## Appendix A: Simplified tick lifecycle
 
 ```
 tick()
  ├─ pick() → task IN_PROGRESS
  ├─ existingWt = #worktrees.get(taskNumber)  ← IN-MEMORY ONLY
  │   ├─ found → checkCwd = worktree
- │   └─ not found → checkCwd = main repo  ← BUG if convergence > 0
+ │   └─ not found → checkCwd = main repo  ← BUG B2 if convergence > 0
  ├─ run benchmark(checkCwd)
  │   ├─ metric = 0 → #handleZero()
  │   │   ├─ incrementConvergence (file on disk, survives restart)
- │   │   ├─ convergence < 3 → return (re-check next tick)
- │   │   └─ convergence ≥ 3 → #mergeAndRemove()
- │   │       ├─ tree found → syncWithBase + re-benchmark + verifyCmd + merge
- │   │       └─ tree null → CONVERGED without merge  ← BUG B3
+ │   │   ├─ < threshold → return (re-check next tick)
+ │   │   └─ ≥ threshold → #mergeAndRemove()
+ │   │       ├─ tree found → sync + benchmark + verify + merge
+ │   │       └─ tree null + spawn configured → BUG B3
+ │   │       └─ tree null + no spawn → ✅ converge (no worktree expected)
  │   └─ metric > 0 → resetConvergence()
- │       └─ #prepareWorktree()
- │           ├─ create or reuse worktree
- │           ├─ cleanWorktree() (discard uncommitted)
- │           └─ syncWithBase() (merge latest base)
+ │       └─ #prepareWorktree() → clean + sync
  │       └─ #runSpawnCycle()
- │           ├─ spawn agent (works in worktree)
- │           ├─ [B1: agent may leave uncommitted changes]
- │           ├─ run benchmark(worktree)
- │           │   ├─ metric = 0 → #handleZero()
- │           │   └─ metric > 0 → #handleFailure() → FAILED
- │           └─ return metric
+ │           ├─ spawn agent
+ │           ├─ [B1: may leave uncommitted changes]
+ │           └─ run benchmark → metric 0 or >0
  └─ #handleFailure()
-     ├─ failures < MAX → release(FAILED), retry later
-     └─ failures ≥ MAX → markBlocked()
+     ├─ < MAX_FAILURES → FAILED, retry later
+     └─ ≥ MAX_FAILURES → BLOCKED
 ```
 
-### Process restart impact
+## Appendix B: Process restart impact
 
 ```
 Process 1:                          Process 2 (after restart):
@@ -379,15 +428,38 @@ convergence = 1
                                     tick() → pick()
                               ┌──→  #worktrees is EMPTY
                               │     existingWt = undefined
-                              │     checkCwd = main repo  ← WRONG
-                              │     convergence_count file = 1 (on disk)
+                              │     checkCwd = main repo  ← WRONG (B2)
                               │     
                               │     If metric=0 in main repo:
-                              │       convergence = 2 (B2: wrong tree)
-                              │       ... eventually 3 → B3: merge skipped
+                              │       convergence = 2 (wrong tree)
+                              │       ... → threshold → B3: merge skipped
                               │     
                               │     If metric>0 in main repo:
                               │       resetConvergence → 0
                               │       #prepareWorktree → reconnects to branch
-                              │       agent works again (previous commits survive)
+                              │       agent works again (commits survive)
 ```
+
+## Appendix C: What --unblock resets
+
+| State | Reset? | Detail |
+|-------|--------|--------|
+| `.status` | ✅ Yes | → PENDING |
+| `.failure_count` | ✅ Yes | → 0 |
+| `.convergence_count` | ✅ Yes | → 0 |
+| `.claim` directory | ✅ Yes | removed |
+| Worktree directory | ❌ No | preserved for next run |
+| Git branch | ❌ No | preserved (commits survive) |
+| Agent logs | ❌ No | preserved for debugging |
+| In-memory `#worktrees` | ❌ No | untouched in any running engine |
+
+**Important:** When the loop next picks up the unblocked task,
+`Worktree.#add()` detects the existing branch and reuses it —
+**conflict-causing commits from the original failure are still on the
+branch.** `cleanWorktree()` only removes uncommitted files;
+`syncWithBase()` then merges the latest base into the branch. The same
+conflict may recur.
+
+**For a true fresh start:** manually run
+`git worktree remove --force .worktrees/<name>` and
+`git branch -D orchestrator/<name>` before unblocking.
