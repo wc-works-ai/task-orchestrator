@@ -128,6 +128,41 @@ describe('Engine merge robustness', () => {
     expect(existsSync(join(repoDir, LOCK))).toBe(false);
   });
 
+  it('keeps the merge lock directory when its owner file disappears before release', async () => {
+    vi.resetModules();
+    const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir);
+
+    try {
+      vi.doMock('node:fs', async (importOriginal) => {
+        const actual = await importOriginal<typeof import('node:fs')>();
+        return {
+          ...actual,
+          readFileSync: vi.fn((path: Parameters<typeof actual.readFileSync>[0], options?: Parameters<typeof actual.readFileSync>[1]) => {
+            const file = String(path);
+            if (file.endsWith(`${LOCK}\\owner`) || file.endsWith(`${LOCK}/owner`)) {
+              throw new Error('owner disappeared');
+            }
+            return actual.readFileSync(path, options as never);
+          }),
+        };
+      });
+
+      const { Engine: MockedEngine } = await import('../src/Engine.js');
+      const benchmark = vi.fn().mockResolvedValueOnce(1).mockResolvedValue(0);
+      const engine = new MockedEngine(tasksDir, { benchmark, spawn, repoDir, worktreesDir });
+
+      await engine.tick();
+      await engine.tick();
+      const r = await engine.tick();
+
+      expect(r.converged).toBe(true);
+      expect(existsSync(join(repoDir, LOCK))).toBe(true);
+    } finally {
+      vi.doUnmock('node:fs');
+      vi.resetModules();
+    }
+  });
+
   it('backs off when another process wins after stale-lock break', async () => {
     vi.resetModules();
     const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir);
@@ -385,16 +420,19 @@ describe('Engine merge robustness', () => {
 
   it('sends the task back to the agent when base drift breaks acceptance after sync', async () => {
     const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir);
+    writeFileSync(join(repoDir, 'tracked.txt'), 'base');
+    execSync('git add tracked.txt && git commit -m "tracked"', { cwd: repoDir });
     // pre, post (tick1), tick2, tick3, then the post-sync re-verify reports
     // non-zero → rework; anything after stays 0.
     const benchmark = vi.fn()
       .mockResolvedValueOnce(1).mockResolvedValueOnce(0)
       .mockResolvedValueOnce(0).mockResolvedValueOnce(0)
       .mockResolvedValueOnce(1).mockResolvedValue(0);
-    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir });
+    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir, autoStashBeforeMerge: true });
 
     await engine.tick();
     await engine.tick();
+    writeFileSync(join(repoDir, 'tracked.txt'), 'dirty parent change');
     const r = await engine.tick();
 
     expect(r.converged).toBe(false);
@@ -402,6 +440,48 @@ describe('Engine merge robustness', () => {
     expect(t.isInProgress).toBe(true);  // not blocked — the agent gets another pass
     expect(t.convergenceCount).toBe(0); // reset so acceptance must be re-proven
     expect(existsSync(join(worktreesDir, 'T01-x', '.git'))).toBe(true); // worktree kept
+    expect(execSync('git status --porcelain', { cwd: repoDir, encoding: 'utf-8' })).toContain('tracked.txt');
+    expect(execSync('git stash list', { cwd: repoDir, encoding: 'utf-8' })).toBe('');
+  });
+
+  it('logs a warning when stash pop fails after merge cleanup', async () => {
+    const repoDir = resolve(dir, 'repo');
+    const tasksDir = resolve(dir, 'tasks');
+    const worktreesDir = resolve(dir, 'worktrees');
+    mkdirSync(repoDir, { recursive: true });
+    execSync('git init && git config user.email test@test && git config user.name test && git commit --allow-empty -m init', { cwd: repoDir });
+    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
+      mkdirSync(resolve(tasksDir, s), { recursive: true });
+    }
+    const d = resolve(tasksDir, 'pending', 'T01-x');
+    mkdirSync(d, { recursive: true });
+    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+    writeFileSync(join(repoDir, 'tracked.txt'), 'base');
+    execSync('git add tracked.txt && git commit -m "tracked"', { cwd: repoDir });
+    writeFileSync(join(repoDir, 'tracked.txt'), 'dirty parent change');
+    const spawn = vi.fn().mockImplementation(async (_task: TaskState, wtPath?: string) => {
+      if (!wtPath) throw new Error('missing worktree path');
+      writeFileSync(join(wtPath, 'tracked.txt'), 'worktree change');
+      execSync('git add tracked.txt && git commit -m "worktree tracked"', { cwd: wtPath });
+      return { success: true, iterations: 1 };
+    });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const benchmark = vi.fn().mockResolvedValueOnce(1).mockResolvedValue(0);
+    const engine = new Engine(tasksDir, {
+      benchmark,
+      spawn,
+      repoDir,
+      worktreesDir,
+      autoStashBeforeMerge: true,
+    });
+
+    await engine.tick();
+    await engine.tick();
+    await engine.tick();
+
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('WARNING: stash pop failed'));
+    expect(execSync('git stash list', { cwd: repoDir, encoding: 'utf-8' })).not.toBe('');
+    logSpy.mockRestore();
   });
 
   it('heartbeats during the pre-spawn benchmark before the agent starts', async () => {

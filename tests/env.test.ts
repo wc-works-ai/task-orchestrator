@@ -8,6 +8,7 @@ describe('env', () => {
   const originalIdleSleepMs = process.env.ORCH_IDLE_SLEEP_MS;
   const originalAgent = process.env.ORCH_AGENT;
   const originalReasoning = process.env.ORCH_REASONING;
+  const originalAutoStash = process.env.ORCH_AUTO_STASH;
   const originalClaimMaxMs = process.env.ORCH_CLAIM_MAX_MS;
   const originalKeepConverged = process.env.ORCH_KEEP_CONVERGED;
 
@@ -24,6 +25,8 @@ describe('env', () => {
     else process.env.ORCH_AGENT = originalAgent;
     if (originalReasoning === undefined) delete process.env.ORCH_REASONING;
     else process.env.ORCH_REASONING = originalReasoning;
+    if (originalAutoStash === undefined) delete process.env.ORCH_AUTO_STASH;
+    else process.env.ORCH_AUTO_STASH = originalAutoStash;
     if (originalClaimMaxMs === undefined) delete process.env.ORCH_CLAIM_MAX_MS;
     else process.env.ORCH_CLAIM_MAX_MS = originalClaimMaxMs;
     if (originalKeepConverged === undefined) delete process.env.ORCH_KEEP_CONVERGED;
@@ -52,6 +55,28 @@ describe('env', () => {
     expect(env.infinite).toBe(false);
     process.env.ORCH_INFINITE = 'on';
     expect(env.infinite).toBe(true);
+  });
+
+  it('defaults autoStash to true and accepts documented true values', () => {
+    delete process.env.ORCH_AUTO_STASH;
+    expect(env.autoStash).toBe(true);
+    process.env.ORCH_AUTO_STASH = 'YES';
+    expect(env.autoStash).toBe(true);
+    process.env.ORCH_AUTO_STASH = '1';
+    expect(env.autoStash).toBe(true);
+  });
+
+  it('treats documented falsey autoStash values as disabled', () => {
+    process.env.ORCH_AUTO_STASH = 'false';
+    expect(env.autoStash).toBe(false);
+    process.env.ORCH_AUTO_STASH = 'False';
+    expect(env.autoStash).toBe(false);
+    process.env.ORCH_AUTO_STASH = '0';
+    expect(env.autoStash).toBe(false);
+    process.env.ORCH_AUTO_STASH = 'off';
+    expect(env.autoStash).toBe(false);
+    process.env.ORCH_AUTO_STASH = 'no';
+    expect(env.autoStash).toBe(false);
   });
 
   it('defaults agent to pi and reasoning to undefined', () => {

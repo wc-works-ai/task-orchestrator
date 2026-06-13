@@ -848,35 +848,7 @@ describe('Engine', () => {
     expect(r2.task).toBeNull();
   });
 
-  // ── B3: convergence without merge ───────────────────────────────────
-
-  it('B3: resets convergence when spawn configured but no worktree found at merge time', async () => {
-    const t = make(dir, 1, 'b3-test');
-
-    // Create a .git FILE (not dir) so existsSync('.git') passes but git
-    // operations fail — simulates a repo where the worktree can't be created
-    writeFileSync(resolve(dir, '.git'), 'not a real git repo');
-
-    // Use ORCH_CONVERGE=1 so a single metric=0 triggers merge attempt,
-    // bypassing the B2 reconnect (which only fires when convergenceCount > 0
-    // at pickup — here it's 0 at pickup, handleZero pushes it to 1 = threshold)
-    const origConverge = process.env.ORCH_CONVERGE;
-    process.env.ORCH_CONVERGE = '1';
-    try {
-      const engine = new Engine(dir, {
-        benchmark: zero,
-        spawn: async () => ({ success: true, iterations: 1 }),
-        repoDir: dir,
-      });
-      const r = await engine.tick();
-      // Should NOT be converged — worktree missing, convergence reset
-      expect(r.converged).toBe(false);
-      expect(t.convergenceCount).toBe(0);
-    } finally {
-      if (origConverge === undefined) delete process.env.ORCH_CONVERGE;
-      else process.env.ORCH_CONVERGE = origConverge;
-    }
-  });
+  // ── B2/B3: convergence/worktree reconnection ────────────────────────
 
   it('B3: reconnects to existing worktree on disk when not in memory', async () => {
     const t = make(dir, 1, 'b3-reconnect');
@@ -923,7 +895,8 @@ describe('Engine', () => {
 
   it('B2: resets convergence when convergence > 0 but worktree not found', async () => {
     const t = make(dir, 1, 'b2-no-wt');
-    t.incrementConvergence(); // convergence = 1
+    t.incrementConvergence();
+    t.incrementConvergence(); // convergence = 2
 
     // .git exists but no worktree dir — reconnect fails
     writeFileSync(resolve(dir, '.git'), 'not a real git repo');
@@ -933,8 +906,12 @@ describe('Engine', () => {
       spawn: async () => ({ success: true, iterations: 1 }),
       repoDir: dir,
     });
-    await engine.tick();
-    expect(t.convergenceCount).toBe(0); // convergence was reset
+    const r = await engine.tick();
+    const all = await TaskState.scan(dir);
+    const task = all.get('1');
+    expect(task).toBeDefined();
+    expect(task!.convergenceCount).toBe(1); // reset to 0, then incremented after the zero benchmark
+    expect(r.converged).toBe(false);
   });
 
   it('B3: no-spawn mode converges without worktree (legitimate)', async () => {

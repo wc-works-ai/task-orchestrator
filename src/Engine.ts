@@ -404,8 +404,8 @@ export class Engine {
     // Serialize merges across orchestrators sharing this repo: a merge mutates
     // the shared base checkout, so concurrent merges would corrupt it.
     if (!this.#acquireMergeLock()) return 'locked';
+    let stashed = false;
     try {
-      let stashed = false;
       if (this.#autoStashBeforeMerge) {
         stashed = await wt.stashParentChanges(`orchestrator ${task.taskName} pre-merge`);
         if (stashed) this.#log(`T${task.taskNumber} stashed parent repo changes before merge`);
@@ -425,13 +425,17 @@ export class Engine {
         return 'rework';
       }
       await wt.merge();
-      if (stashed) {
-        try { execFileSync('git', ['stash', 'pop'], { cwd: this.#repo, encoding: 'utf-8' }); } catch {}
-      }
       await wt.remove();
       this.#worktrees.delete(task.taskNumber);
       return 'merged';
     } finally {
+      if (stashed) {
+        try {
+          execFileSync('git', ['stash', 'pop'], { cwd: this.#repo, encoding: 'utf-8' });
+        } catch {
+          this.#log(`T${task.taskNumber} WARNING: stash pop failed — user changes may be stuck in stash. Recover with 'git stash pop'`, 'always');
+        }
+      }
       this.#releaseMergeLock();
     }
   }
