@@ -129,7 +129,7 @@ currently detected or logged.
 | # | Scenario | Outcome | Status |
 |---|----------|---------|--------|
 | 2.1 | Agent commits all work, metric=0 | `#handleZero()` → convergence=1 | ✅ SAFE — committed changes persist in worktree |
-| 2.2 | Agent commits all work, metric > 0 | `#handleFailure()` → FAILED, retry later | ✅ SAFE — on retry, `resetForRetry()` then `#prepareWorktree()` clean + sync. Committed changes preserved on branch |
+| 2.2 | Agent commits all work, metric > 0 | `#handleFailure()` → FAILED, retry later | ⚠️ RISK — on retry (same process), `resetForRetry()` runs `git reset --hard base` which **wipes all agent commits on the branch**. Agent starts completely fresh. On retry (new process), `#prepareWorktree()` reuses the branch — if `syncWithBase()` succeeds, committed changes survive; if it fails, `resetForRetry()` wipes them |
 | 2.3 | Agent leaves uncommitted changes, metric=0 | `#handleZero()` → convergence=1 | 🔴 **BUG B1.** Benchmark passed against uncommitted code. At merge, only committed code is merged. Uncommitted changes silently lost |
 | 2.4 | Agent leaves uncommitted changes, metric > 0 | `#handleFailure()` → FAILED | ⚠️ RISK — on retry, `cleanWorktree()` discards both tracked edits and untracked files. **All near-success agent work is silently destroyed** unless the agent committed it. No recoverability |
 | 2.5 | Agent crashes mid-work | Partial committed + uncommitted state | ⚠️ RISK — same as 2.3 or 2.4 depending on what was committed before crash |
@@ -212,13 +212,14 @@ tick() picks up FAILED task:
   → agent re-spawned
 ```
 
-Note: on retry with worktree in memory, `resetForRetry()` runs BEFORE
-`#prepareWorktree()`, so the worktree is cleaned twice (reset then
-clean+sync). Redundant but harmless.
+Note: on retry with worktree in memory, `resetForRetry()` runs
+`git reset --hard base` which **wipes all agent commits**, then
+`#prepareWorktree()` runs `cleanWorktree()` + `syncWithBase()` (both
+are no-ops at this point since the branch is already at base).
 
 | # | Scenario | Outcome | Status |
 |---|----------|---------|--------|
-| 5.1 | Same process, worktree in memory | `resetForRetry()` + `#prepareWorktree()` clean + sync | ✅ SAFE |
+| 5.1 | Same process, worktree in memory | `resetForRetry()` runs `git reset --hard base` — **all agent commits wiped**. Then `#prepareWorktree()` cleans + syncs. Agent starts fresh from current base | ⚠️ RISK — previous agent work is lost. By design (fresh start) but can be surprising |
 | 5.2 | Process restarted, worktree not in memory | `#prepareWorktree()` creates new Worktree, reuses existing branch. Committed changes survive **only if `syncWithBase()` succeeds**. If base conflicts with branch, catch block runs `resetForRetry()` → `git reset --hard base` → **agent's committed work on branch is silently lost** | ⚠️ RISK — silent data loss on conflict during retry |
 | 5.3 | Worktree directory deleted externally | `#add()` → prune + re-add from branch | ✅ SAFE |
 | 5.4 | Task blocked (MAX_FAILURES) | `markBlocked()`. Worktree and branch preserved for inspection | ✅ SAFE |
