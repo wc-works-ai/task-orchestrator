@@ -254,6 +254,7 @@ resolved:
 | `.failure_count` | ✅ | → 0 |
 | `.convergence_count` | ✅ | → 0 |
 | `.claim` directory | ✅ | removed |
+| `.claim.lock` | ✅ | removed (part of claim cleanup) |
 | `.target_branch` | ❌ | preserved (same target) |
 | Worktree directory | ❌ | preserved |
 | Git branch | ❌ | preserved (commits survive) |
