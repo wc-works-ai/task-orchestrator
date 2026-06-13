@@ -516,7 +516,7 @@ export class Engine {
       this.#worktrees.set(task.taskNumber, wt);
     }
     if (!wt) {
-      this.#log(`T${task.taskNumber} WARNING: no .git found — agent will work directly in ${this.#repo} (no worktree isolation, no rollback)`, 'always');
+      this.#log(`T${task.taskNumber} WARNING: no .git found — agent will work directly in ${this.#repo} (no isolation, no cleanup, no merge)`, 'always');
     }
     if (wt) {
       const base = task.targetBranch ?? this.#baseBranch;
