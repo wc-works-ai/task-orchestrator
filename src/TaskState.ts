@@ -142,10 +142,12 @@ export class TaskState {
       const dest = resolve(root, target, basename(this.#dir));
       mkdirSync(dirname(dest), { recursive: true });
       try { renameSync(this.#dir, dest); this.#dir = dest; } catch (err: unknown) {
-        /* v8 ignore start: cross-device rename fallback — requires different filesystem mounts */
-        if ((err as NodeJS.ErrnoException).code === 'EXDEV') {
+        const code = (err as NodeJS.ErrnoException).code;
+        /* v8 ignore start: cross-device / transient lock fallback */
+        if (code === 'EXDEV' || code === 'EPERM' || code === 'EBUSY' || code === 'EACCES') {
+          // Cross-device or Windows transient lock — fall back to copy+delete
           cpSync(this.#dir, dest, { recursive: true });
-          rmSync(this.#dir, { recursive: true, force: true });
+          try { rmSync(this.#dir, { recursive: true, force: true }); } catch {}
           this.#dir = dest;
         } else {
           throw err;

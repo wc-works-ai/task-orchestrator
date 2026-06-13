@@ -727,7 +727,7 @@ describe('TaskState', () => {
     expect(t.directory).toBe(resolve(dir, 'pending', 'T01-a'));
   });
 
-  it('status setter rethrows non-EXDEV shard rename failures', async () => {
+  it('status setter falls back to copy/delete for EACCES/EPERM (transient lock)', async () => {
     vi.resetModules();
     const copyCalls: string[] = [];
     const removeCalls: string[] = [];
@@ -760,12 +760,13 @@ describe('TaskState', () => {
     mkdirSync(taskDir, { recursive: true });
     const t = new MockedTaskState(taskDir);
 
-    expect(() => { t.status = MockedStatus.CONVERGED; }).toThrowError(expect.objectContaining({ code: 'EACCES' }));
-    expect(copyCalls).toEqual([]);
-    expect(removeCalls).toEqual([]);
+    // EACCES is now handled via copy+delete fallback (same as EXDEV)
+    t.status = MockedStatus.CONVERGED;
+    expect(copyCalls.length).toBeGreaterThan(0);
+    expect(removeCalls.length).toBeGreaterThan(0);
   });
 
-  it('status setter falls back to copy/delete only for EXDEV', async () => {
+  it('status setter falls back to copy/delete for EXDEV', async () => {
     vi.resetModules();
     const copyCalls: string[] = [];
     const removeCalls: string[] = [];
