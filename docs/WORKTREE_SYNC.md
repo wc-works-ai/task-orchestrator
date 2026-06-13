@@ -18,7 +18,7 @@ at task creation time).
 | Main repo | The checkout the orchestrator runs in | Permanent |
 | Worktree | `<worktreesDir>/<taskName>` | Survives restarts; deleted on convergence |
 | Target branch | `.target_branch` file in task directory | On disk (survives restart) |
-| Worktree map | `Engine.#worktrees` (in-memory Map) | **Lost on restart** — reconnected via B2 fix |
+| Worktree map | `Engine.#worktrees` (in-memory Map) | **Lost on restart** — reconnected automatically |
 | Convergence count | `.convergence_count` file in task directory | On disk (survives restart) |
 | Agent commits | On worktree branch + auto-committed by orchestrator | On git branch |
 
