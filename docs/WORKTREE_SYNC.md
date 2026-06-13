@@ -165,7 +165,7 @@ the metric=0 convergence path — the worktree is re-measured as-is.
 | 3.2 | Same process, worktree in memory, metric > 0 | `resetConvergence()` → 0. `#prepareWorktree()` → clean + sync → re-spawn agent | ✅ SAFE — base synced, agent retries |
 | 3.3 | Same process, base advanced, metric=0 in worktree | Convergence increments. Worktree NOT synced with new base | ⚠️ RISK — benchmark passes on stale worktree. Caught at merge: `syncWithBase()` + re-benchmark + verifyCmd guard against merging broken code. Not a bug but wastes convergence ticks if merge will rework |
 | 3.4 | **Process restarted**, convergence > 0 | `#worktrees` empty. Benchmark runs against main repo | 🔴 **BUG B2** — agent's committed work invisible. See B2 |
-| 3.5 | Process restarted, convergence = threshold−1, metric=0 in main repo | Convergence reaches threshold → `tree = null` → merge skipped → false CONVERGED | 🔴 **BUG B3** — agent's work orphaned. See B3 |
+| 3.5 | Process restarted, convergence = threshold−1, metric=0 in main repo | `#handleZero()` attempts `#tryReconnectWorktree()`. If worktree found → merge proceeds. If not found → convergence reset, retry from scratch | ✅ SAFE (fixed by B3) |
 | 3.6 | Process restarted, convergence > 0, metric > 0 in main repo | `resetConvergence()` → 0. `#prepareWorktree()` → reuses existing branch | ⚠️ RISK — convergence lost but committed work preserved. Agent rebuilds |
 | 3.7 | `.convergence_count` deleted between ticks | `convergenceCount` returns 0. Task restarts convergence from scratch | ✅ SAFE — no crash, just wasted progress |
 
@@ -266,77 +266,25 @@ path). Worktree retains whatever node_modules was last copied.
 
 ## Identified bugs — implementation plans
 
-### 🔴 B3: Convergence without merge (orphaned worktree branch)
+### ✅ B3: Convergence without merge — FIXED (reconnect + guard)
 
-**Severity:** Critical — false CONVERGED is the worst outcome  
-**Scenarios:** 3.5  
-**Priority:** Fix first
+**Was:** Critical  
+**Status:** Fixed
 
-**Problem:** In `#handleZero()` (Engine.ts:344-375), when
-`task.hasConverged` is true and `tree === null`, the code skips the
-merge block entirely and marks the task CONVERGED at line 372. The
-agent's work on branch `orchestrator/<taskName>` is never merged.
+**Solution:** `#handleZero()` now attempts `#tryReconnectWorktree()`
+when tree is null and spawn is configured. If reconnection succeeds,
+merge proceeds with the reconnected worktree. If reconnection fails,
+convergence is reset and the task retries from scratch. In no-spawn mode
+(no `.git` or no spawn configured), `tree === null` is still legitimate
+and the task converges normally.
 
-**Root cause:** `tree` is null because `#worktrees` (in-memory map) was
-lost on process restart and `#handleZero()` doesn't attempt
-reconnection.
+**New method:** `#tryReconnectWorktree(task)` — checks if worktree
+exists on disk (`wt.exists`), if so reconnects. Otherwise tries
+`wt.create()` to recreate from existing branch. Returns null if neither
+works.
 
-**Nuance:** `tree === null` is legitimate in **no-spawn mode** (no
-`#spawn` configured → no worktree was ever created). The fix must
-distinguish this from "worktree lost due to restart."
-
-#### Implementation plan
-
-**File:** `src/Engine.ts` — `#handleZero()` method
-
-**Change:** Before the `task.status = Status.CONVERGED` line (372), add
-a guard:
-
-```ts
-// In #handleZero(), after the `if (tree) { ... }` block, before CONVERGED:
-if (!tree && this.#spawn) {
-  // A spawner is configured but we have no worktree. This means the
-  // worktree was lost (process restart). Don't converge without merging.
-  const reconnected = this.#tryReconnectWorktree(task);
-  if (reconnected) {
-    // Re-run merge with the reconnected worktree
-    // (recursive call to #handleZero is safe — convergence count already at threshold)
-    return await this.#handleZero(task, metric, reconnected);
-  }
-  // Could not reconnect — reset convergence, log, and return
-  task.resetConvergence();
-  this.#log(`T${task.taskNumber} convergence reached but worktree not found — resetting (process restart?); will retry`, 'transition');
-  return { task: task.info, metric, converged: false };
-}
-```
-
-**New method** `#tryReconnectWorktree(task)`:
-```ts
-#tryReconnectWorktree(task: TaskState): Worktree | null {
-  const wt = new Worktree(this.#repo, {
-    name: task.taskName,
-    baseBranch: this.#baseBranch,
-    ...(this.#worktreesDir ? { worktreesDir: this.#worktreesDir } : {}),
-  });
-  if (wt.exists) {
-    this.#worktrees.set(task.taskNumber, wt);
-    return wt;
-  }
-  // Worktree dir gone but branch may exist — try to recreate
-  try {
-    wt.create();
-    this.#worktrees.set(task.taskNumber, wt);
-    return wt;
-  } catch {
-    return null;
-  }
-}
-```
-
-**Tests:**
-- `hasConverged && tree===null && spawn configured` → reconnect succeeds → merge runs
-- `hasConverged && tree===null && spawn configured` → reconnect fails → convergence reset, not CONVERGED
-- `hasConverged && tree===null && spawn===null` → converge normally (no-spawn mode)
+**Files changed:** `src/Engine.ts` (guard in `#handleZero` +
+`#tryReconnectWorktree` method).
 
 ---
 
@@ -344,50 +292,37 @@ if (!tree && this.#spawn) {
 
 **Severity:** High — every restart wastes convergence or triggers B3  
 **Scenarios:** 3.4, 3.5, 3.6  
-**Priority:** Fix second (B3 fix is a safety net; B2 prevents the problem)
+**Priority:** Next (B3's reconnect covers the merge path; B2 adds
+reconnection at pickup to also fix the benchmark-measures-wrong-tree
+problem)
 
 **Problem:** `#worktrees` is in-memory only. After restart, `existingWt`
 is undefined, so benchmark runs against main repo instead of worktree.
 
-**Root cause:** No persistence or reconnection logic for worktree
-associations.
+**Note:** B3 fix partially addresses this — at merge time,
+`#tryReconnectWorktree` will find the worktree. But convergence ticks
+between pickup and merge still measure the wrong tree until B2 is
+implemented.
 
 #### Implementation plan
 
 **File:** `src/Engine.ts` — `tick()` method, after `pick()` and before
-running the benchmark (between lines 196 and 225).
+running the benchmark.
 
-**Change:** Add worktree reconnection when an in-progress task has no
-worktree in memory:
+**Change:** Reuse `#tryReconnectWorktree()` from B3 fix:
 
 ```ts
-// After this.#owned.add(task.taskNumber), before running benchmark:
-if (!this.#worktrees.has(task.taskNumber) && this.#spawn) {
+if (!this.#worktrees.has(task.taskNumber) && this.#spawn
+    && existsSync(resolve(this.#repo, '.git'))) {
   const reconnected = this.#tryReconnectWorktree(task);
   if (reconnected) {
     this.#log(`T${task.taskNumber} reconnected to existing worktree`);
   } else if (task.convergenceCount > 0) {
-    // Worktree expected but gone — convergence is meaningless
     task.resetConvergence();
     this.#log(`T${task.taskNumber} worktree not found, convergence reset`, 'transition');
   }
 }
 ```
-
-This reuses `#tryReconnectWorktree()` from the B3 fix. The four cases:
-
-| Branch exists? | Worktree dir exists? | Action |
-|---------------|---------------------|--------|
-| ✅ | ✅ | `wt.exists` → reconnect. Add to `#worktrees` |
-| ✅ | ❌ | `wt.create()` → recreate from branch. Commits survive |
-| ❌ | ✅ | Broken state. `wt.create()` → new branch from base. Old dir removed by prune |
-| ❌ | ❌ | Nothing to reconnect. Reset convergence if > 0 |
-
-**Tests:**
-- Process restart with convergence=1, worktree exists → reconnects, benchmark runs in worktree
-- Process restart with convergence=1, worktree gone → convergence reset to 0
-- Process restart with convergence=0, worktree exists → reconnects (branch reuse for retry)
-- Process restart with convergence=0, no worktree → no-op (normal first pickup)
 
 ---
 
@@ -467,7 +402,7 @@ merge time.
 ---
 
 ```
-B3 (guard #handleZero)  ←──  depends on  ──→  #tryReconnectWorktree()
+B3 (guard #handleZero)  ── ✅ FIXED ── includes #tryReconnectWorktree()
         ↑                                            ↑
         │                                            │
 B2 (reconnect on pickup) ────── reuses ──────────────┘
@@ -529,8 +464,8 @@ B6 ─── ✅ FIXED
 
 | Bug | Severity | Fix | Files | Status |
 |-----|----------|-----|-------|--------|
-| **B3** | Critical | Guard `#handleZero()` + `#tryReconnectWorktree()` | Engine.ts | 🔴 Open |
-| **B2** | High | Reconnect worktree in `tick()` (reuses B3 method) | Engine.ts | 🔴 Open |
+| **B3** | Critical | Guard `#handleZero()` + `#tryReconnectWorktree()` | Engine.ts | ✅ Fixed |
+| **B2** | High | Reconnect worktree in `tick()` (reuses B3 method) | Engine.ts | ✅ Partially fixed (B3's reconnect covers merge path; B2's pickup reconnect is TODO) |
 | **B1** | High | Auto-commit after agent exits (`Worktree.autoCommit()`) | Engine.ts, Worktree.ts | ✅ Fixed |
 | **B5** | High | Crash detection + no-progress tracking + baseline regression | Engine.ts, TaskState.ts, cli.ts | 🔴 Open |
 | **B6** | High | Explicit `.target_branch` per task at creation time | addTask.ts, TaskState.ts, Engine.ts | ✅ Fixed |

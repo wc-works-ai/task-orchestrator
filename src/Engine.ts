@@ -345,7 +345,11 @@ export class Engine {
     task.incrementConvergence();
     if (task.hasConverged) {
       // Use passed worktree or look up from map (for subsequent ticks after spawn)
-      const tree = wt ?? this.#worktrees.get(task.taskNumber) ?? null;
+      let tree = wt ?? this.#worktrees.get(task.taskNumber) ?? null;
+      // If worktree not in memory (process restart) and repo has .git, try to reconnect
+      if (!tree && this.#spawn && existsSync(resolve(this.#repo, '.git'))) {
+        tree = this.#tryReconnectWorktree(task);
+      }
       if (tree) {
         try {
           const outcome = await this.#mergeAndRemove(task, tree);
@@ -368,7 +372,14 @@ export class Engine {
           const recovered = await this.#recoverMergeFailure(task, tree, e);
           if (!recovered) return { task: task.info, metric, converged: false };
         }
+      } else if (this.#spawn && existsSync(resolve(this.#repo, '.git'))) {
+        // Spawn configured AND repo has .git, but no worktree found — agent
+        // work would be orphaned. Reset convergence instead of falsely CONVERGED.
+        task.resetConvergence();
+        this.#log(`T${task.taskNumber} convergence reached but worktree not found — resetting (process restart?)`, 'transition');
+        return { task: task.info, metric, converged: false };
       }
+      // No-spawn mode: tree===null is legitimate — converge without merge
       task.status = Status.CONVERGED;
       TaskState.pruneConverged(this.#dir, this.#keepConverged);
       this.#log(`T${task.taskNumber} CONVERGED`, 'transition');
@@ -500,6 +511,32 @@ export class Engine {
       try { cpSync(join(this.#repo, 'node_modules'), wtNm, { recursive: true }); } catch {}
     }
     return wt;
+  }
+
+  /** Try to reconnect to a worktree from a previous process. Returns the
+   *  Worktree if found/recreated, null otherwise. */
+  #tryReconnectWorktree(task: TaskState): Worktree | null {
+    const base = task.targetBranch ?? this.#baseBranch;
+    const wt = new Worktree(this.#repo, {
+      name: task.taskName,
+      baseBranch: base,
+      /* v8 ignore next -- same pattern as #prepareWorktree; worktreesDir tested there */
+      ...(this.#worktreesDir ? { worktreesDir: this.#worktreesDir } : {}),
+    });
+    if (wt.exists) {
+      this.#worktrees.set(task.taskNumber, wt);
+      this.#log(`T${task.taskNumber} reconnected to existing worktree`);
+      return wt;
+    }
+    // Worktree dir gone but branch may exist — try to recreate
+    try {
+      wt.create();
+      this.#worktrees.set(task.taskNumber, wt);
+      this.#log(`T${task.taskNumber} recreated worktree from existing branch`);
+      return wt;
+    } catch {
+      return null;
+    }
   }
 
   async #runSpawnCycle(task: TaskState, wt: Worktree | null, metric: number, signal: AbortSignal): Promise<number> {

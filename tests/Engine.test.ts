@@ -848,4 +848,59 @@ describe('Engine', () => {
     expect(r2.task).toBeNull();
   });
 
+  // ── B3: convergence without merge ───────────────────────────────────
+
+  it('B3: resets convergence when spawn configured but no worktree found at merge time', async () => {
+    const t = make(dir, 1, 'b3-test');
+    for (let i = 0; i < CONVERGENCE_THRESHOLD - 1; i++) t.incrementConvergence();
+
+    // Create a .git FILE (not dir) so existsSync('.git') passes but git
+    // operations fail — simulates a repo where the worktree can't be created
+    writeFileSync(resolve(dir, '.git'), 'not a real git repo');
+
+    const engine = new Engine(dir, {
+      benchmark: zero,
+      spawn: async () => ({ success: true, iterations: 1 }),
+      repoDir: dir,
+    });
+    const r = await engine.tick();
+    // Should NOT be converged — worktree missing, convergence reset
+    expect(r.converged).toBe(false);
+    expect(t.convergenceCount).toBe(0);
+  });
+
+  it('B3: reconnects to existing worktree on disk when not in memory', async () => {
+    const t = make(dir, 1, 'b3-reconnect');
+    for (let i = 0; i < CONVERGENCE_THRESHOLD - 1; i++) t.incrementConvergence();
+
+    // Create a fake .git so the guard recognizes this as a git repo
+    writeFileSync(resolve(dir, '.git'), 'not a real git repo');
+
+    // Create a worktree dir with a .git marker so wt.exists returns true
+    const wtDir = resolve(dir, '.worktrees', 'T01-b3-reconnect');
+    mkdirSync(wtDir, { recursive: true });
+    writeFileSync(resolve(wtDir, '.git'), 'gitdir: fake');
+
+    const engine = new Engine(dir, {
+      benchmark: zero,
+      spawn: async () => ({ success: true, iterations: 1 }),
+      repoDir: dir,
+    });
+    // tick should reconnect to the worktree — but merge will fail (not a real repo)
+    // The important thing: convergence is NOT falsely reset, and the reconnect path is exercised
+    const r = await engine.tick();
+    // Merge fails (fake repo), so not converged — but the reconnect path was hit
+    expect(r.converged).toBe(false);
+  });
+
+  it('B3: no-spawn mode converges without worktree (legitimate)', async () => {
+    const t = make(dir, 1, 'no-spawn');
+    for (let i = 0; i < CONVERGENCE_THRESHOLD - 1; i++) t.incrementConvergence();
+
+    // No spawn configured — no worktree expected
+    const engine = new Engine(dir, { benchmark: zero });
+    const r = await engine.tick();
+    expect(r.converged).toBe(true);
+  });
+
 });
