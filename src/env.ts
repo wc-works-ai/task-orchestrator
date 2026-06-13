@@ -48,6 +48,7 @@ export const env = {
   get converge()     { return parseInt(process.env.ORCH_CONVERGE ?? '3', 10); },
   get maxFailures()  { return maxFailures(process.env.ORCH_MAX_FAILURES); },
   get worktreesDir() { return process.env.ORCH_WORKTREES || undefined; },
+  get noWorktree()   { return bool(process.env.ORCH_NO_WORKTREE); },
   get heartbeatMs()       { return parseInt(process.env.ORCH_HEARTBEAT_MS ?? '300000', 10); },
   get progressTimeoutMs()  { return parseInt(process.env.ORCH_PROGRESS_TIMEOUT ?? '120000', 10); },
   get benchmarkTimeoutMs() { return ms(process.env.ORCH_BENCHMARK_TIMEOUT, 120000); },

@@ -52,6 +52,7 @@ export interface EngineOptions {
   readonly instanceId?: string;
   readonly repoDir?: string;     // for worktree creation
   readonly worktreesDir?: string; // override default .worktrees/ location
+  readonly noWorktree?: boolean; // skip worktree/git — agent works directly in main repo
   readonly retryCooldownMs?: number; // min ms between spawn retries (0 = no cooldown, default 30000)
   readonly keepAlive?: boolean;
   readonly infinite?: boolean;
@@ -66,6 +67,7 @@ export class Engine {
   readonly #dir: string;
   readonly #repo: string;
   readonly #worktreesDir: string | undefined;
+  readonly #noWorktree: boolean;
   readonly #bench: BenchmarkFn;
   readonly #spawn: SpawnFn | null;
   readonly #mergeRecovery: MergeRecoveryFn | undefined;
@@ -96,6 +98,7 @@ export class Engine {
     this.#dir = tasksDir;
     this.#repo = opts.repoDir ?? dirname(tasksDir);
     this.#worktreesDir = opts.worktreesDir ?? env.worktreesDir;
+    this.#noWorktree = opts.noWorktree ?? env.noWorktree;
     this.#bench = opts.benchmark ?? (() => 1);
     this.#spawn = opts.spawn ?? null;
     this.#mergeRecovery = opts.mergeRecovery;
@@ -220,7 +223,7 @@ export class Engine {
         // exist: convergence > 0 means the agent already achieved metric=0
         // in a prior tick, so a worktree was created. Without this gate,
         // fresh tasks would prematurely create worktrees via #tryReconnectWorktree.
-        if (!this.#worktrees.has(task.taskNumber) && this.#spawn
+        if (!this.#noWorktree && !this.#worktrees.has(task.taskNumber) && this.#spawn
             && existsSync(resolve(this.#repo, '.git'))
             && task.convergenceCount > 0) {
           const reconnected = this.#tryReconnectWorktree(task);
@@ -504,6 +507,7 @@ export class Engine {
   }
 
   async #prepareWorktree(task: TaskState): Promise<Worktree | null> {
+    if (this.#noWorktree) return null;
     let wt = this.#worktrees.get(task.taskNumber) ?? null;
     if (!wt && existsSync(resolve(this.#repo, '.git'))) {
       const base = task.targetBranch ?? this.#baseBranch;

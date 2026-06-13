@@ -924,4 +924,20 @@ describe('Engine', () => {
     expect(r.converged).toBe(true);
   });
 
+  it('noWorktree: agent works directly in repo, no worktree created', async () => {
+    make(dir, 1, 'no-wt');
+    const spawnCwds: (string | undefined)[] = [];
+    const bench = vi.fn().mockReturnValueOnce(1).mockReturnValue(0);
+    const engine = new Engine(dir, {
+      benchmark: bench,
+      spawn: async (_task, wt) => { spawnCwds.push(wt); return { success: true, iterations: 1 }; },
+      repoDir: dir,
+      noWorktree: true,
+    });
+    const r = await engine.tick();
+    // Agent received undefined worktreePath (works directly in repo, no worktree)
+    expect(spawnCwds[0]).toBeUndefined();
+    expect(r.metric).toBe(0);
+  });
+
 });

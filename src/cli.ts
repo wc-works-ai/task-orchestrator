@@ -72,6 +72,7 @@ const { values, positionals } = await parseArgs({
     'keep-converged': { type: 'string', default: '' },
     infinite: { type: 'boolean', default: false },
     'auto-stash': { type: 'boolean', default: false },
+    'no-worktree': { type: 'boolean', default: false },
     parallel: { type: 'string', default: '' },
     worktrees: { type: 'string', default: '' },
     help:   { type: 'boolean', short: 'h', default: false },
@@ -115,6 +116,7 @@ FLAGS (all optional — override env vars; env vars override defaults)
   --reasoning <lvl> Reasoning effort                  [default: off]
   --parallel <n>    Concurrent tasks (0=unlimited)    [default: 1]
   --auto-stash      Stash repo changes before merge   [default: on]
+  --no-worktree     Work directly in main repo        [default: off]
   --keep-alive      Stay alive through idle periods   [default: off]
   --loop            Daemon mode: never exit           [default: off]
   --once            Run one tick, then exit
@@ -126,7 +128,7 @@ FLAGS (all optional — override env vars; env vars override defaults)
 CURRENT SETTINGS (from env vars / defaults — flags override these)
   agent=${a}  model=${m}  reasoning=${r}
   parallel=${p}  converge=${c}  max-failures=${mf}
-  auto-stash=${as}  log-level=${ll}
+  auto-stash=${as}  no-worktree=${env.noWorktree ? 'on' : 'off'}  log-level=${ll}
   Run --config for full list with sources.
 
 EXAMPLES
@@ -157,6 +159,7 @@ const repo = paths.repo;
 const dir = paths.tasks;
 const worktreesDir = paths.worktrees;
 const autoStash = values['auto-stash'] || env.autoStash;
+const noWorktree = values['no-worktree'] || env.noWorktree;
 const keepAlive = values['keep-alive'] || env.keepAlive;
 const infinite = values.infinite || values.loop || env.infinite;
 
@@ -321,6 +324,7 @@ if (!existsSync(dir)) {
 const engine = new Engine(dir, {
   repoDir: repo,
   worktreesDir,
+  noWorktree,
   autoStashBeforeMerge: autoStash,
   mergeRecovery: autoStash ? () => MergeRecoveryAction.StashAndRetry : promptMergeRecovery,
   verifyCmd: 'npm run tc',

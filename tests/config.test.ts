@@ -7,6 +7,7 @@ describe('config', () => {
     'ORCH_STATE_ROOT',
     'ORCH_TASKS',
     'ORCH_WORKTREES',
+    'ORCH_NO_WORKTREE',
     'ORCH_AGENT',
     'ORCH_MODEL',
     'ORCH_REASONING',

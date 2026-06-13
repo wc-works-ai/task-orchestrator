@@ -12,6 +12,7 @@ export const CONFIG_SPEC: readonly ConfigItem[] = [
   { group: 'Paths', env: 'ORCH_STATE_ROOT', flag: 'state-root', kind: 'string', def: '<home>/task-orchestrator', desc: 'Orchestrator state root' },
   { group: 'Paths', env: 'ORCH_TASKS', flag: 'tasks', kind: 'string', def: '<state-root>/<repo-slug>/tasks', desc: 'Task directory' },
   { group: 'Paths', env: 'ORCH_WORKTREES', flag: 'worktrees', kind: 'string', def: '<state-root>/<repo-slug>/worktrees', desc: 'Worktree directory' },
+  { group: 'Run mode', env: 'ORCH_NO_WORKTREE', flag: 'no-worktree', kind: 'boolean', def: 'off', desc: 'Skip worktree/git — agent works directly in main repo' },
   { group: 'Coding agent', env: 'ORCH_AGENT', flag: 'agent', kind: 'string', def: 'pi', desc: 'Coding agent: pi or copilot' },
   { group: 'Coding agent', env: 'ORCH_MODEL', flag: 'model', kind: 'string', def: 'agent default', desc: 'Model override passed to the agent' },
   { group: 'Coding agent', env: 'ORCH_REASONING', flag: 'reasoning', kind: 'string', def: 'unset', desc: 'Reasoning effort for supported agents' },
