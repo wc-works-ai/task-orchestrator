@@ -504,7 +504,9 @@ B2 (reconnect on pickup) ────── reuses ─────────�
         │
 B1 (auto-commit) ─── independent ─── can be done in parallel
         │
-B4 (default autoStash) ─── independent ─── can be done in parallel
+B5 (stale benchmark) ─── independent ─── 3 layers, can be incremental
+        │
+B4 (default autoStash) ─── independent ─── trivial
 ```
 
 **Recommended implementation sequence:**
@@ -512,7 +514,10 @@ B4 (default autoStash) ─── independent ─── can be done in parallel
 2. Implement B3 guard in `#handleZero()` (uses reconnect)
 3. Implement B2 reconnect in `tick()` (uses same method)
 4. Implement B1 auto-commit in `#runSpawnCycle()` (independent)
-5. Implement B4 default flip (independent, trivial)
+5. Implement B5 layer 1: crash detection (independent, low complexity)
+6. Implement B5 layer 2: no-progress detection (independent)
+7. Implement B5 layer 3: baseline regression (independent)
+8. Implement B4 default flip (independent, trivial)
 
 ---
 
@@ -553,6 +558,7 @@ B4 (default autoStash) ─── independent ─── can be done in parallel
 | **B3** | Critical | Guard `#handleZero()` + `#tryReconnectWorktree()` | Engine.ts | Low |
 | **B2** | High | Reconnect worktree in `tick()` (reuses B3 method) | Engine.ts | Medium |
 | **B1** | High | Auto-commit after agent exits (`Worktree.autoCommit()`) | Engine.ts, Worktree.ts | Low |
+| **B5** | High | Crash detection + no-progress tracking + baseline regression | Engine.ts, TaskState.ts, cli.ts | Medium–High |
 | **B4** | Medium | Default `autoStashBeforeMerge` to true + env var | Engine.ts, env.ts | Low |
 
 ### Priority order
@@ -560,35 +566,91 @@ B4 (default autoStash) ─── independent ─── can be done in parallel
 1. **B3** — false CONVERGED is the worst outcome.
 2. **B2** — every restart wastes progress or triggers B3.
 3. **B1** — uncommitted changes create gap between validated and merged code.
-4. **B4** — has working workaround (`autoStashBeforeMerge`).
+4. **B5** — stale benchmark burns retries or causes false convergence.
+5. **B4** — has working workaround (`autoStashBeforeMerge`).
 
 ---
 
-## Benchmark staleness
+### 🔴 B5: Stale benchmark — unreliable measurement at every phase
 
-The benchmark (`benchmark.js`) is authored at task creation time. By the
-time the task is picked up, the codebase may have changed enough that
-the benchmark is unreliable:
+**Severity:** High — affects every task with a time gap between creation
+and execution  
+**Scenarios:** 1.1, 1.2, 1.3, and every subsequent benchmark run  
+**Priority:** Fix after B1–B3 (foundational — changes the convergence
+model)
 
-| Staleness mode | Effect | Detection |
-|---------------|--------|-----------|
-| **False negative** — metric > 0 but criteria are unreachable (file renamed, pattern moved) | Agent grinds, burns retries, can never reach 0 | No-progress detection: metric unchanged across N agent runs |
-| **False positive** — metric = 0 but task isn't done (checked file deleted → grep returns 0) | Task falsely converges without real work | ORCH_VERIFY_CMD (repo-wide gate), scope-touch check (agent diff touches scope files) |
-| **Crash** — benchmark process error (missing import, syntax error) | Caught as metric=1, agent spawned against broken benchmark | Process exit code + no METRIC lines emitted |
-| **Infra regression** — build/test fail on clean base (another merge broke them) | Agent tries to fix unrelated failures | Baseline comparison: metric was 0 at creation, now > 0 |
+**Problem:** The benchmark (`benchmark.js`) is a static artifact written
+at task creation time. The codebase evolves between creation and pickup.
+The benchmark can become unreliable in both directions:
 
-**Current mitigations:**
-- `ORCH_VERIFY_CMD` runs before merge (catches false positives at merge time)
-- Convergence × 3 (requires repeated stable results)
-- Agent can update `benchmark.js` (prompt allows it; `autoresearch.md` goal is immutable)
+| Staleness mode | Effect | Example |
+|---------------|--------|---------|
+| **False negative** | metric > 0 but criteria unreachable. Agent grinds, burns all retries, can never reach 0 | File renamed → benchmark greps for old name → always fails |
+| **False positive** | metric = 0 but task isn't done. Task falsely converges | Checked file deleted → grep returns 0 → "pass" |
+| **Crash** | Benchmark process error. Caught as metric=1, indistinguishable from real work needed | Stale import → MODULE_NOT_FOUND |
+| **Infra regression** | build/test fail on clean base. Agent tries to fix unrelated failures | Another task's merge broke tests |
 
-**Not yet implemented:**
-- Crash detection (distinguish process error from legitimate metric > 0)
-- Baseline regression detection (compare first-run metrics to creation-time)
-- No-progress detection (track metric across agent runs)
-- Scope-touch gate (verify agent's diff touches scope files before converging)
+**Root cause:** The benchmark is a point-in-time artifact in a moving
+codebase. There is no freshness check, no validation that the benchmark
+still measures what it was designed to measure.
 
-See the plan file for detailed implementation proposals.
+**Current mitigations (partial):**
+- `ORCH_VERIFY_CMD` catches some false positives at merge time
+- Convergence × 3 requires repeated stable results
+- Agent can update `benchmark.js` (prompt allows it)
+
+#### Implementation plan
+
+**Layer 1 — Crash detection** (Low complexity)
+
+Distinguish benchmark crash from legitimate metric > 0.
+
+**File:** `src/cli.ts` — benchmark function (line 297)
+
+When `execFileSync` throws AND `parseMetrics` finds 0 criteria → the
+benchmark crashed (no METRIC lines emitted). Return a signal to Engine.
+
+**File:** `src/Engine.ts` — `#run()` and `tick()`
+
+`#run()` returns `{ metric, crashed }`. If crashed on initial check →
+release to PENDING with cooldown, log `"benchmark crashed"`, don't
+consume retries.
+
+**Layer 2 — No-progress detection** (Medium complexity)
+
+Track pre-agent vs post-agent metric. If unchanged across N consecutive
+runs, the benchmark is likely stale.
+
+**File:** `src/TaskState.ts` — add `.stale_count` (non-negative integer
+file, like `.convergence_count`)
+
+**File:** `src/Engine.ts` — `#runSpawnCycle()`
+
+After agent runs, compare pre-agent and post-agent metric. If no
+improvement → increment `.stale_count`. After threshold (default 2) →
+log `"metric unchanged for N runs — benchmark may be outdated"`, release
+as FAILED without consuming MAX_FAILURES retries. Reset stale count on
+any progress.
+
+**Layer 3 — Baseline regression detection** (Medium complexity)
+
+Save first-run metric results as `.baseline`. On subsequent runs, if a
+metric that was 0 at baseline is now > 0, the base regressed — not the
+task's fault.
+
+**File:** `src/TaskState.ts` — `.baseline` (JSON file with commit hash +
+metric values). Invalidated when `benchmark.js` mtime is newer.
+
+**File:** `src/Engine.ts` — initial check in `tick()`
+
+Compare current metrics against baseline. Regressed metrics → release
+to PENDING with cooldown, log clearly.
+
+**Tests for each layer:**
+- Crash: process error + 0 METRIC lines → no retry consumed
+- No-progress: metric unchanged × N → stale count incremented → threshold → FAILED
+- Baseline regression: metric was 0, now > 0 → no retry consumed
+- Baseline invalidation: benchmark.js updated → baseline reset
 
 ---
 
