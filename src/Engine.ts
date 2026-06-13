@@ -479,6 +479,9 @@ export class Engine {
       await wt.create();
       this.#worktrees.set(task.taskNumber, wt);
     }
+    if (!wt) {
+      this.#log(`T${task.taskNumber} WARNING: no .git found — agent will work directly in ${this.#repo} (no worktree isolation, no rollback)`, 'always');
+    }
     if (wt) {
       // Clean any uncommitted agent changes from a prior run, then sync with
       // the latest base so the agent always works on current, clean code.
