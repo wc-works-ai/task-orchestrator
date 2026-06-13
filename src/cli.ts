@@ -9,6 +9,7 @@ import { addTask } from './addTask.js';
 import { Engine, MergeRecoveryAction, type MergeRecoveryFailure } from './Engine.js';
 import { TaskState, type TaskInfo } from './TaskState.js';
 import { createCodingAgent } from './agents.js';
+import type { CodingAgent } from './CodingAgent.js';
 import { Prerequisites } from './Prerequisites.js';
 import { env } from './env.js';
 import { resolveStatePaths } from './StatePaths.js';
@@ -47,9 +48,12 @@ async function promptMergeRecovery(failure: MergeRecoveryFailure): Promise<Merge
   }
 }
 
-const { values, positionals } = await parseArgs({
-  allowPositionals: true,
-  options: {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let parseResult: any;
+try {
+  parseResult = await parseArgs({
+    allowPositionals: true,
+    options: {
     repo:   { type: 'string', default: '' },
     'state-root': { type: 'string', default: '' },
     tasks:  { type: 'string', default: '' },
@@ -77,7 +81,14 @@ const { values, positionals } = await parseArgs({
     worktrees: { type: 'string', default: '' },
     help:   { type: 'boolean', short: 'h', default: false },
   },
-});
+  });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+} catch (e: unknown) {
+  console.error(`\n  error: ${e instanceof Error ? e.message : String(e)}`);
+  console.error('  Run orchestrator --help for usage.\n');
+  process.exit(1);
+}
+const { values, positionals } = parseResult!;
 
 if (values.help) {
   const a = env.agent;
@@ -179,9 +190,22 @@ if (values.parallel) {
 
 const keepConverged = values['keep-converged'] ? parseInt(values['keep-converged'] as string, 10) : undefined;
 
+let agent: CodingAgent;
+try {
+  agent = createCodingAgent(values.agent || env.agent, {
+    ...(values.reasoning ? { reasoning: values.reasoning } : {}),
+    ...(values.model ? { model: values.model } : {}),
+    workDir: repo,
+  });
+} catch (e: unknown) {
+  console.error(`\n  error: ${e instanceof Error ? e.message : String(e)}\n`);
+  process.exit(1);
+}
+
 console.log(`repo: ${repo}`);
 console.log(`tasks: ${dir}`);
 console.log(`worktrees: ${worktreesDir}`);
+console.log(`agent: ${agent.name}`);
 
 if (values.config) {
   console.log(formatEffectiveConfig(values as Record<string, unknown>, process.env));
@@ -215,7 +239,7 @@ if (positionals[0] === 'edit') {
   if (values.goal) updated = updated.replace(/^## Goal.*$/m, `## Goal: ${values.goal}`);
   if (values.metric) updated = updated.replace(/\`[^`]+\` — task-specific deliverable/, `\`${values.metric}\` — task-specific deliverable`);
   if (values.scope) {
-    const lines = values.scope.split(/\s+/).map(f => `- ${f}`).join('\n');
+    const lines = (values.scope as string).split(/\s+/).map((f: string) => `- ${f}`).join('\n');
     updated = updated.replace(/^## Scope\n[\s\S]*?(?=^## |\Z)/m, `## Scope\n${lines}\n`);
   }
   writeFileSync(join(task.directory, 'autoresearch.md'), updated);
@@ -237,13 +261,6 @@ if (positionals[0] === 'add') {
   console.log(`   Next: edit autoresearch.md + benchmark.js, then npm run tick`);
   process.exit(0);
 }
-
-const agent = createCodingAgent(values.agent || env.agent, {
-  ...(values.reasoning ? { reasoning: values.reasoning } : {}),
-  ...(values.model ? { model: values.model } : {}),
-  workDir: repo,
-});
-console.log(`agent: ${agent.name}`);
 
 if (values.check) {
   const results = await Prerequisites.check(agent);
