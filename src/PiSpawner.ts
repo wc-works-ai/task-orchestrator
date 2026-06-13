@@ -339,9 +339,14 @@ export class PiSpawner implements CodingAgent {
     const iterationScan = `${state.iterationTail}${txt}`;
     state.iterations += PiSpawner.#countOccurrences(iterationScan, ITERATION_MARKER);
     state.iterationTail = PiSpawner.#tail(iterationScan, ITERATION_MARKER.length - 1);
-    const authScan = `${state.authTail}${txt}`;
-    PiSpawner.#collectAuthProviders(authScan, state.authProviders);
-    state.authTail = PiSpawner.#tail(authScan, AUTH_SCAN_TAIL);
+    // Only scan for auth errors while the agent has not produced any iterations.
+    // Once the agent is actively working (iterations > 0), any auth-error-shaped
+    // text in the stream is test fixture / subprocess output, not a real failure.
+    if (state.iterations === 0) {
+      const authScan = `${state.authTail}${txt}`;
+      PiSpawner.#collectAuthProviders(authScan, state.authProviders);
+      state.authTail = PiSpawner.#tail(authScan, AUTH_SCAN_TAIL);
+    }
     state.lineBuf = PiSpawner.#processJsonLines(txt, state.lineBuf, state.tokenUsage);
   }
 

@@ -536,8 +536,10 @@ describe('PiSpawner', () => {
 
       const r = await p;
       expect(r.success).toBe(false);
-      expect(r.authFailure).toBe(true);
-      expect(r.error).toBe('No API key found for azure-openai-responses');
+      // Auth error appears AFTER iterations — so it's not treated as an auth
+      // failure (real auth failures prevent any iterations from starting).
+      expect(r.authFailure).toBeUndefined();
+      expect(r.error).toBe('pi exited with code 1');
       expect(r.iterations).toBe(1);
       expect(r.tokenUsage).toEqual({
         input: 1,
