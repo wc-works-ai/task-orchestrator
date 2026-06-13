@@ -496,6 +496,23 @@ describe('TaskState', () => {
     expect(fresh.scope).toEqual([]);
   });
 
+  it('targetBranch returns the value from .target_branch file', () => {
+    const t = make(dir, 1, 'a');
+    writeFileSync(join(t.directory, '.target_branch'), 'develop\n');
+    expect(t.targetBranch).toBe('develop');
+  });
+
+  it('targetBranch returns undefined when file is empty', () => {
+    const t = make(dir, 1, 'a');
+    writeFileSync(join(t.directory, '.target_branch'), '\n');
+    expect(t.targetBranch).toBeUndefined();
+  });
+
+  it('targetBranch returns undefined when file is missing', () => {
+    const t = make(dir, 1, 'a');
+    expect(t.targetBranch).toBeUndefined();
+  });
+
   it('model returns empty when no model in metadata', () => {
     const t = make(dir, 1, 'a', { status: Status.PENDING });
     writeFileSync(t.directory + '/autoresearch.md', '## Goal\njust test');

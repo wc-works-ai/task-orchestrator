@@ -475,7 +475,8 @@ export class Engine {
   async #prepareWorktree(task: TaskState): Promise<Worktree | null> {
     let wt = this.#worktrees.get(task.taskNumber) ?? null;
     if (!wt && existsSync(resolve(this.#repo, '.git'))) {
-      wt = new Worktree(this.#repo, { name: task.taskName, baseBranch: this.#baseBranch, ...(this.#worktreesDir ? { worktreesDir: this.#worktreesDir } : {}) });
+      const base = task.targetBranch ?? this.#baseBranch;
+      wt = new Worktree(this.#repo, { name: task.taskName, baseBranch: base, ...(this.#worktreesDir ? { worktreesDir: this.#worktreesDir } : {}) });
       await wt.create();
       this.#worktrees.set(task.taskNumber, wt);
     }
@@ -483,15 +484,16 @@ export class Engine {
       this.#log(`T${task.taskNumber} WARNING: no .git found — agent will work directly in ${this.#repo} (no worktree isolation, no rollback)`, 'always');
     }
     if (wt) {
+      const base = task.targetBranch ?? this.#baseBranch;
       // Clean any uncommitted agent changes from a prior run, then sync with
       // the latest base so the agent always works on current, clean code.
       wt.cleanWorktree();
       try {
         await wt.syncWithBase();
-        this.#log(`T${task.taskNumber} worktree synced with ${this.#baseBranch}`);
+        this.#log(`T${task.taskNumber} worktree synced with ${base}`);
       } catch {
         await wt.resetForRetry();
-        this.#log(`T${task.taskNumber} worktree reset to ${this.#baseBranch} (sync failed; agent starts fresh)`, 'transition');
+        this.#log(`T${task.taskNumber} worktree reset to ${base} (sync failed; agent starts fresh)`, 'transition');
       }
       // Copy node_modules for isolated npm commands (no symlink — avoids circular chain risk)
       const wtNm = join(wt.path, 'node_modules');

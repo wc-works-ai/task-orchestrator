@@ -1,10 +1,24 @@
 import { mkdirSync, writeFileSync, readdirSync, renameSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { resolve, dirname } from 'node:path';
 
 export interface AddTaskOptions {
   readonly goal?: string;
   readonly metric?: string;
   readonly scope?: readonly string[];
+  /** Git branch this task targets for worktree creation and merge. Defaults to current HEAD. */
+  readonly targetBranch?: string;
+  /** Repository directory for detecting the current branch. */
+  readonly repoDir?: string;
+}
+
+function detectBranch(repoDir?: string): string | undefined {
+  try {
+    const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'],
+      { cwd: repoDir ?? process.cwd(), encoding: 'utf-8' }).trim();
+    /* v8 ignore next -- detached HEAD returns literal 'HEAD'; unreachable in normal test env */
+    return branch && branch !== 'HEAD' ? branch : undefined;
+  } catch { return undefined; }
 }
 
 export function addTask(tasksDir: string, name: string, opts: AddTaskOptions = {}) {
@@ -28,6 +42,7 @@ export function addTask(tasksDir: string, name: string, opts: AddTaskOptions = {
 
   const taskName = `T${String(next).padStart(2, '0')}-${name}`;
   const finalDir = resolve(tasksDir, 'pending', taskName);
+  const branch = opts.targetBranch ?? detectBranch(opts.repoDir);
 
   // Atomic task creation: write all files to a staging directory, then rename
   // into pending/ as the last step. This prevents a running loop from picking
@@ -38,6 +53,12 @@ export function addTask(tasksDir: string, name: string, opts: AddTaskOptions = {
   try {
     writeFileSync(resolve(stagingDir, '.status'), 'PENDING\n');
     writeFileSync(resolve(stagingDir, '.dependencies'), '');
+
+    // Persist the target branch so the worktree is created from and merged
+    // into the correct branch, even if HEAD changes between creation and pickup.
+    if (branch) {
+      writeFileSync(resolve(stagingDir, '.target_branch'), branch + '\n');
+    }
     writeFileSync(resolve(stagingDir, 'autoresearch.md'), [
       `# T${next} — ${goal}`,
       '## Goal', goal,
@@ -88,5 +109,5 @@ export function addTask(tasksDir: string, name: string, opts: AddTaskOptions = {
   }
   /* v8 ignore stop */
 
-  return { number: next, name, directory: finalDir, goal, metric, scope };
+  return { number: next, name, directory: finalDir, goal, metric, scope, targetBranch: branch };
 }

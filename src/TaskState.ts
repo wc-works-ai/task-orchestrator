@@ -18,6 +18,7 @@ const D_CLAIM    = '.claim';
 const F_OWNER    = 'owner';
 const F_BEAT     = 'heartbeat';
 const F_CLAIM_LOCK = '.claim.lock';
+const F_TARGET_BRANCH = '.target_branch';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 export interface TaskInfo {
@@ -341,6 +342,15 @@ export class TaskState {
     const m = c.match(/^## Scope([\s\S]*?)(?=## |$)/s);
     const raw = m?.[1]?.trim() ?? '';
     return raw ? raw.split('\n').map(s => s.replace(/^[-*]\s*/, '').trim()).filter(Boolean) : [];
+  }
+
+  /** Git branch this task targets for worktree creation and merge.
+   *  Set at task creation time. Falls back to undefined (Engine uses its own baseBranch). */
+  get targetBranch(): string | undefined {
+    try {
+      const v = readFileSync(join(this.#dir, F_TARGET_BRANCH), 'utf-8').trim();
+      return v || undefined;
+    } catch { return undefined; }
   }
 
   get goal(): string {

@@ -200,7 +200,7 @@ Main repo may have uncommitted changes (user's work).
 | 4.10 | SIGKILL during merge | Main repo left on base branch, possibly mid-merge (`.git/MERGE_HEAD` set). Lock dir remains | ⚠️ RISK — neither `cleanWorktree()` nor `syncWithBase()` checks for in-progress merges before starting. Next retry: `merge()` fails → caught → `git merge --abort` → one tick wasted. `prevBranch` captured during recovery may be wrong (base instead of user's topic branch). Lock auto-reclaimed after timeout |
 | 4.11 | SIGKILL during syncWithBase (in worktree) | Worktree left with `.git/MERGE_HEAD`. `cleanWorktree()` does NOT abort merges. Next `syncWithBase()` fails → caught → rethrown → `resetForRetry()` → `git reset --hard base` **discards agent's committed work** | ⚠️ RISK — silent data loss. Same as F5 in Opus review |
 | 4.12 | Merge lock stale (previous holder crashed) | Lock reclaimed after `ORCH_MERGE_LOCK_MS` timeout. mkdir retried atomically | ✅ SAFE |
-| 4.13 | **User switched main repo from branch A to B** while task was in progress | `merge()` runs `git checkout A` (the cached base) → switches main repo from B to A without consent. Agent work merged into A, not B. After merge, main repo is left on A | 🔴 **BUG B6** — user silently loses their current branch context. Agent work may land on the wrong branch. See **B6** |
+| 4.13 | **User switched main repo from branch A to B** while task was in progress | Each task has its own `.target_branch` file set at creation. `merge()` uses the task's target, not HEAD. Main repo is switched to the task's target for merge, then back | ✅ SAFE (fixed) — agent work always merges into the branch that was current when the task was created |
 
 ### Phase 5: Failure and retry
 
@@ -493,86 +493,22 @@ this.#autoStashBeforeMerge = opts.autoStashBeforeMerge ?? env.autoStash;
 
 ---
 
-### 🔴 B6: User branch switch causes merge into wrong branch
+### ✅ B6: User branch switch — FIXED (target branch per task)
 
-**Severity:** High — user silently loses current branch context  
-**Scenarios:** 4.13
+**Was:** High — user silently loses branch context on merge  
+**Status:** Fixed
 
-**Problem:** The base branch is captured once at Engine construction
-(`#detectBaseBranch()` → `this.#baseBranch`). If the user switches the
-main repo from branch A to branch B while tasks are running,
-`Worktree.merge()` still does `git checkout A` — silently switching the
-user's repo from B back to A and merging agent work into A.
+**Solution:** Each task now persists a `.target_branch` file at creation
+time (via `addTask()`), capturing the git branch that was current when
+the task was created. `Engine.#prepareWorktree()` uses
+`task.targetBranch` (falling back to `Engine.#baseBranch` for tasks
+created before this change). The worktree is branched from and merged
+into the correct target regardless of what branch the main repo is on at
+merge time.
 
-**Root cause:** `this.#base` in Worktree is a frozen string set at
-construction. `merge()` uses it for `git checkout` and `git merge`
-without checking what branch the repo is currently on or whether the
-base is still the intended target.
-
-**Impact:**
-- User's main repo is silently switched to branch A
-- Agent work merged into A even if user intended B
-- After merge, main repo is left on A (not restored to B)
-
-#### Implementation plan
-
-**Recommended: explicit target branch per task**
-
-The target branch should be an explicit property of the task, set at
-creation time — not an ambient detection from whatever `HEAD` happens to
-be.
-
-**File:** `src/addTask.ts`
-
-At task creation, capture the current branch and persist it:
-```ts
-// In addTask(), alongside .status, .dependencies:
-const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'],
-  { cwd: repoDir, encoding: 'utf-8' }).trim();
-writeFileSync(resolve(stagingDir, '.target_branch'), branch + '\n');
-```
-
-**File:** `src/TaskState.ts`
-
-Add a `targetBranch` getter:
-```ts
-get targetBranch(): string | undefined {
-  try { return readFileSync(join(this.#dir, '.target_branch'), 'utf-8').trim() || undefined; }
-  catch { return undefined; }
-}
-```
-
-**File:** `src/Engine.ts`
-
-Use `task.targetBranch` instead of `this.#baseBranch` when creating
-worktrees and merging:
-```ts
-// In #prepareWorktree():
-const base = task.targetBranch ?? this.#baseBranch;
-wt = new Worktree(this.#repo, { name: task.taskName, baseBranch: base, ... });
-
-// In #mergeAndRemove() — verify before merge:
-const base = task.targetBranch ?? this.#baseBranch;
-// Worktree already uses its own #base, which was set from task.targetBranch
-```
-
-**Benefits:**
-- Each task knows its target branch — explicit, auditable, on disk
-- Different tasks can target different branches (multi-branch support)
-- Survives process restarts (persisted, not in-memory)
-- `Engine.#baseBranch` becomes the fallback for tasks created before
-  this feature (backward compatible)
-- B6 is fully eliminated — merge always goes to the declared target
-
-**Backward compat:** Tasks without `.target_branch` fall back to
-`Engine.#baseBranch` (current behavior).
-
-**Tests:**
-- Task created with `.target_branch = main` → worktree branched from main, merged into main
-- Task created with `.target_branch = develop` → worktree branched from develop, merged into develop
-- Task without `.target_branch` → falls back to Engine's detected base (current behavior)
-- User switches main repo branch → merge still goes to task's declared target
-- Two tasks targeting different branches → each merges into its own target
+**Files changed:** `src/addTask.ts` (detect + persist branch),
+`src/TaskState.ts` (`.target_branch` getter), `src/Engine.ts` (use
+`task.targetBranch ?? this.#baseBranch`).
 
 ---
 
@@ -586,11 +522,11 @@ B2 (reconnect on pickup) ────── reuses ─────────�
         │
 B1 (auto-commit) ─── independent ─── can be done in parallel
         │
-B6 (branch check) ─── independent ─── can be done in parallel
-        │
 B5 (stale benchmark) ─── independent ─── 3 layers, can be incremental
         │
 B4 (default autoStash) ─── independent ─── trivial
+        │
+B6 ─── ✅ FIXED
 ```
 
 **Recommended implementation sequence:**
@@ -598,11 +534,10 @@ B4 (default autoStash) ─── independent ─── trivial
 2. Implement B3 guard in `#handleZero()` (uses reconnect)
 3. Implement B2 reconnect in `tick()` (uses same method)
 4. Implement B1 auto-commit in `#runSpawnCycle()` (independent)
-5. Implement B6 base-branch check before merge (independent, low)
-6. Implement B5 layer 1: crash detection (independent, low complexity)
-7. Implement B5 layer 2: no-progress detection (independent)
-8. Implement B5 layer 3: baseline regression (independent)
-9. Implement B4 default flip (independent, trivial)
+5. Implement B5 layer 1: crash detection (independent, low complexity)
+6. Implement B5 layer 2: no-progress detection (independent)
+7. Implement B5 layer 3: baseline regression (independent)
+8. Implement B4 default flip (independent, trivial)
 
 ---
 
@@ -638,23 +573,22 @@ B4 (default autoStash) ─── independent ─── trivial
 
 ## Summary
 
-| Bug | Severity | Fix | Files | Complexity |
-|-----|----------|-----|-------|------------|
-| **B3** | Critical | Guard `#handleZero()` + `#tryReconnectWorktree()` | Engine.ts | Low |
-| **B2** | High | Reconnect worktree in `tick()` (reuses B3 method) | Engine.ts | Medium |
-| **B1** | High | Auto-commit after agent exits (`Worktree.autoCommit()`) | Engine.ts, Worktree.ts | Low |
-| **B5** | High | Crash detection + no-progress tracking + baseline regression | Engine.ts, TaskState.ts, cli.ts | Medium–High |
-| **B6** | High | Verify base branch before merge or restore user branch after | Engine.ts, Worktree.ts | Low |
-| **B4** | Medium | Default `autoStashBeforeMerge` to true + env var | Engine.ts, env.ts | Low |
+| Bug | Severity | Fix | Files | Status |
+|-----|----------|-----|-------|--------|
+| **B3** | Critical | Guard `#handleZero()` + `#tryReconnectWorktree()` | Engine.ts | 🔴 Open |
+| **B2** | High | Reconnect worktree in `tick()` (reuses B3 method) | Engine.ts | 🔴 Open |
+| **B1** | High | Auto-commit after agent exits (`Worktree.autoCommit()`) | Engine.ts, Worktree.ts | 🔴 Open |
+| **B5** | High | Crash detection + no-progress tracking + baseline regression | Engine.ts, TaskState.ts, cli.ts | 🔴 Open |
+| **B6** | High | Explicit `.target_branch` per task at creation time | addTask.ts, TaskState.ts, Engine.ts | ✅ Fixed |
+| **B4** | Medium | Default `autoStashBeforeMerge` to true + env var | Engine.ts, env.ts | 🔴 Open |
 
 ### Priority order
 
 1. **B3** — false CONVERGED is the worst outcome.
 2. **B2** — every restart wastes progress or triggers B3.
 3. **B1** — uncommitted changes create gap between validated and merged code.
-4. **B6** — user silently loses branch context on merge.
-5. **B5** — stale benchmark burns retries or causes false convergence.
-6. **B4** — has working workaround (`autoStashBeforeMerge`).
+4. **B5** — stale benchmark burns retries or causes false convergence.
+5. **B4** — has working workaround (`autoStashBeforeMerge`).
 
 ---
 
@@ -799,6 +733,7 @@ convergence = 1
 | `.failure_count` | ✅ Yes | → 0 |
 | `.convergence_count` | ✅ Yes | → 0 |
 | `.claim` directory | ✅ Yes | removed |
+| `.target_branch` | ❌ No | preserved (task always targets same branch) |
 | Worktree directory | ❌ No | preserved for next run |
 | Git branch | ❌ No | preserved (commits survive) |
 | Agent logs | ❌ No | preserved for debugging |

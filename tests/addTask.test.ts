@@ -102,4 +102,41 @@ describe('addTask', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('persists an explicit targetBranch to .target_branch', () => {
+    const dir = setupTasksDir();
+    try {
+      const task = addTask(dir, 'branched-task', { targetBranch: 'develop' });
+      expect(task.targetBranch).toBe('develop');
+      expect(readFileSync(join(task.directory, '.target_branch'), 'utf-8').trim()).toBe('develop');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('auto-detects targetBranch from git HEAD when repoDir is provided', () => {
+    const dir = setupTasksDir();
+    try {
+      // Use the actual repo as repoDir — it has a git checkout
+      const task = addTask(dir, 'auto-branch-task', { repoDir: process.cwd() });
+      // Should have detected some branch (we're in a git repo)
+      expect(task.targetBranch).toBeDefined();
+      expect(typeof task.targetBranch).toBe('string');
+      expect(existsSync(join(task.directory, '.target_branch'))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns undefined targetBranch when no git and no explicit branch', () => {
+    const dir = setupTasksDir();
+    try {
+      // repoDir is a non-git temp dir — detectBranch returns undefined
+      const task = addTask(dir, 'no-git-task', { repoDir: dir });
+      expect(task.targetBranch).toBeUndefined();
+      expect(existsSync(join(task.directory, '.target_branch'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
