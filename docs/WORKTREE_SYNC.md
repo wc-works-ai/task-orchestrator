@@ -628,6 +628,167 @@ to PENDING with cooldown, log clearly.
 
 ---
 
+## Proposed redesign: clean-state tick model
+
+### Current model (complex, fragile)
+
+The current tick has multiple code paths depending on convergence count,
+process state, and whether a worktree is in memory. This creates bugs
+B2, B3, and many ⚠️ RISK scenarios.
+
+### Proposed model (simple, deterministic)
+
+**Principle: every state is explicit. No ambient or in-memory assumptions.**
+
+#### Two distinct tick modes
+
+A tick does exactly ONE of two things based on convergence count:
+
+**Mode A: Work tick (convergence = 0)**
+```
+1. Create or reuse worktree
+2. ALWAYS reset to clean base: git reset --hard base
+   (discard ALL prior agent work — fresh start every time)
+3. Spawn agent
+4. Agent works until it exits (may produce multiple commits)
+5. autoCommit() — capture any remaining uncommitted work
+6. Run benchmark
+7. If metric = 0 → convergence = 1 (agent's commits stay on branch)
+8. If metric > 0 → FAILED (retry = another fresh start from base)
+```
+
+**Mode B: Validation tick (convergence 1, 2, ... threshold−1)**
+```
+1. Find worktree (reconnect from disk if not in memory)
+   If worktree not found → reset convergence to 0, log warning
+2. DO NOT clean or reset — agent's committed work must stay
+3. DO NOT sync with base — validate exactly what the agent produced
+4. Run benchmark against worktree as-is
+5. If metric = 0 → convergence++
+6. If metric > 0 → convergence = 0 (agent's work regressed;
+                    next tick = Mode A = fresh start)
+```
+
+**Mode C: Merge (convergence = threshold)**
+```
+1. Find worktree (reconnect if needed)
+   If worktree not found → reset convergence to 0, log warning
+2. syncWithBase() — merge latest base into agent's branch
+3. Run benchmark (re-validate after absorbing base)
+4. Run verifyCmd
+5. If all pass → merge into base, remove worktree → CONVERGED
+6. If benchmark or verify fails → discard and restart:
+   convergence = 0, resetForRetry() → next tick = Mode A
+7. If merge conflict → discard and restart:
+   convergence = 0, resetForRetry() → next tick = Mode A
+```
+
+#### Why this is better
+
+| Problem | Current | Proposed |
+|---------|---------|----------|
+| B2: process restart loses worktree | 🔴 Benchmark runs against wrong tree | ✅ Mode B reconnects from disk; if gone, resets to Mode A |
+| B3: convergence without merge | 🔴 Task falsely CONVERGED | ✅ Mode C requires worktree; if missing, resets to Mode A |
+| Partial state confusion | ⚠️ Many ambiguous paths | ✅ Two clear modes: work (clean) vs validate (don't touch) |
+| resetForRetry wipes work unexpectedly | ⚠️ During #prepareWorktree | ✅ Only happens in Mode A (intentional) and Mode C (discard on failure) |
+| syncWithBase during validation | ⚠️ Stale worktree → wasted convergence | ✅ Validation measures exactly what agent produced; sync only at merge |
+| Merge conflict → BLOCKED forever | ⚠️ Needs manual unblock | ✅ Auto-discard and restart. No permanent BLOCKED from merge |
+
+#### State transitions
+
+```
+                    ┌──────────────────────────────┐
+                    │                              │
+                    ▼                              │
+            ┌──────────────┐                       │
+ PENDING ──→│  Mode A: Work │                      │
+            │  (conv = 0)   │                      │
+            └──────┬───────┘                       │
+                   │                               │
+          metric=0 │  metric>0                     │
+                   │  → FAILED                     │
+                   ▼  (retry = Mode A again)       │
+            ┌──────────────┐                       │
+            │ Mode B: Valid │──── metric>0 ─────────┘
+            │ (conv 1,2)    │    (reset conv=0)
+            └──────┬───────┘
+                   │
+          conv=threshold
+                   │
+                   ▼
+            ┌──────────────┐
+            │ Mode C: Merge │──── fail/conflict ───┘
+            │ (conv=thresh) │    (discard, conv=0)
+            └──────┬───────┘
+                   │
+              merge OK
+                   │
+                   ▼
+              CONVERGED
+```
+
+#### Key rules
+
+1. **Mode A always starts clean** — `git reset --hard base`. No
+   leftover state from previous attempts. The agent gets the latest
+   base code every time.
+
+2. **Mode B never touches the worktree** — it only re-runs the
+   benchmark. The agent's committed code is measured as-is. If the
+   benchmark regresses (e.g., flaky), convergence resets to 0 and the
+   next tick does Mode A (fresh start).
+
+3. **Mode C discards on failure** — if merge fails for ANY reason
+   (conflict, benchmark fails after sync, verify fails), the worktree
+   is hard-reset and convergence goes back to 0. No BLOCKED state from
+   merge — the agent just tries again from scratch. This is acceptable
+   because the agent already proved it can achieve metric=0.
+
+4. **Worktree reconnection** — Modes B and C look up the worktree from
+   `#worktrees` (in-memory). If not found (process restart), reconstruct
+   from git branch + worktree directory on disk. If neither exists, reset
+   convergence to 0 (Mode A restarts).
+
+5. **No `syncWithBase()` during validation** — the base may have advanced
+   during convergence ticks, but we validate what the agent produced, not
+   what the agent produced + new base. Sync happens only at merge time
+   (Mode C), and if it breaks anything, we discard and restart.
+
+#### Implementation changes
+
+**`src/Engine.ts` — `tick()` rewrite:**
+```ts
+// Determine tick mode from convergence count
+const conv = task.convergenceCount;
+if (conv === 0) {
+  return this.#workTick(task, ac.signal);     // Mode A
+} else if (!task.hasConverged) {
+  return this.#validationTick(task);           // Mode B
+} else {
+  return this.#mergeTick(task);                // Mode C
+}
+```
+
+**`#workTick()`** (Mode A):
+- `#prepareWorktree()` with ALWAYS `resetForRetry()` (not just on sync failure)
+- Spawn agent → autoCommit → benchmark → if metric=0: convergence=1
+
+**`#validationTick()`** (Mode B):
+- Reconnect worktree if needed
+- NO clean, NO sync, NO agent spawn
+- Just re-run benchmark → if metric=0: convergence++; if >0: convergence=0
+
+**`#mergeTick()`** (Mode C):
+- Reconnect worktree if needed
+- syncWithBase → benchmark → verifyCmd → merge
+- Any failure: `resetForRetry()`, convergence=0, release FAILED
+
+**`src/Worktree.ts`** — no changes needed (autoCommit already added).
+
+**`src/TaskState.ts`** — no changes needed.
+
+---
+
 ## Appendix A: Simplified tick lifecycle
 
 ```
