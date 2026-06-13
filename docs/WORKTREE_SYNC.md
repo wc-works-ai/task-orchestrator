@@ -91,14 +91,17 @@ tick()
 ```
 
 **State:** No worktree exists yet. Benchmark runs against the main repo.
-This is intentional — the initial check determines whether work is
-needed.
+**Note:** The benchmark itself may be outdated — it was authored at task
+creation time and the codebase may have evolved since (files renamed,
+APIs changed, patterns moved). A stale benchmark can produce false
+positives (metric=0 when task isn't done) or false negatives (metric>0
+when criteria are unreachable).
 
 | # | Scenario | Outcome | Status |
 |---|----------|---------|--------|
-| 1.1 | metric > 0 (normal) | `#prepareWorktree()` creates worktree from base, `cleanWorktree()` + `syncWithBase()`, spawns agent | ✅ SAFE — fresh worktree from current base |
-| 1.2 | metric = 0 already | `#handleZero()` → convergence=1. No worktree created | ✅ SAFE — if threshold is 1, task converges immediately (task was already done). If threshold > 1, re-checked next tick |
-| 1.3 | Benchmark crashes (process error) | Caught as metric=1 → same as 1.1 | ⚠️ RISK — agent spawned against broken benchmark. Separate issue |
+| 1.1 | metric > 0 (normal) | `#prepareWorktree()` creates worktree from base, `cleanWorktree()` + `syncWithBase()`, spawns agent | ✅ SAFE — fresh worktree from current base. But benchmark may be outdated (false positive/negative possible) |
+| 1.2 | metric = 0 already | `#handleZero()` → convergence=1. No worktree created | ⚠️ RISK — may be a **false zero** from a stale benchmark (e.g., checked file deleted → grep returns 0 → "pass"). If threshold=1, task converges immediately without any agent work |
+| 1.3 | Benchmark crashes (process error) | Caught as metric=1 → same as 1.1 | ⚠️ RISK — benchmark itself is broken (stale imports, moved files). Agent spawned against unfixable benchmark, burns retries |
 
 ### Phase 2: Agent works (worktree active)
 
@@ -558,6 +561,34 @@ B4 (default autoStash) ─── independent ─── can be done in parallel
 2. **B2** — every restart wastes progress or triggers B3.
 3. **B1** — uncommitted changes create gap between validated and merged code.
 4. **B4** — has working workaround (`autoStashBeforeMerge`).
+
+---
+
+## Benchmark staleness
+
+The benchmark (`benchmark.js`) is authored at task creation time. By the
+time the task is picked up, the codebase may have changed enough that
+the benchmark is unreliable:
+
+| Staleness mode | Effect | Detection |
+|---------------|--------|-----------|
+| **False negative** — metric > 0 but criteria are unreachable (file renamed, pattern moved) | Agent grinds, burns retries, can never reach 0 | No-progress detection: metric unchanged across N agent runs |
+| **False positive** — metric = 0 but task isn't done (checked file deleted → grep returns 0) | Task falsely converges without real work | ORCH_VERIFY_CMD (repo-wide gate), scope-touch check (agent diff touches scope files) |
+| **Crash** — benchmark process error (missing import, syntax error) | Caught as metric=1, agent spawned against broken benchmark | Process exit code + no METRIC lines emitted |
+| **Infra regression** — build/test fail on clean base (another merge broke them) | Agent tries to fix unrelated failures | Baseline comparison: metric was 0 at creation, now > 0 |
+
+**Current mitigations:**
+- `ORCH_VERIFY_CMD` runs before merge (catches false positives at merge time)
+- Convergence × 3 (requires repeated stable results)
+- Agent can update `benchmark.js` (prompt allows it; `autoresearch.md` goal is immutable)
+
+**Not yet implemented:**
+- Crash detection (distinguish process error from legitimate metric > 0)
+- Baseline regression detection (compare first-run metrics to creation-time)
+- No-progress detection (track metric across agent runs)
+- Scope-touch gate (verify agent's diff touches scope files before converging)
+
+See the plan file for detailed implementation proposals.
 
 ---
 
