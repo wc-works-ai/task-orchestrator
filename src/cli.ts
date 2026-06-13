@@ -15,7 +15,7 @@ import { resolveStatePaths } from './StatePaths.js';
 import { printOverview, printRunSummary } from './RunReport.js';
 import { parseMetrics, unmetSummary } from './metrics.js';
 import { formatTaskGraph, type GraphNode } from './TaskGraph.js';
-import { formatEffectiveConfig, formatSettingsHelp } from './config.js';
+import { formatEffectiveConfig } from './config.js';
 
 async function promptMergeRecovery(failure: MergeRecoveryFailure): Promise<MergeRecoveryAction> {
   console.error('');
@@ -80,27 +80,49 @@ const { values, positionals } = await parseArgs({
 
 if (values.help) {
   console.log(`
-Task Orchestrator — autonomous task execution
+Task Orchestrator v0.0.1 — autonomous coding agent task runner
 
-  orchestrator                  run until all tasks complete (loop)
-  orchestrator --once
-  orchestrator --status
-  orchestrator --graph
-  orchestrator --check
-  orchestrator --stop
-  orchestrator --config
-  orchestrator --task <n>
-  orchestrator --unblock <n>    reset a blocked/failed task to pending (loop-safe)
-  orchestrator --unblock all    reset every blocked task to pending (loop-safe)
-  orchestrator --loop        alias for --infinite
-  orchestrator edit <n> [--goal ...] [--metric ...] [--scope ...]
-  orchestrator add <name>
-  orchestrator add <name> --goal "..." --metric x --scope "a b"
-  orchestrator -h | --help
+USAGE
+  orchestrator [command] [flags]
 
-Resolution order for optional settings: CLI flag > environment variable > derived default.
+COMMANDS
+  (default)         Run all pending tasks until complete
+  add <name>        Create a new task
+  edit <n>          Edit task metadata
 
-${formatSettingsHelp()}
+OPERATIONS
+  --status          Show task dashboard
+  --graph           Show task dependency graph
+  --check           Run benchmarks without spawning agents
+  --task <n>        Run a single task by number
+  --unblock <n|all> Reset blocked/failed task(s) to pending
+  --stop            Send stop signal to a running loop
+  --config          Show resolved configuration
+
+RUN MODES
+  --once            Run one tick, then exit
+  --loop            Daemon mode: run forever, wait for new tasks
+  --keep-alive      Keep running through transient idle periods
+  --parallel <n>    Run up to n tasks concurrently (default: 1)
+
+COMMON FLAGS
+  --repo <dir>      Target repository (default: cwd)
+  --agent <name>    Coding agent: pi or copilot (default: pi)
+  --model <model>   Model override (e.g. gpt-5, claude-opus)
+  --auto-stash      Stash repo changes before merge (default: on)
+  -h, --help        Show this help
+
+ENVIRONMENT
+  All flags have env var equivalents (ORCH_*). Run --config to see them.
+  Resolution: CLI flag > env var > default.
+
+EXAMPLES
+  orchestrator                     Run all tasks to completion
+  orchestrator --loop              Daemon mode
+  orchestrator --status            Check progress
+  orchestrator add fix-tests       Create task "fix-tests"
+  orchestrator --unblock 3         Retry task T3
+  ORCH_PARALLEL=4 orchestrator     Run 4 tasks in parallel
 `);
   process.exit(0);
 }
