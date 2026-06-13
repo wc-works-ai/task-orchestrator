@@ -195,7 +195,7 @@ export class Engine {
     }
     this.#owned.add(task.taskNumber);
     try {
-      this.#log(`T${task.taskNumber} picked up: ${this.#singleLine(task.goal)}`, 'transition');
+      this.#log(`T${task.taskNumber} | picked up | ${this.#singleLine(task.goal)}`, 'transition');
 
       // Check retry cooldown — if this task failed recently, skip it
       const lastFail = this.#retryCooldowns.get(task.taskNumber);
@@ -227,7 +227,7 @@ export class Engine {
         // convergence checks measure the agent's work — not the main repo.
         const existingWt = this.#worktrees.get(task.taskNumber);
         const checkCwd = existingWt?.path ?? this.#repo;
-        this.#log(`T${task.taskNumber} checking: ${this.#singleLine(task.goal)} (running benchmark in ${existingWt ? 'worktree' : 'repo'}…)`);
+        this.#log(`T${task.taskNumber} | checking | running benchmark in ${existingWt ? 'worktree' : 'repo'}`);
         let metric = await this.#run(task, checkCwd);
         this.#log(`T${task.taskNumber} check: metric=${metric}${metric === 0 ? ' (done)' : ' (needs work; target is 0)'}`);
 
