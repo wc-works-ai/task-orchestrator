@@ -5,6 +5,13 @@ import { TaskState } from './TaskState.js';
 import { env } from './env.js';
 import { piCommand } from './PiCommand.js';
 import { appendAgentLog, openAgentLog, runLogName, type AgentLog } from './AgentLog.js';
+import {
+  countOccurrences,
+  positiveInt,
+  resolveModel as resolveAgentModel,
+  resolveReasoning as resolveAgentReasoning,
+  tail,
+} from './CodingAgent.js';
 import type { SpawnResult, TokenUsage, PrerequisiteResult, CodingAgentOptions } from './CodingAgent.js';
 import type { CodingAgent } from './CodingAgent.js';
 
@@ -66,6 +73,8 @@ export class PiSpawner implements CodingAgent {
   readonly name = 'pi';
   readonly #model: string | undefined;
   readonly #reasoning: string | undefined;
+  readonly #envModel: string | undefined;
+  readonly #envReasoning: string | undefined;
   readonly #fallback: string | undefined;
   readonly #workDir: string;
   readonly #progressTimeout: number;
@@ -75,20 +84,22 @@ export class PiSpawner implements CodingAgent {
   readonly #agentLogRaw: boolean;
 
   constructor(opts: PiSpawnerOptions = {}) {
-    this.#model = opts.model || env.model;
-    this.#reasoning = opts.reasoning || env.reasoning;
+    this.#model = opts.model;
+    this.#reasoning = opts.reasoning;
+    this.#envModel = env.model;
+    this.#envReasoning = env.reasoning;
     this.#fallback = opts.fallbackModel || undefined;
     this.#workDir = opts.workDir ?? process.cwd();
     this.#progressTimeout = opts.progressTimeout ?? env.progressTimeoutMs;
     this.#progressCheckInterval = opts.progressCheckInterval ?? 10_000;
     this.#progressStatusInterval = opts.progressStatusInterval ?? PROGRESS_STATUS_INTERVAL;
-    this.#agentLogMaxBytes = PiSpawner.#positiveInt(opts.agentLogMaxBytes ?? env.agentLogMaxBytes, DEFAULT_AGENT_LOG_MAX_BYTES);
+    this.#agentLogMaxBytes = positiveInt(opts.agentLogMaxBytes ?? env.agentLogMaxBytes, DEFAULT_AGENT_LOG_MAX_BYTES);
     this.#agentLogRaw = opts.agentLogRaw ?? env.agentLogRaw;
   }
 
   /** Resolve the model for a task: metadata → constructor → env → pi default */
   modelFor(task: TaskState): string | undefined {
-    return task.model || this.#model;
+    return resolveAgentModel(task.model, this.#model, this.#envModel);
   }
 
   resolveModel(task: TaskState): string | undefined {
@@ -96,7 +107,7 @@ export class PiSpawner implements CodingAgent {
   }
 
   resolveReasoning(task: TaskState): string | undefined {
-    return task.reasoning || this.#reasoning;
+    return resolveAgentReasoning(task.reasoning, this.#reasoning, this.#envReasoning);
   }
 
   checkPrerequisites(): PrerequisiteResult[] {
@@ -337,15 +348,15 @@ export class PiSpawner implements CodingAgent {
       try { appendAgentLog(agentLog, txt); } catch {}
     }
     const iterationScan = `${state.iterationTail}${txt}`;
-    state.iterations += PiSpawner.#countOccurrences(iterationScan, ITERATION_MARKER);
-    state.iterationTail = PiSpawner.#tail(iterationScan, ITERATION_MARKER.length - 1);
+    state.iterations += countOccurrences(iterationScan, ITERATION_MARKER);
+    state.iterationTail = tail(iterationScan, ITERATION_MARKER.length - 1);
     // Only scan for auth errors while the agent has not produced any iterations.
     // Once the agent is actively working (iterations > 0), any auth-error-shaped
     // text in the stream is test fixture / subprocess output, not a real failure.
     if (state.iterations === 0) {
       const authScan = `${state.authTail}${txt}`;
       PiSpawner.#collectAuthProviders(authScan, state.authProviders);
-      state.authTail = PiSpawner.#tail(authScan, AUTH_SCAN_TAIL);
+      state.authTail = tail(authScan, AUTH_SCAN_TAIL);
     }
     state.lineBuf = PiSpawner.#processJsonLines(txt, state.lineBuf, state.tokenUsage);
   }
@@ -413,24 +424,6 @@ export class PiSpawner implements CodingAgent {
 
   static #formatDuration(ms: number): string {
     return ms < 1000 ? `${ms}ms` : `${Math.round(ms / 1000)}s`;
-  }
-
-  static #positiveInt(value: number, fallback: number): number {
-    return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
-  }
-
-  static #countOccurrences(text: string, needle: string): number {
-    let count = 0;
-    let index = text.indexOf(needle);
-    while (index !== -1) {
-      count++;
-      index = text.indexOf(needle, index + needle.length);
-    }
-    return count;
-  }
-
-  static #tail(text: string, length: number): string {
-    return length > 0 && text.length > length ? text.slice(-length) : text;
   }
 
   static #processJsonLines(txt: string, lineBuf: string, tokenUsage: MutableTokenUsage): string {

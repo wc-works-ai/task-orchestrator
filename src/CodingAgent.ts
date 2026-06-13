@@ -34,6 +34,40 @@ export interface CodingAgentOptions {
   readonly agentLogMaxBytes?: number;
 }
 
+export function positiveInt(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
+export function countOccurrences(haystack: string, needle: string): number {
+  let count = 0;
+  let index = haystack.indexOf(needle);
+  while (index !== -1) {
+    count++;
+    index = haystack.indexOf(needle, index + needle.length);
+  }
+  return count;
+}
+
+export function tail(str: string, maxLen: number): string {
+  return maxLen > 0 && str.length > maxLen ? str.slice(-maxLen) : str;
+}
+
+export function resolveModel(
+  taskModel: string,
+  optModel: string | undefined,
+  envModel: string | undefined,
+): string | undefined {
+  return taskModel || optModel || envModel;
+}
+
+export function resolveReasoning(
+  taskReasoning: string,
+  optReasoning: string | undefined,
+  envReasoning: string | undefined,
+): string | undefined {
+  return taskReasoning || optReasoning || envReasoning;
+}
+
 export interface CodingAgent {
   readonly name: string;
   /** Report this agent's prerequisites so the CLI can preflight the SELECTED agent. */

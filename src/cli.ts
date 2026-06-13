@@ -151,7 +151,7 @@ try {
   });
 } catch (e: unknown) {
   console.error(`\n  ❌ ${e instanceof Error ? e.message : String(e)}`);
-  console.error('  Example: orchestrator --repo Q:\\Repos\\FabricSparkCST\n');
+  console.error('  Example: orchestrator --repo /path/to/your/repo\n');
   process.exit(1);
 }
 

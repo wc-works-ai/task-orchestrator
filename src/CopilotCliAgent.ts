@@ -4,6 +4,13 @@ import { TaskState } from './TaskState.js';
 import { env } from './env.js';
 import { resolveCliCommand } from './PiCommand.js';
 import { appendAgentLog, openAgentLog, runLogName } from './AgentLog.js';
+import {
+  countOccurrences,
+  positiveInt,
+  resolveModel as resolveAgentModel,
+  resolveReasoning as resolveAgentReasoning,
+  tail,
+} from './CodingAgent.js';
 import type { SpawnResult, PrerequisiteResult, CodingAgentOptions } from './CodingAgent.js';
 import type { CodingAgent } from './CodingAgent.js';
 
@@ -20,25 +27,29 @@ export class CopilotCliAgent implements CodingAgent {
   readonly name = 'copilot';
   readonly #model: string | undefined;
   readonly #reasoning: string | undefined;
+  readonly #envModel: string | undefined;
+  readonly #envReasoning: string | undefined;
   readonly #workDir: string;
   readonly #agentLogMaxBytes: number;
 
   constructor(opts: CopilotCliAgentOptions = {}) {
-    this.#model = opts.model || env.model;
-    this.#reasoning = opts.reasoning || env.reasoning;
+    this.#model = opts.model;
+    this.#reasoning = opts.reasoning;
+    this.#envModel = env.model;
+    this.#envReasoning = env.reasoning;
     this.#workDir = opts.workDir ?? process.cwd();
-    this.#agentLogMaxBytes = CopilotCliAgent.#positiveInt(
+    this.#agentLogMaxBytes = positiveInt(
       opts.agentLogMaxBytes ?? env.agentLogMaxBytes,
       DEFAULT_AGENT_LOG_MAX_BYTES,
     );
   }
 
   resolveModel(task: TaskState): string | undefined {
-    return task.model || this.#model;
+    return resolveAgentModel(task.model, this.#model, this.#envModel);
   }
 
   resolveReasoning(task: TaskState): string | undefined {
-    return task.reasoning || this.#reasoning;
+    return resolveAgentReasoning(task.reasoning, this.#reasoning, this.#envReasoning);
   }
 
   checkPrerequisites(): PrerequisiteResult[] {
@@ -120,12 +131,12 @@ export class CopilotCliAgent implements CodingAgent {
         try { appendAgentLog(agentLog, txt); } catch {}
 
         const metricScan = `${metricTail}${txt}`;
-        iterations += CopilotCliAgent.#countOccurrences(metricScan, METRIC_MARKER);
-        metricTail = CopilotCliAgent.#tail(metricScan, METRIC_MARKER.length - 1);
+        iterations += countOccurrences(metricScan, METRIC_MARKER);
+        metricTail = tail(metricScan, METRIC_MARKER.length - 1);
 
         const authScan = `${authTail}${txt}`;
         authFailure = authFailure || AUTH_FAILURE_RE.test(authScan);
-        authTail = CopilotCliAgent.#tail(authScan, AUTH_SCAN_TAIL);
+        authTail = tail(authScan, AUTH_SCAN_TAIL);
       };
 
       child.stdout?.on('data', (d: Buffer) => handleData(d.toString()));
@@ -188,21 +199,4 @@ export class CopilotCliAgent implements CodingAgent {
     ].join('\n');
   }
 
-  static #positiveInt(value: number, fallback: number): number {
-    return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
-  }
-
-  static #countOccurrences(text: string, needle: string): number {
-    let count = 0;
-    let index = text.indexOf(needle);
-    while (index !== -1) {
-      count++;
-      index = text.indexOf(needle, index + needle.length);
-    }
-    return count;
-  }
-
-  static #tail(text: string, length: number): string {
-    return length > 0 && text.length > length ? text.slice(-length) : text;
-  }
 }
