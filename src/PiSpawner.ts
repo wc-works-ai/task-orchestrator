@@ -386,8 +386,12 @@ export class PiSpawner implements CodingAgent {
   static #collectAuthProviders(output: string, providers: Set<string>): void {
     for (const match of output.matchAll(AUTH_FAILURE_RE)) {
       const provider = match[1];
+      // Only accept real provider names (alphanumeric + hyphens). The regex can
+      // match test fixture text echoed through vitest (e.g. the PiSpawner test
+      // contains 'No API key found for azure-openai-responses.'), producing
+      // garbage provider names with JSON fragments. Reject those.
       /* v8 ignore next -- the regex always captures a provider when it matches */
-      if (provider) providers.add(provider);
+      if (provider && /^[a-zA-Z0-9-]+$/.test(provider)) providers.add(provider);
     }
   }
 
