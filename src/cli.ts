@@ -79,6 +79,15 @@ const { values, positionals } = await parseArgs({
 });
 
 if (values.help) {
+  const a = env.agent;
+  const m = env.model || '(agent default)';
+  const r = env.reasoning || '(off)';
+  const p = env.parallelTasks;
+  const c = env.converge;
+  const mf = env.maxFailures === Infinity ? 'infinite' : String(env.maxFailures);
+  const as = env.autoStash ? 'on' : 'off';
+  const ll = env.logLevel;
+
   console.log(`
 Task Orchestrator v0.0.1 — autonomous coding agent task runner
 
@@ -97,24 +106,26 @@ OPERATIONS
   --task <n>        Run a single task by number
   --unblock <n|all> Reset blocked/failed task(s) to pending
   --stop            Send stop signal to a running loop
-  --config          Show resolved configuration
+  --config          Show all resolved configuration
 
 RUN MODES
   --once            Run one tick, then exit
   --loop            Daemon mode: run forever, wait for new tasks
   --keep-alive      Keep running through transient idle periods
-  --parallel <n>    Run up to n tasks concurrently (default: 1)
+  --parallel <n>    Run up to n tasks concurrently
 
 COMMON FLAGS
-  --repo <dir>      Target repository (default: cwd)
-  --agent <name>    Coding agent: pi or copilot (default: pi)
+  --repo <dir>      Target repository
+  --agent <name>    Coding agent: pi or copilot
   --model <model>   Model override (e.g. gpt-5, claude-opus)
-  --auto-stash      Stash repo changes before merge (default: on)
+  --auto-stash      Stash repo changes before merge
   -h, --help        Show this help
 
-ENVIRONMENT
-  All flags have env var equivalents (ORCH_*). Run --config to see them.
-  Resolution: CLI flag > env var > default.
+CURRENT SETTINGS
+  agent=${a}  model=${m}  reasoning=${r}
+  parallel=${p}  converge=${c}  max-failures=${mf}
+  auto-stash=${as}  log-level=${ll}
+  Run --config for full list with sources.
 
 EXAMPLES
   orchestrator                     Run all tasks to completion
