@@ -22,7 +22,7 @@ export const CONFIG_SPEC: readonly ConfigItem[] = [
   { group: 'Run mode', env: 'ORCH_KEEP_CONVERGED', flag: 'keep-converged', kind: 'number', def: '100', desc: 'Max converged task dirs to keep (0 = unlimited); older ones are archived to converged/.archive.jsonl' },
   { group: 'Convergence & merge', env: 'ORCH_CONVERGE', kind: 'number', def: '3', desc: 'Zero-metric runs required to converge' },
   { group: 'Convergence & merge', env: 'ORCH_MAX_FAILURES', kind: 'number', def: '5', desc: 'Failed attempts before BLOCKED (int>=1 or infinite)' },
-  { group: 'Convergence & merge', env: 'ORCH_AUTO_STASH', flag: 'auto-stash', kind: 'boolean', def: 'off', desc: 'Stash parent repo changes before merging' },
+  { group: 'Convergence & merge', env: 'ORCH_AUTO_STASH', flag: 'auto-stash', kind: 'boolean', def: 'on', desc: 'Stash parent repo changes before merging (disable with ORCH_AUTO_STASH=false)' },
   { group: 'Convergence & merge', env: 'ORCH_MERGE_LOCK_MS', kind: 'number', def: '600000', desc: 'Break a merge lock held longer than this (crashed merger, ms)' },
   { group: 'Convergence & merge', env: 'ORCH_VERIFY_CMD', kind: 'string', def: 'unset', desc: 'Shell command to run in worktree before merge (e.g. npm run tc)' },
   { group: 'Concurrency & timeouts', env: 'ORCH_HEARTBEAT_MS', kind: 'number', def: '300000', desc: 'Claim heartbeat freshness window (ms)' },

@@ -205,14 +205,6 @@ export class Engine {
         return { task: null, metric: 0, converged: false };
       }
 
-      // Reset worktree on retry so agent starts fresh (discard conflicting changes)
-      /* istanbul ignore next: dead code — pick() always sets IN_PROGRESS */
-      if (task.isFailed) {
-        const wt = this.#worktrees.get(task.taskNumber);
-        /* istanbul ignore next */
-        if (wt) await wt.resetForRetry();
-      }
-
       const ac = new AbortController();
       /* c8 ignore start */
       const hb = setInterval(() => {
@@ -260,7 +252,7 @@ export class Engine {
             if (metric === -1) return { task: null, metric: 0, converged: false, stopped: true, ...(this.#environmentError !== undefined && { environmentError: this.#environmentError }) };
             if (metric === 0) return await this.#handleZero(task, metric, wt);
           } catch (e: unknown) {
-            const msg = e instanceof Error ? e.message : String(e);
+            const msg = this.#errorDetail(e);
             if (msg.includes('conflict')) {
               task.status = Status.FAILED;
               this.#retryCooldowns.set(task.taskNumber, Date.now());
@@ -340,7 +332,7 @@ export class Engine {
           if (opts.onTick) await opts.onTick(result as TickResult, total);
         }
       } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
+        const msg = this.#errorDetail(e);
         lastErrorMsg = msg;
         consecutiveErrors++;
         this.#log(`tick error: ${this.#singleLine(msg)}`, 'always');
@@ -445,7 +437,7 @@ export class Engine {
   }
 
   async #recoverMergeFailure(task: TaskState, wt: Worktree, e: unknown): Promise<boolean> {
-    const detail = this.#singleLine(e instanceof Error ? e.message : String(e));
+    const detail = this.#errorDetail(e);
     let action: MergeRecoveryAction;
     try {
       action = this.#mergeRecovery
@@ -477,7 +469,7 @@ export class Engine {
   }
 
   #handleMergeFailure(task: TaskState, e: unknown, context = ''): void {
-    const detail = this.#singleLine(e instanceof Error ? e.message : String(e));
+    const detail = this.#errorDetail(e);
     const reason = context ? `${context}: ${detail}` : detail;
     task.markBlocked();
     this.#retryCooldowns.set(task.taskNumber, Date.now());
@@ -558,7 +550,8 @@ export class Engine {
       this.#worktrees.set(task.taskNumber, wt);
       this.#log(`T${task.taskNumber} recreated worktree from existing branch`);
       return wt;
-    } catch {
+    } catch (e: unknown) {
+      this.#log(`T${task.taskNumber} worktree reconnection failed: ${this.#errorDetail(e)}`);
       return null;
     }
   }
@@ -614,12 +607,19 @@ export class Engine {
     return value.replace(/\s+/g, ' ').slice(0, 200);
   }
 
+  #errorDetail(e: unknown): string {
+    return this.#singleLine(e instanceof Error ? e.message : String(e));
+  }
+
   async #run(task: TaskState, cwd: string): Promise<number> {
     try {
       const info = { ...task.info, cwd };
       return await this.#bench(info);
     }
-    catch { return 1; }
+    catch (e: unknown) {
+      this.#log(`T${task.taskNumber} benchmark error: ${this.#errorDetail(e)}`);
+      return 1;
+    }
   }
 
   /** Run the configured verify command in the given cwd. Returns true on success. */
