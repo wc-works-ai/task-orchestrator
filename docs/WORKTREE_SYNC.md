@@ -72,7 +72,7 @@ branched from the task's target branch (`.target_branch` file).
 | 7 | Agent crashes → auto-commit captures whatever was written | ✅ |
 | 8 | Main repo advances → synced at next `#prepareWorktree` or merge | ✅ |
 | 9 | `syncWithBase()` fails → hard reset to base | ⚠️ Agent commits lost |
-| 10 | `cleanWorktree()` fails silently | ⚠️ Errors swallowed |
+| 10 | `cleanWorktree()` fails silently → agent may start on dirty worktree | ⚠️ No logging; self-corrects via benchmark |
 | 11 | Agent edits outside scope | ⚠️ Prompt-based scope only |
 
 ### Convergence (metric = 0, re-checking)
