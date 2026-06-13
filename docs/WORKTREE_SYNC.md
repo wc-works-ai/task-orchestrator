@@ -74,6 +74,7 @@ These are NOT bugs — the architecture handles them correctly:
 | **`node_modules` copy failure** | The copy (`cpSync`) is best-effort; failure is swallowed. The agent may encounter missing dependencies, but this manifests as a benchmark failure (metric > 0), not a crash. The task retries naturally |
 | **Task dependencies and convergence** | Dependent tasks wait for the dependency's `CONVERGED` status, not its convergence count. A task at convergence=2 does not unblock dependents. The stale-code risk from dependencies is really B3 (false CONVERGED) |
 | **No-spawn mode** | When no spawner is configured, no worktree is ever created. Tasks converge by benchmark alone with `cwd = repo`. `tree === null` at merge time is legitimate in this mode (see B3 nuance) |
+| **Non-git repo** | If the main folder has no `.git` directory, the orchestrator skips all git operations: `#detectBaseBranch()` falls back to `'master'`, `#prepareWorktree()` skips worktree creation (guard: `existsSync('.git')`), agent works directly in the folder, `#handleZero()` converges without merge. Works as a simple benchmark loop but with no isolation — multiple tasks can stomp on each other's changes, and there is no rollback if the agent breaks things |
 
 ---
 
