@@ -40,6 +40,13 @@ Use `orchestrator --config` to inspect effective values and their sources.
 - Constants: `UPPER_CASE` for module constants; PascalCase for enum-like objects
 - Top-level helpers: `function` for utilities; arrow-const for single-expression helpers
 
+#### Error handling
+
+- **Never swallow errors silently** (`catch {}` or `catch { /* ignore */ }`)
+- Every `catch` must either: **log** the error, **rethrow** it, or **return a meaningful fallback**
+- `catch {}` is only acceptable for truly inconsequential best-effort operations (e.g., deleting a temp file that may not exist)
+- When in doubt, **log at minimum** — silent swallowing makes debugging impossible
+
 ## Task metadata
 
 | Field | Controls |
