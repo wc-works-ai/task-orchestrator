@@ -258,87 +258,257 @@ path). Worktree retains whatever node_modules was last copied.
 
 ---
 
-## Identified bugs
+## Identified bugs — implementation plans
 
-### 🔴 B1: Uncommitted changes pass benchmark but are lost at merge
+### 🔴 B3: Convergence without merge (orphaned worktree branch)
 
-**Severity:** High  
-**Scenarios:** 2.3, 2.5, 4.9
+**Severity:** Critical — false CONVERGED is the worst outcome  
+**Scenarios:** 3.5  
+**Priority:** Fix first
 
-**Trigger:** Agent exits without committing all changes. Benchmark runs
-in worktree (sees uncommitted files). metric=0. Convergence increments.
-At merge, `git merge --no-ff` only includes committed changes.
+**Problem:** In `#handleZero()` (Engine.ts:344-375), when
+`task.hasConverged` is true and `tree === null`, the code skips the
+merge block entirely and marks the task CONVERGED at line 372. The
+agent's work on branch `orchestrator/<taskName>` is never merged.
 
-**Impact:** Task converges but the merged code differs from what the
-benchmark validated. Uncommitted changes are silently lost.
+**Root cause:** `tree` is null because `#worktrees` (in-memory map) was
+lost on process restart and `#handleZero()` doesn't attempt
+reconnection.
 
-**Root cause:** The orchestrator does NOT auto-commit agent work.
+**Nuance:** `tree === null` is legitimate in **no-spawn mode** (no
+`#spawn` configured → no worktree was ever created). The fix must
+distinguish this from "worktree lost due to restart."
 
-**Recommended fix:** In `#runSpawnCycle()`, after agent exits but before
-running the benchmark, auto-commit any uncommitted work:
+#### Implementation plan
+
+**File:** `src/Engine.ts` — `#handleZero()` method
+
+**Change:** Before the `task.status = Status.CONVERGED` line (372), add
+a guard:
+
 ```ts
-if (wt) {
-  const dirty = execFileSync('git', ['status', '--porcelain'], { cwd: wt.path, encoding: 'utf-8' }).trim();
-  if (dirty) {
-    execFileSync('git', ['add', '-A'], { cwd: wt.path });
-    execFileSync('git', ['commit', '-m', 'agent work (auto-committed by orchestrator)'], { cwd: wt.path });
+// In #handleZero(), after the `if (tree) { ... }` block, before CONVERGED:
+if (!tree && this.#spawn) {
+  // A spawner is configured but we have no worktree. This means the
+  // worktree was lost (process restart). Don't converge without merging.
+  const reconnected = this.#tryReconnectWorktree(task);
+  if (reconnected) {
+    // Re-run merge with the reconnected worktree
+    // (recursive call to #handleZero is safe — convergence count already at threshold)
+    return await this.#handleZero(task, metric, reconnected);
+  }
+  // Could not reconnect — reset convergence, log, and return
+  task.resetConvergence();
+  this.#log(`T${task.taskNumber} convergence reached but worktree not found — resetting (process restart?); will retry`, 'transition');
+  return { task: task.info, metric, converged: false };
+}
+```
+
+**New method** `#tryReconnectWorktree(task)`:
+```ts
+#tryReconnectWorktree(task: TaskState): Worktree | null {
+  const wt = new Worktree(this.#repo, {
+    name: task.taskName,
+    baseBranch: this.#baseBranch,
+    ...(this.#worktreesDir ? { worktreesDir: this.#worktreesDir } : {}),
+  });
+  if (wt.exists) {
+    this.#worktrees.set(task.taskNumber, wt);
+    return wt;
+  }
+  // Worktree dir gone but branch may exist — try to recreate
+  try {
+    wt.create();
+    this.#worktrees.set(task.taskNumber, wt);
+    return wt;
+  } catch {
+    return null;
   }
 }
 ```
 
+**Tests:**
+- `hasConverged && tree===null && spawn configured` → reconnect succeeds → merge runs
+- `hasConverged && tree===null && spawn configured` → reconnect fails → convergence reset, not CONVERGED
+- `hasConverged && tree===null && spawn===null` → converge normally (no-spawn mode)
+
+---
+
 ### 🔴 B2: Process restart loses worktree reference
 
-**Severity:** High  
-**Scenarios:** 3.4, 3.5, 3.6
+**Severity:** High — every restart wastes convergence or triggers B3  
+**Scenarios:** 3.4, 3.5, 3.6  
+**Priority:** Fix second (B3 fix is a safety net; B2 prevents the problem)
 
-**Trigger:** Loop process restarts. `#worktrees` is in-memory only.
+**Problem:** `#worktrees` is in-memory only. After restart, `existingWt`
+is undefined, so benchmark runs against main repo instead of worktree.
 
-**Impact:** Convergence re-checks measure the wrong tree (main repo
-instead of worktree).
+**Root cause:** No persistence or reconnection logic for worktree
+associations.
 
-**Root cause:** Worktree associations are in-memory only.
+#### Implementation plan
 
-**Recommended fix:** On task pickup, if convergence > 0, try to
-reconnect to existing worktree. Handle four cases:
-1. **Branch + worktree dir exist** → reconnect
-2. **Branch exists, no worktree dir** → recreate worktree from branch
-3. **Worktree dir exists, no branch** → reset convergence (broken state)
-4. **Neither exists** → reset convergence (clean start)
+**File:** `src/Engine.ts` — `tick()` method, after `pick()` and before
+running the benchmark (between lines 196 and 225).
 
-### 🔴 B3: Convergence without merge (orphaned worktree branch)
+**Change:** Add worktree reconnection when an in-progress task has no
+worktree in memory:
 
-**Severity:** Critical  
-**Scenarios:** 3.5
+```ts
+// After this.#owned.add(task.taskNumber), before running benchmark:
+if (!this.#worktrees.has(task.taskNumber) && this.#spawn) {
+  const reconnected = this.#tryReconnectWorktree(task);
+  if (reconnected) {
+    this.#log(`T${task.taskNumber} reconnected to existing worktree`);
+  } else if (task.convergenceCount > 0) {
+    // Worktree expected but gone — convergence is meaningless
+    task.resetConvergence();
+    this.#log(`T${task.taskNumber} worktree not found, convergence reset`, 'transition');
+  }
+}
+```
 
-**Trigger:** Process restarted at convergence = threshold−1. Benchmark
-passes against main repo (B2). `#handleZero()` → `tree = null` → skips
-merge → marks CONVERGED.
+This reuses `#tryReconnectWorktree()` from the B3 fix. The four cases:
 
-**Impact:** Agent's work is never merged. Branch is orphaned.
+| Branch exists? | Worktree dir exists? | Action |
+|---------------|---------------------|--------|
+| ✅ | ✅ | `wt.exists` → reconnect. Add to `#worktrees` |
+| ✅ | ❌ | `wt.create()` → recreate from branch. Commits survive |
+| ❌ | ✅ | Broken state. `wt.create()` → new branch from base. Old dir removed by prune |
+| ❌ | ❌ | Nothing to reconnect. Reset convergence if > 0 |
 
-**Nuance:** `tree === null` is legitimate in no-spawn mode (no worktree
-was ever created). The fix must distinguish "no worktree because
-no-spawn mode" from "worktree lost due to restart."
+**Tests:**
+- Process restart with convergence=1, worktree exists → reconnects, benchmark runs in worktree
+- Process restart with convergence=1, worktree gone → convergence reset to 0
+- Process restart with convergence=0, worktree exists → reconnects (branch reuse for retry)
+- Process restart with convergence=0, no worktree → no-op (normal first pickup)
 
-**Recommended fix:** In `#handleZero()`:
-- If `hasConverged && tree === null && this.#spawn !== null`:
-  attempt worktree reconnection (B2 fix). If reconnection fails, reset
-  convergence and log warning instead of marking CONVERGED.
-- If `this.#spawn === null`: allow convergence (no-spawn mode, no
-  worktree expected).
+---
+
+### 🔴 B1: Uncommitted changes pass benchmark but are lost at merge
+
+**Severity:** High — especially critical for CopilotCliAgent (no commit
+instruction in prompt)  
+**Scenarios:** 2.3, 2.5, 2.10, 4.9, 7.2  
+**Priority:** Fix third
+
+**Problem:** The orchestrator does NOT auto-commit agent work. If the
+agent leaves uncommitted changes, the benchmark validates code that
+won't be in the merge.
+
+**Root cause:** No commit step between agent exit and benchmark run.
+
+#### Implementation plan
+
+**File:** `src/Engine.ts` — `#runSpawnCycle()` method (lines 500-517)
+
+**Change:** After line 509 (after logging spawn result) and before
+line 514 (`this.#run(task, ...)`), add auto-commit:
+
+```ts
+// Auto-commit any uncommitted agent work so merge captures everything
+// the benchmark validates. Use git status --porcelain for an explicit
+// dirty check (not exception-based flow).
+if (wt) {
+  try {
+    const dirty = execFileSync('git', ['status', '--porcelain'],
+      { cwd: wt.path, encoding: 'utf-8' }).trim();
+    if (dirty) {
+      execFileSync('git', ['add', '-A'], { cwd: wt.path });
+      execFileSync('git', ['commit', '-m',
+        'agent work (auto-committed by orchestrator)'],
+        { cwd: wt.path });
+      this.#log(`T${task.taskNumber} auto-committed uncommitted agent work`);
+    }
+  } catch {
+    // Best-effort; if commit fails, benchmark still runs and the
+    // B1 risk remains — but this is no worse than current behavior
+  }
+}
+```
+
+**Also:** Add `Worktree.autoCommit()` method to `src/Worktree.ts` for
+cleanliness:
+```ts
+/** Commit any uncommitted changes. Returns true if a commit was made. */
+autoCommit(message: string): boolean {
+  const dirty = this.#gitInWT('status', '--porcelain').trim();
+  if (!dirty) return false;
+  this.#gitInWT('add', '-A');
+  this.#gitInWT('commit', '-m', message);
+  return true;
+}
+```
+
+**Tests:**
+- Agent leaves uncommitted files → auto-committed before benchmark
+- Agent commits everything → no auto-commit (clean worktree)
+- Auto-commit fails (e.g., git lock) → swallowed, benchmark still runs
+- Verify merged code includes auto-committed changes
+
+---
 
 ### ⚠️ B4: Main repo uncommitted changes block merge
 
-**Severity:** Medium  
-**Scenarios:** 4.2
+**Severity:** Medium — has working workaround  
+**Scenarios:** 4.2  
+**Priority:** Fix last
 
-**Trigger:** User has uncommitted work in the main repo.
+**Problem:** `Worktree.merge()` calls `git checkout base` in the main
+repo. If the user has uncommitted changes, git refuses.
 
-**Impact:** Merge fails → task BLOCKED. Error message confusing.
+**Current mitigation:** `autoStashBeforeMerge` option (default: false).
 
-**Current mitigation:** `autoStashBeforeMerge` (default: false).
+#### Implementation plan
 
-**Recommended fix:** Default to true.
+**File:** `src/Engine.ts` — constructor (line 102)
+
+**Change:** Default `autoStashBeforeMerge` to `true`:
+```ts
+// Before:
+this.#autoStashBeforeMerge = opts.autoStashBeforeMerge ?? false;
+// After:
+this.#autoStashBeforeMerge = opts.autoStashBeforeMerge ?? true;
+```
+
+**Also:** Add `ORCH_AUTO_STASH` env var in `src/env.ts`:
+```ts
+get autoStash() { return (process.env.ORCH_AUTO_STASH ?? 'true') !== 'false'; },
+```
+
+Update constructor:
+```ts
+this.#autoStashBeforeMerge = opts.autoStashBeforeMerge ?? env.autoStash;
+```
+
+**Tests:**
+- Default behavior: main repo with uncommitted changes → stashed → merge succeeds → stash popped
+- `ORCH_AUTO_STASH=false` → old behavior (merge fails → BLOCKED)
+- Stash pop conflict after merge → logged but merge still succeeds
+
+---
+
+## Implementation order and dependencies
+
+```
+B3 (guard #handleZero)  ←──  depends on  ──→  #tryReconnectWorktree()
+        ↑                                            ↑
+        │                                            │
+B2 (reconnect on pickup) ────── reuses ──────────────┘
+        │
+        │ (B2 prevents B3, but B3 is the safety net)
+        │
+B1 (auto-commit) ─── independent ─── can be done in parallel
+        │
+B4 (default autoStash) ─── independent ─── can be done in parallel
+```
+
+**Recommended implementation sequence:**
+1. Add `#tryReconnectWorktree()` to Engine + `Worktree.autoCommit()`
+2. Implement B3 guard in `#handleZero()` (uses reconnect)
+3. Implement B2 reconnect in `tick()` (uses same method)
+4. Implement B1 auto-commit in `#runSpawnCycle()` (independent)
+5. Implement B4 default flip (independent, trivial)
 
 ---
 
@@ -372,14 +542,14 @@ no-spawn mode" from "worktree lost due to restart."
 
 ---
 
-## Summary of fixes
+## Summary
 
-| Bug | Severity | Fix | Complexity |
-|-----|----------|-----|------------|
-| **B3** | Critical | Guard `tree===null` + reconnect. Allow null only in no-spawn mode | Low |
-| **B2** | High | Reconnect worktree from branch/dir on pickup when convergence > 0 | Medium |
-| **B1** | High | Auto-commit agent work after spawn, before benchmark | Low |
-| **B4** | Medium | Default `autoStashBeforeMerge` to true | Low |
+| Bug | Severity | Fix | Files | Complexity |
+|-----|----------|-----|-------|------------|
+| **B3** | Critical | Guard `#handleZero()` + `#tryReconnectWorktree()` | Engine.ts | Low |
+| **B2** | High | Reconnect worktree in `tick()` (reuses B3 method) | Engine.ts | Medium |
+| **B1** | High | Auto-commit after agent exits (`Worktree.autoCommit()`) | Engine.ts, Worktree.ts | Low |
+| **B4** | Medium | Default `autoStashBeforeMerge` to true + env var | Engine.ts, env.ts | Low |
 
 ### Priority order
 
