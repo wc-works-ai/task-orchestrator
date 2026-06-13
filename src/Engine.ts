@@ -413,8 +413,9 @@ export class Engine {
     // the shared base checkout, so concurrent merges would corrupt it.
     if (!this.#acquireMergeLock()) return 'locked';
     try {
+      let stashed = false;
       if (this.#autoStashBeforeMerge) {
-        const stashed = await wt.stashParentChanges(`orchestrator ${task.taskName} pre-merge`);
+        stashed = await wt.stashParentChanges(`orchestrator ${task.taskName} pre-merge`);
         if (stashed) this.#log(`T${task.taskNumber} stashed parent repo changes before merge`);
       }
       // Update the branch with the latest base first, so a base that advanced
@@ -432,6 +433,9 @@ export class Engine {
         return 'rework';
       }
       await wt.merge();
+      if (stashed) {
+        try { execFileSync('git', ['stash', 'pop'], { cwd: this.#repo, encoding: 'utf-8' }); } catch {}
+      }
       await wt.remove();
       this.#worktrees.delete(task.taskNumber);
       return 'merged';

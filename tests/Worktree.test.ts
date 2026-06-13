@@ -67,6 +67,24 @@ describe('Worktree', () => {
     expect(existsSync(join(repo, 'test.txt'))).toBe(true);
   });
 
+  it('restores the previous branch after a successful merge', async () => {
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(join(repo, 'tracked.txt'), 'master');
+    execSync('git add tracked.txt && git commit -m "master tracked"', { cwd: repo });
+    execSync('git checkout -b dev', { cwd: repo });
+    writeFileSync(join(repo, 'tracked.txt'), 'dev');
+    execSync('git add tracked.txt && git commit -m "dev tracked"', { cwd: repo });
+
+    const wt = new Worktree(repo, { name: 'T01-test', baseBranch: 'master' });
+    await wt.create();
+    writeFileSync(join(wt.path, 'work.txt'), 'worktree');
+    execSync('git add work.txt && git commit -m "work"', { cwd: wt.path });
+
+    wt.merge();
+
+    expect(execSync('git rev-parse --abbrev-ref HEAD', { cwd: repo, encoding: 'utf-8' }).trim()).toBe('dev');
+  });
+
   it('throws without removing worktree when parent checkout is blocked by local changes', async () => {
     const { writeFileSync } = await import('node:fs');
     writeFileSync(join(repo, 'tracked.txt'), 'master');
@@ -98,6 +116,19 @@ describe('Worktree', () => {
 
     expect(execSync('git status --porcelain', { cwd: repo, encoding: 'utf-8' })).toBe('');
     expect(execSync('git stash list', { cwd: repo, encoding: 'utf-8' })).toContain('dirty stash');
+  });
+
+  it('cleanWorktree clears staged changes before discarding worktree changes', async () => {
+    const { writeFileSync } = await import('node:fs');
+    const wt = new Worktree(repo, { name: 'T01-test' });
+    await wt.create();
+
+    writeFileSync(join(wt.path, 'staged.txt'), 'staged');
+    execSync('git add staged.txt', { cwd: wt.path });
+
+    wt.cleanWorktree();
+
+    expect(() => execSync('git diff --cached --quiet', { cwd: wt.path })).not.toThrow();
   });
 
   it('throws MergeConflictError and keeps the branch when merge conflicts', async () => {

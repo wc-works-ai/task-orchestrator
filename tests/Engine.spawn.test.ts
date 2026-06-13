@@ -332,7 +332,8 @@ describe('Engine agent spawning', () => {
     expect(all.size).toBe(0); // T1 converged and excluded from scan
     expect(TaskState.countConverged(tasksDir)).toBe(1);
     expect(existsSync(join(worktreesDir, 'T01-x', '.git'))).toBe(false);
-    expect(existsSync(join(repoDir, 'work.txt'))).toBe(true);
+    expect(execSync('git rev-parse --abbrev-ref HEAD', { cwd: repoDir, encoding: 'utf-8' }).trim()).toBe('master');
+    expect(execSync('git show dev:work.txt', { cwd: repoDir, encoding: 'utf-8' })).toBe('worktree');
     expect(execSync('git status --porcelain', { cwd: repoDir, encoding: 'utf-8' })).toBe('');
     expect(execSync('git stash list', { cwd: repoDir, encoding: 'utf-8' }))
       .toContain('orchestrator T01-x merge recovery');
@@ -393,10 +394,10 @@ describe('Engine agent spawning', () => {
     expect(r.converged).toBe(true);
     expect(recover).not.toHaveBeenCalled();
     expect(existsSync(join(worktreesDir, 'T01-x', '.git'))).toBe(false);
-    expect(existsSync(join(repoDir, 'work.txt'))).toBe(true);
-    expect(execSync('git status --porcelain', { cwd: repoDir, encoding: 'utf-8' })).toBe('');
-    expect(execSync('git stash list', { cwd: repoDir, encoding: 'utf-8' }))
-      .toContain('orchestrator T01-x pre-merge');
+    expect(execSync('git rev-parse --abbrev-ref HEAD', { cwd: repoDir, encoding: 'utf-8' }).trim()).toBe('master');
+    expect(execSync('git show dev:work.txt', { cwd: repoDir, encoding: 'utf-8' })).toBe('worktree');
+    expect(execSync('git status --porcelain', { cwd: repoDir, encoding: 'utf-8' })).toContain('tracked.txt');
+    expect(execSync('git stash list', { cwd: repoDir, encoding: 'utf-8' })).toBe('');
   });
 
   it('blocks the task and keeps the branch when merge-back conflicts', async () => {

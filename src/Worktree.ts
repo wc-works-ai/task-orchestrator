@@ -120,6 +120,7 @@ export class Worktree {
       }
       throw new Error(`Merge of ${this.#branch} failed: ${gitErrorMessage(e)}`);
     }
+    try { this.#git('checkout', prevBranch); } catch {}
   }
 
   stashParentChanges(message: string): boolean {
@@ -130,6 +131,7 @@ export class Worktree {
 
   /** Discard all uncommitted worktree changes so the agent starts clean. */
   cleanWorktree(): void {
+    try { this.#gitInWT('reset', 'HEAD'); } catch {}
     try {
       // Reset tracked files; --quiet suppresses errors for empty repos
       this.#gitInWT('checkout', '--', '.');

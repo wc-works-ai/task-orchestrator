@@ -57,7 +57,9 @@ These work correctly today:
 | **Non-git repo** | Orchestrator degrades to simple benchmark loop; warned in log |
 | **Auto-commit** | `Worktree.autoCommit()` after agent exits; merge captures validated code |
 | **Target branch** | Per-task `.target_branch`; merge always goes to correct branch |
-| **Auto-stash** | Default on; main repo dirty files stashed before merge |
+| **Auto-stash** | Default on; main repo dirty files stashed before merge, restored after |
+| **Branch restoration** | After merge, repo is restored to the branch the user was on |
+| **Staged change cleanup** | `cleanWorktree()` clears staged, tracked, and untracked changes |
 | **Worktree reconnection** | On restart with convergence > 0, reconnects from disk or resets convergence |
 
 ---
@@ -117,8 +119,8 @@ Benchmark re-runs to confirm stability. No cleanup, no sync.
 | 4.8 | Another orchestrator holds merge lock → retry next tick | ✅ |
 | 4.9 | SIGKILL during merge → repo left on base branch, lock remains | ⚠️ Needs manual cleanup; lock auto-reclaimed after timeout |
 | 4.10 | SIGKILL during syncWithBase → `resetForRetry()` wipes commits | ⚠️ Silent data loss |
-| 4.11 | Successful merge leaves main repo on target branch | 🔴 **Problem P1** |
-| 4.12 | Auto-stash is never restored after merge | 🔴 **Problem P2** |
+| 4.11 | Successful merge restores user's original branch | ✅ |
+| 4.12 | Auto-stash popped after successful merge | ✅ |
 
 ### 3.5 Failure and retry
 
@@ -157,47 +159,9 @@ Benchmark re-runs to confirm stability. No cleanup, no sync.
 
 ---
 
-## 4. Current problems
+## 4. Remaining problems
 
-### 🔴 P1: Successful merge leaves main repo on target branch
-
-After `Worktree.merge()` succeeds, the main repo is left checked out on
-the task's target branch — not restored to whatever branch the user had.
-`prevBranch` is captured but only restored on failure, not on success.
-
-**Impact:** User's branch context is silently changed after each merge.
-
-**Location:** `Worktree.ts:103-123` — `merge()` does
-`git checkout base` + `git merge --no-ff` but no checkout-back on
-success.
-
-**Fix:** After successful merge, restore `prevBranch`:
-```ts
-// After line 123 in merge():
-if (prevBranch !== this.#base) {
-  try { this.#git('checkout', prevBranch); } catch {}
-}
-```
-
-### 🔴 P2: Auto-stash is never restored after merge
-
-`stashParentChanges()` runs `git stash push` but there is no
-corresponding `git stash pop` anywhere. The user's uncommitted changes
-remain in the stash indefinitely.
-
-**Impact:** User loses uncommitted work (it's in stash but not restored).
-
-**Location:** `Engine.ts:416-419` calls `wt.stashParentChanges()`.
-`Worktree.ts:125-129` does `git stash push`. No `pop`/`apply` anywhere
-in the codebase.
-
-**Fix:** After successful merge in `#mergeAndRemove()`, pop the stash:
-```ts
-// After wt.merge() succeeds:
-try { execFileSync('git', ['stash', 'pop'], { cwd: this.#repo }); } catch {}
-```
-
-### 🔴 P3: Stale benchmark (B5)
+### 🔴 Stale benchmark
 
 The benchmark is a static artifact written at task creation time. By
 pickup time, the codebase may have changed enough to make the benchmark
@@ -215,20 +179,6 @@ unreliable in both directions:
 2. No-progress detection — metric unchanged × N runs → stop retrying
 3. Baseline regression — metric was 0 at creation, now > 0 → skip
 
-### ⚠️ P4: cleanWorktree does not clear staged changes
-
-`cleanWorktree()` runs `git checkout -- .` (tracked files) and
-`git clean -fd` (untracked files) but does NOT run `git reset HEAD`
-(staged changes). A reused worktree can carry staged edits from a
-prior run into the next agent session.
-
-**Location:** `Worktree.ts:132-138`
-
-**Fix:** Add `git reset HEAD` before checkout:
-```ts
-try { this.#gitInWT('reset', 'HEAD'); } catch {}
-```
-
 ---
 
 ## 5. Fixed issues (history)
@@ -236,13 +186,16 @@ try { this.#gitInWT('reset', 'HEAD'); } catch {}
 These were identified during the worktree sync audit and have been
 resolved:
 
-| ID | Problem | Fix | Commit |
-|----|---------|-----|--------|
-| B1 | Uncommitted agent changes lost at merge | `Worktree.autoCommit()` before benchmark | `3ab1b3c` |
-| B2 | Process restart loses worktree reference | `#tryReconnectWorktree()` at pickup | `e431946` |
-| B3 | Convergence without merge (orphaned branch) | Guard in `#handleZero()` + reconnect | `96b80f9` |
-| B4 | Main repo dirty blocks merge | Default `autoStashBeforeMerge` to true | `e431946` |
-| B6 | Merge into wrong branch after user switches | `.target_branch` per task | `9ba9f7c` |
+| ID | Problem | Fix |
+|----|---------|-----|
+| B1 | Uncommitted agent changes lost at merge | `Worktree.autoCommit()` before benchmark |
+| B2 | Process restart loses worktree reference | `#tryReconnectWorktree()` at pickup |
+| B3 | Convergence without merge (orphaned branch) | Guard in `#handleZero()` + reconnect |
+| B4 | Main repo dirty blocks merge | Default `autoStashBeforeMerge` to true |
+| B6 | Merge into wrong branch after user switches | `.target_branch` per task |
+| P1 | Merge leaves repo on target branch | `checkout prevBranch` after successful merge |
+| P2 | Auto-stash never restored | `git stash pop` after successful merge |
+| P4 | Staged changes leak across runs | `git reset HEAD` in `cleanWorktree()` |
 
 ---
 
