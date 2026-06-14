@@ -33,8 +33,8 @@ function clockTaskDb(now: () => number): { tdb: TaskDb; db: Db } {
 
 /** Insert a task and promote it to PENDING (ready to pick). */
 function ready(tdb: TaskDb, name: string, opts: { maxFailures?: number | null; dependsOn?: number[] } = {}): number {
-  const { taskNumber } = tdb.insert({ name, dir: `T-${name}`, ...opts });
-  tdb.promote(taskNumberToId(tdb, taskNumber));
+  const { id, taskNumber } = tdb.insert({ name, ...opts });
+  tdb.promote(id);
   return taskNumber;
 }
 
@@ -159,19 +159,21 @@ describe('TaskDb backup', () => {
 });
 
 describe('TaskDb.insert / promote', () => {
-  it('allocates sequential task numbers and starts in CREATING', () => {
+  it('allocates sequential task numbers, derives the dir, and starts in CREATING', () => {
     const { tdb } = memTaskDb();
-    const a = tdb.insert({ name: 'a', dir: 'T1-a' });
-    const b = tdb.insert({ name: 'b', dir: 'T2-b' });
+    const a = tdb.insert({ name: 'a' });
+    const b = tdb.insert({ name: 'b' });
     expect(a.taskNumber).toBe(1);
+    expect(a.dir).toBe('T01-a');
     expect(b.taskNumber).toBe(2);
+    expect(b.dir).toBe('T02-b');
     expect(tdb.get(a.id)!.status).toBe('CREATING');
   });
 
   it('records max_failures, target_branch, and dependencies', () => {
     const { tdb } = memTaskDb();
-    tdb.insert({ name: 'a', dir: 'T1-a' });
-    const b = tdb.insert({ name: 'b', dir: 'T2-b', maxFailures: 9, targetBranch: 'dev', dependsOn: [1] });
+    tdb.insert({ name: 'a' });
+    const b = tdb.insert({ name: 'b', maxFailures: 9, targetBranch: 'dev', dependsOn: [1] });
     const row = tdb.get(b.id)!;
     expect(row.max_failures).toBe(9);
     expect(row.target_branch).toBe('dev');
@@ -180,7 +182,7 @@ describe('TaskDb.insert / promote', () => {
 
   it('promote moves CREATING to PENDING and is a no-op otherwise', () => {
     const { tdb } = memTaskDb();
-    const { id } = tdb.insert({ name: 'a', dir: 'T1-a' });
+    const { id } = tdb.insert({ name: 'a' });
     expect(tdb.promote(id)).toBe(true);
     expect(tdb.get(id)!.status).toBe('PENDING');
     expect(tdb.promote(id)).toBe(false); // already PENDING
@@ -203,7 +205,7 @@ describe('TaskDb.pick', () => {
 
   it('returns undefined when nothing is actionable', () => {
     const { tdb } = memTaskDb();
-    tdb.insert({ name: 'a', dir: 'T1-a' }); // CREATING, not pickable
+    tdb.insert({ name: 'a' }); // CREATING, not pickable
     expect(tdb.pick('inst-1')).toBeUndefined();
   });
 
@@ -230,8 +232,8 @@ describe('TaskDb.pick', () => {
 
   it('treats a dependency on a missing task as unmet (waits, not vacuously satisfied)', () => {
     const { tdb } = memTaskDb();
-    tdb.insert({ name: 'main', dir: 'T1-main', dependsOn: [99] });
-    tdb.promote(taskNumberToId(tdb, 1));
+    const { id } = tdb.insert({ name: 'main', dependsOn: [99] });
+    tdb.promote(id);
     expect(tdb.pick('i')).toBeUndefined();
   });
 

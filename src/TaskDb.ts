@@ -16,6 +16,11 @@ const MAX_DEPENDENCY_DEPTH = 10000;
 export type TaskStatus =
   | 'CREATING' | 'PENDING' | 'IN_PROGRESS' | 'FAILED' | 'BLOCKED' | 'CONVERGED';
 
+/** Content directory name for a task, e.g. (1, "auth") → "T01-auth". */
+export function taskDirName(taskNumber: number, name: string): string {
+  return `T${String(taskNumber).padStart(2, '0')}-${name}`;
+}
+
 /** A full task row as stored in the database. */
 export interface TaskRow {
   readonly id: number;
@@ -38,7 +43,6 @@ export interface TaskRow {
 /** Fields needed to create a task. `maxFailures` null means unlimited retries. */
 export interface NewTask {
   readonly name: string;
-  readonly dir: string;
   readonly maxFailures?: number | null;
   readonly targetBranch?: string | null;
   readonly dependsOn?: readonly number[];
@@ -121,21 +125,26 @@ export class TaskDb {
   }
 
   // ── Creation ────────────────────────────────────────────────────────
-  /** Allocate the next task_number and insert as CREATING, plus its deps, atomically. */
-  insert(t: NewTask): { id: number; taskNumber: number } {
+  /** Allocate the next task_number, derive its content dir, and insert as
+   *  CREATING with its deps — all atomically. Returns the id, number, and dir. */
+  insert(t: NewTask): { id: number; taskNumber: number; dir: string } {
     return withRetry(() =>
       this.#db.transaction(() => {
         const now = this.#now();
-        const row = this.#db.get<{ id: number; task_number: number }>(
+        const taskNumber = this.#db.get<{ n: number }>(
+          'SELECT COALESCE(MAX(task_number),0)+1 AS n FROM tasks',
+        )!.n;
+        const dir = taskDirName(taskNumber, t.name);
+        const row = this.#db.get<{ id: number }>(
           `INSERT INTO tasks (task_number, name, dir, status, max_failures, target_branch, created_at, updated_at)
-           SELECT COALESCE(MAX(task_number),0)+1, :name, :dir, 'CREATING', :max, :branch, :now, :now FROM tasks
-           RETURNING id, task_number`,
-          { name: t.name, dir: t.dir, max: t.maxFailures ?? null, branch: t.targetBranch ?? null, now },
+           VALUES (:num, :name, :dir, 'CREATING', :max, :branch, :now, :now)
+           RETURNING id`,
+          { num: taskNumber, name: t.name, dir, max: t.maxFailures ?? null, branch: t.targetBranch ?? null, now },
         )!;
         for (const dep of t.dependsOn ?? []) {
-          this.#db.run('INSERT INTO dependencies (task_number, depends_on) VALUES (?,?)', [row.task_number, dep]);
+          this.#db.run('INSERT INTO dependencies (task_number, depends_on) VALUES (?,?)', [taskNumber, dep]);
         }
-        return { id: row.id, taskNumber: row.task_number };
+        return { id: row.id, taskNumber, dir };
       }),
     );
   }
