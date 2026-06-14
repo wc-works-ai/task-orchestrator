@@ -161,22 +161,30 @@ export class Engine {
 
     // Prioritize convergence: finish converging tasks before picking new ones.
     // This minimizes time between agent work and merge, reducing conflicts.
+    // Check both in-memory worktrees and on-disk in_progress tasks with convergence > 0.
     /* v8 ignore start -- convergence priority requires real worktrees; tested via integration */
     let task: TaskState | null = null;
-    for (const [num] of this.#worktrees) {
-      if (this.#owned.has(num)) continue;
-      try {
-        const entries = readdirSync(resolve(this.#dir, 'in_progress'));
-        const match = entries.find(e => new RegExp(`^T0*${num}-`).test(e));
-        if (!match) continue;
-        const candidate = new TaskState(resolve(this.#dir, 'in_progress', match));
+    try {
+      const inProgress = readdirSync(resolve(this.#dir, 'in_progress'));
+      for (const entry of inProgress) {
+        if (!entry.startsWith('T')) continue;
+        const candidate = new TaskState(resolve(this.#dir, 'in_progress', entry));
         if (candidate.convergenceCount > 0 && candidate.isInProgress
-            && candidate.isClaimed && candidate.claimOwnerId === this.#id) {
+            && candidate.isClaimed && candidate.claimOwnerId === this.#id
+            && !this.#owned.has(candidate.taskNumber)) {
           task = candidate;
+          // Reconnect worktree if not in memory
+          if (!this.#worktrees.has(candidate.taskNumber) && this.#spawn
+              && existsSync(resolve(this.#repo, '.git')) && !this.#noWorktree) {
+            const reconnected = this.#tryReconnectWorktree(candidate);
+            if (reconnected) {
+              this.#log(`T${candidate.taskNumber} reconnected to worktree for convergence`);
+            }
+          }
           break;
         }
-      } catch { continue; }
-    }
+      }
+    } catch { /* in_progress dir may not exist */ }
     /* v8 ignore stop */
     // Fall back to normal pick if no converging task found
     if (!task) task = await TaskState.pick(this.#dir, this.#id);
