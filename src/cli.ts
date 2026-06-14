@@ -276,9 +276,9 @@ if (values.status) {
   for (const k of nums) {
     const t = all.get(String(k));
     if (!t) continue;
+    if (t.isConverged) continue;
     let label = 'UNKNOWN';
-    if (t.isConverged) label = 'CONVERGED';
-    else if (t.isFailed) label = 'FAILED';
+    if (t.isFailed) label = 'FAILED';
     else if (t.isBlocked) label = 'BLOCKED';
     else if (t.isPending) label = 'PENDING';
     else if (t.isInProgress) label = 'RUNNING';
