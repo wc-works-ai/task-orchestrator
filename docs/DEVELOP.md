@@ -43,6 +43,7 @@ Use `orchestrator --config` to inspect effective values and their sources.
 #### Error handling
 
 - **Never swallow errors silently** (`catch {}` or `catch { /* ignore */ }`)
+- **Never monkey-patch** — fix root causes; if a fix needs another fix, the first was wrong
 - Every `catch` must either: **log** the error, **rethrow** it, or **return a meaningful fallback**
 - `catch {}` is only acceptable for truly inconsequential best-effort operations (e.g., deleting a temp file that may not exist)
 - When in doubt, **log at minimum** — silent swallowing makes debugging impossible
