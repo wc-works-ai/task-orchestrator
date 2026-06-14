@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { TaskState, Status, type BenchmarkFn, type TaskInfo, type TickResult, type TickNull } from './TaskState.js';
 import { TaskDb } from './TaskDb.js';
+import { migrateShards } from './migrate.js';
 import { Worktree, MergeConflictError } from './Worktree.js';
 import { env } from './env.js';
 import { handleOrchestratorError, type Logger } from './errors.js';
@@ -798,6 +799,11 @@ export class Engine {
   #reconcileOnce(): void {
     if (this.#reconciled) return;
     this.#reconciled = true;
+
+    // Import any pre-existing file-shard tasks first (idempotent), so their
+    // content dirs are present in the DB before the checks below run.
+    const imported = migrateShards(this.#tdb, this.#dir);
+    if (imported > 0) this.#log(`reconcile: imported ${imported} task(s) from file shards`, 'transition');
 
     for (const row of this.#tdb.byStatus(['CREATING'])) {
       if (existsSync(resolve(this.#dir, row.dir, 'benchmark.js'))) {

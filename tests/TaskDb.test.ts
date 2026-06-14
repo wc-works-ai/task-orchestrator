@@ -189,6 +189,65 @@ describe('TaskDb.insert / promote', () => {
   });
 });
 
+describe('TaskDb.importTask', () => {
+  it('inserts a task verbatim with an explicit number, status, counters, and deps', () => {
+    const { tdb } = memTaskDb();
+    expect(
+      tdb.importTask({
+        taskNumber: 7, name: 'foo', dir: 'failed/T07-foo', status: 'FAILED',
+        convergence: 2, failures: 3, maxFailures: 9, targetBranch: 'dev', dependsOn: [1, 2],
+      }),
+    ).toBe(true);
+
+    const row = tdb.getByNumber(7)!;
+    expect(row.task_number).toBe(7);
+    expect(row.name).toBe('foo');
+    expect(row.dir).toBe('failed/T07-foo');
+    expect(row.status).toBe('FAILED');
+    expect(row.convergence).toBe(2);
+    expect(row.failures).toBe(3);
+    expect(row.max_failures).toBe(9);
+    expect(row.target_branch).toBe('dev');
+    expect(tdb.dependencyNumbers(7)).toEqual([1, 2]);
+  });
+
+  it('imports a task with NULL max_failures, no branch, and no deps', () => {
+    const { tdb } = memTaskDb();
+    expect(
+      tdb.importTask({
+        taskNumber: 4, name: 'bare', dir: 'pending/T04-bare', status: 'PENDING',
+        convergence: 0, failures: 0, maxFailures: null, targetBranch: null, dependsOn: [],
+      }),
+    ).toBe(true);
+
+    const row = tdb.getByNumber(4)!;
+    expect(row.max_failures).toBeNull();
+    expect(row.target_branch).toBeNull();
+    expect(tdb.dependencyNumbers(4)).toEqual([]);
+  });
+
+  it('is idempotent: ON CONFLICT(task_number) leaves the existing row and deps intact', () => {
+    const { tdb } = memTaskDb();
+    tdb.importTask({
+      taskNumber: 1, name: 'first', dir: 'pending/T01-first', status: 'PENDING',
+      convergence: 0, failures: 0, maxFailures: 5, targetBranch: null, dependsOn: [],
+    });
+
+    expect(
+      tdb.importTask({
+        taskNumber: 1, name: 'second', dir: 'failed/T01-second', status: 'FAILED',
+        convergence: 9, failures: 9, maxFailures: 1, targetBranch: 'other', dependsOn: [2],
+      }),
+    ).toBe(false);
+
+    const row = tdb.getByNumber(1)!;
+    expect(row.name).toBe('first');
+    expect(row.dir).toBe('pending/T01-first');
+    expect(row.status).toBe('PENDING');
+    expect(tdb.dependencyNumbers(1)).toEqual([]);
+  });
+});
+
 describe('TaskDb.pick', () => {
   it('claims the lowest-numbered actionable task with a fresh token', () => {
     const { tdb } = clockTaskDb(() => 5000);

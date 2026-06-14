@@ -533,6 +533,26 @@ describe('Engine', () => {
     expect(statusOf(s.db, 1)).toBe(Status.BLOCKED);
   });
 
+  it('reconcile imports old file-shard tasks once on startup and not again', async () => {
+    const legacy = join(dir, 'pending', 'T01-legacy');
+    mkdirSync(legacy, { recursive: true });
+    writeFileSync(join(legacy, '.status'), 'PENDING');
+    writeFileSync(join(legacy, 'benchmark.js'), 'console.log("METRIC ok 0");');
+    const e = engine({ benchmark: zero });
+
+    const r = await e.tick();
+    expect(r.task!.number).toBe(1);
+    expect(rowOf(s.db, 1)).toBeDefined();
+
+    // A task dropped into a shard after the first tick must NOT be imported:
+    // migration runs once, guarded by the reconcile flag.
+    const late = join(dir, 'pending', 'T02-late');
+    mkdirSync(late, { recursive: true });
+    writeFileSync(join(late, '.status'), 'PENDING');
+    await e.tick();
+    expect(rowOf(s.db, 2)).toBeUndefined();
+  });
+
   // ── Disposal ─────────────────────────────────────────────────────────
 
   it('dispose closes an engine-owned state DB and is idempotent', () => {

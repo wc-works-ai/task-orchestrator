@@ -48,6 +48,21 @@ export interface NewTask {
   readonly dependsOn?: readonly number[];
 }
 
+/** Fields needed to import a pre-existing task verbatim (one-time shard
+ *  migration). Unlike {@link NewTask}, nothing is derived: the caller supplies
+ *  the original number, dir, status, and counters as-is. */
+export interface ImportTask {
+  readonly taskNumber: number;
+  readonly name: string;
+  readonly dir: string;
+  readonly status: TaskStatus;
+  readonly convergence: number;
+  readonly failures: number;
+  readonly maxFailures: number | null;
+  readonly targetBranch: string | null;
+  readonly dependsOn: readonly number[];
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS tasks (
   id            INTEGER PRIMARY KEY,
@@ -156,6 +171,33 @@ export class TaskDb {
           this.#db.run('INSERT INTO dependencies (task_number, depends_on) VALUES (?,?)', [taskNumber, dep]);
         }
         return { id: row.id, taskNumber, dir };
+      }),
+    );
+  }
+
+  /** Import a pre-existing task verbatim (one-time shard migration): insert the
+   *  row with the supplied number/dir/status/counters and its dependency rows,
+   *  idempotently via ON CONFLICT(task_number) DO NOTHING. Returns whether a row
+   *  was inserted (false when the number already existed). */
+  importTask(t: ImportTask): boolean {
+    return withRetry(() =>
+      this.#db.transaction(() => {
+        const now = this.#now();
+        const r = this.#db.run(
+          `INSERT INTO tasks
+             (task_number, name, dir, status, convergence, failures, max_failures, target_branch, created_at, updated_at)
+           VALUES (:num, :name, :dir, :status, :conv, :fail, :max, :branch, :now, :now)
+           ON CONFLICT(task_number) DO NOTHING`,
+          {
+            num: t.taskNumber, name: t.name, dir: t.dir, status: t.status, conv: t.convergence,
+            fail: t.failures, max: t.maxFailures, branch: t.targetBranch, now,
+          },
+        );
+        if (r.changes === 0) return false;
+        for (const dep of t.dependsOn) {
+          this.#db.run('INSERT INTO dependencies (task_number, depends_on) VALUES (?,?)', [t.taskNumber, dep]);
+        }
+        return true;
       }),
     );
   }
