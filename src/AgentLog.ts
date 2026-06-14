@@ -25,7 +25,11 @@ export interface AgentLog {
 }
 
 export function openAgentLog(path: string, maxBytes: number): AgentLog {
-  try { writeFileSync(path, ''); } catch {}
+  try {
+    writeFileSync(path, '');
+  } catch (error: unknown) {
+    console.error(`[AgentLog] failed to initialize ${path}: ${error instanceof Error ? error.message : String(error)}`);
+  }
   return { path, maxBytes, bytes: 0 };
 }
 
