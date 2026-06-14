@@ -5,6 +5,8 @@
  * gives us one place to enforce WAL mode, busy-timeout, and a simple
  * transaction helper. Tests use `:memory:` databases for isolation.
  */
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { DbInitError } from './errors.js';
 
@@ -30,6 +32,8 @@ const MEMORY = ':memory:';
 
 /** Open (creating if needed) the state database with our standard settings. */
 export function openDb(path: string): Db {
+  // A file DB can't be created if its directory is missing (first run).
+  if (path !== MEMORY) mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
   db.exec('PRAGMA busy_timeout = 10000');
   if (path !== MEMORY) {

@@ -46,6 +46,15 @@ describe('openDb', () => {
     expect(db.get('PRAGMA journal_mode')).toEqual({ journal_mode: 'wal' });
   });
 
+  it('creates missing parent directories for a file database (first run)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orch-sqlite-'));
+    dirs.push(dir);
+    const nested = join(dir, 'sub', 'tasks', 'state.db'); // sub/tasks do not exist yet
+    const db = openDb(nested);
+    open.push(db);
+    expect(db.get('PRAGMA journal_mode')).toEqual({ journal_mode: 'wal' });
+  });
+
   it('get returns undefined when no row matches', () => {
     const db = mem();
     db.exec('CREATE TABLE t(id INTEGER PRIMARY KEY)');
