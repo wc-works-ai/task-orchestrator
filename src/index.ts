@@ -14,3 +14,12 @@ export { createCodingAgent, SUPPORTED_AGENTS } from './agents.js';
 export { defaultStateRoot, repoSlug, resolveStatePaths } from './StatePaths.js';
 export type { StatePathInputs, StatePaths } from './StatePaths.js';
 export { Prerequisites } from './Prerequisites.js';
+export {
+  Severity,
+  OrchestratorError,
+  DbCorruptError,
+  DbBusyError,
+  handleOrchestratorError,
+  withRetry,
+} from './errors.js';
+export type { Logger, RetryOptions } from './errors.js';
