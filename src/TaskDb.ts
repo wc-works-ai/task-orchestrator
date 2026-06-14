@@ -1,16 +1,17 @@
 /**
- * Task state schema and database lifecycle.
- *
- * TaskDb owns the SQLite schema (tasks + dependencies) and the open/init,
- * integrity-check, and backup operations. Task operations (pick, claim, …) are
- * added on top of this in later steps. State lives here; the filesystem holds
- * only task content.
+ * SQLite-backed task state. Owns the schema (tasks + dependencies), lifecycle
+ * (open/init, integrity check, backup), creation, atomic claiming, claim-gated
+ * updates, stale-claim recovery, and the dependency cascade. State lives here;
+ * the filesystem holds only task content.
  */
 import { existsSync, rmSync } from 'node:fs';
 import { openDb, type Db } from './sqlite.js';
 import { SchemaMismatchError, withRetry } from './errors.js';
 
 export const SCHEMA_VERSION = 1;
+
+// Guard the recursive dependency walk against a malformed graph.
+const MAX_DEPENDENCY_DEPTH = 10000;
 
 export type TaskStatus =
   | 'CREATING' | 'PENDING' | 'IN_PROGRESS' | 'FAILED' | 'BLOCKED' | 'CONVERGED';
@@ -21,7 +22,7 @@ export interface TaskRow {
   readonly task_number: number;
   readonly name: string;
   readonly dir: string;
-  readonly status: string;
+  readonly status: TaskStatus;
   readonly convergence: number;
   readonly failures: number;
   readonly max_failures: number | null;
@@ -248,7 +249,7 @@ export class TaskDb {
            UNION
            SELECT d.task_number, bc.depth+1 FROM dependencies d
            JOIN blocked_chain bc ON d.depends_on = bc.tn
-           WHERE bc.depth < 10000
+           WHERE bc.depth < ${MAX_DEPENDENCY_DEPTH}
          )
          UPDATE tasks SET status='BLOCKED', updated_at=:now
          WHERE task_number IN (SELECT tn FROM blocked_chain)

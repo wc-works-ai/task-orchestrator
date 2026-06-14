@@ -1,16 +1,7 @@
 /**
- * Central error framework for the orchestrator.
- *
- * Two severities are enough:
- *   - FATAL: the database is unusable (corrupt / persistently locked). Stop the
- *     loop — continuing could worsen state. The operator must intervene.
- *   - WARN:  a single task hit a problem (stale claim, missing folder, …). Log
- *     it, skip that task, keep the loop alive. One bad task never stops the run.
- *
- * Repairs (recover-stale claims, reconcile half-created tasks) are *proactive*
- * operations run each tick by the Engine, not exceptions — so they are not a
- * severity. Transient lock backoff is handled inside `withRetry`; only an
- * exhausted lock escalates to a FATAL `DbBusyError`.
+ * Orchestrator errors are FATAL (stop the loop — the DB is unusable) or WARN
+ * (skip one task, keep looping). Transient SQLite locks are retried in
+ * `withRetry`; an exhausted lock becomes a FATAL `DbBusyError`.
  */
 
 export const Severity = {
@@ -134,6 +125,8 @@ function isCorrupt(e: unknown): boolean {
   return low === 11 /* CORRUPT */ || low === 26 /* NOTADB */;
 }
 
+// Block the thread for `ms` (node:sqlite is synchronous, so the backoff must be
+// too). Atomics.wait on a throwaway buffer is the standard synchronous sleep.
 function syncSleep(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
