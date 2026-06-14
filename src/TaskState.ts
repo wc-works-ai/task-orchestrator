@@ -143,16 +143,16 @@ export class TaskState {
       mkdirSync(dirname(dest), { recursive: true });
       try { renameSync(this.#dir, dest); this.#dir = dest; } catch (err: unknown) {
         const code = (err as NodeJS.ErrnoException).code;
-        /* v8 ignore start: cross-device / transient lock fallback */
-        if (code === 'EXDEV' || code === 'EPERM' || code === 'EBUSY' || code === 'EACCES') {
-          // Cross-device or Windows transient lock — fall back to copy+delete
+        /* v8 ignore start: cross-device rename fallback */
+        if (code === 'EXDEV') {
           cpSync(this.#dir, dest, { recursive: true });
-          try { rmSync(this.#dir, { recursive: true, force: true }); } catch {}
+          rmSync(this.#dir, { recursive: true, force: true });
           this.#dir = dest;
-        } else {
-          throw err;
         }
         /* v8 ignore stop */
+        // EPERM/EBUSY/EACCES: transient lock — task stays in old shard
+        // with correct .status file. pick() reads status from file, not
+        // shard name, so the task is still actionable next tick.
       }
     }
     TaskState.#cache.set(String(this.taskNumber), cacheBase as Status);

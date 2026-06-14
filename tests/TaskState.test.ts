@@ -727,10 +727,8 @@ describe('TaskState', () => {
     expect(t.directory).toBe(resolve(dir, 'pending', 'T01-a'));
   });
 
-  it('status setter falls back to copy/delete for EACCES/EPERM (transient lock)', async () => {
+  it('status setter tolerates EACCES on shard rename (task stays in old shard)', async () => {
     vi.resetModules();
-    const copyCalls: string[] = [];
-    const removeCalls: string[] = [];
 
     vi.doMock('node:fs', async (importOriginal) => {
       const actual = await importOriginal<typeof import('node:fs')>();
@@ -744,14 +742,6 @@ describe('TaskState', () => {
           err.code = 'EACCES';
           throw err;
         }),
-        cpSync: vi.fn((source: Parameters<typeof actual.cpSync>[0], destination: Parameters<typeof actual.cpSync>[1], options?: Parameters<typeof actual.cpSync>[2]) => {
-          copyCalls.push(`${String(source)}->${String(destination)}`);
-          return actual.cpSync(source, destination, options);
-        }),
-        rmSync: vi.fn((target: Parameters<typeof actual.rmSync>[0], options?: Parameters<typeof actual.rmSync>[1]) => {
-          removeCalls.push(String(target));
-          return actual.rmSync(target, options);
-        }),
       };
     });
 
@@ -760,10 +750,10 @@ describe('TaskState', () => {
     mkdirSync(taskDir, { recursive: true });
     const t = new MockedTaskState(taskDir);
 
-    // EACCES is now handled via copy+delete fallback (same as EXDEV)
+    // EACCES: task stays in pending/ with .status=CONVERGED
+    // No copy, no delete — pick() reads status from file, not shard
     t.status = MockedStatus.CONVERGED;
-    expect(copyCalls.length).toBeGreaterThan(0);
-    expect(removeCalls.length).toBeGreaterThan(0);
+    expect(t.directory).toBe(taskDir); // still in pending/
   });
 
   it('status setter falls back to copy/delete for EXDEV', async () => {
