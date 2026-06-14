@@ -727,7 +727,7 @@ describe('TaskState', () => {
     expect(t.directory).toBe(resolve(dir, 'pending', 'T01-a'));
   });
 
-  it('status setter tolerates EACCES on shard rename (task stays in old shard)', async () => {
+  it('status setter throws TaskMoveError on EACCES (locked directory)', async () => {
     vi.resetModules();
 
     vi.doMock('node:fs', async (importOriginal) => {
@@ -745,15 +745,13 @@ describe('TaskState', () => {
       };
     });
 
-    const { TaskState: MockedTaskState, Status: MockedStatus } = await import('../src/TaskState.js');
+    const { TaskState: MockedTaskState, Status: MockedStatus, TaskMoveError: MoveErr } = await import('../src/TaskState.js');
     const taskDir = resolve(dir, 'pending', 'T01-a');
     mkdirSync(taskDir, { recursive: true });
     const t = new MockedTaskState(taskDir);
 
-    // EACCES: task stays in pending/ with .status=CONVERGED
-    // No copy, no delete — pick() reads status from file, not shard
-    t.status = MockedStatus.CONVERGED;
-    expect(t.directory).toBe(taskDir); // still in pending/
+    expect(() => { t.status = MockedStatus.CONVERGED; }).toThrow(MoveErr);
+    expect(t.directory).toBe(taskDir); // unchanged — dir didn't move
   });
 
   it('status setter falls back to copy/delete for EXDEV', async () => {

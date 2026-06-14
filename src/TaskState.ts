@@ -84,6 +84,26 @@ function logUnexpectedFsError(action: string, error: unknown, ignoredCodes: read
 }
 /* v8 ignore stop */
 
+// ── Errors ───────────────────────────────────────────────────────────────────
+
+/** Thrown when a task directory cannot be moved between shards (e.g. Windows file lock). */
+export class TaskMoveError extends Error {
+  constructor(
+    readonly taskDir: string,
+    readonly targetShard: string,
+    readonly cause: unknown,
+  ) {
+    /* v8 ignore next -- fallback for non-errno errors */
+    const code = (cause as NodeJS.ErrnoException)?.code ?? 'unknown';
+    super(
+      `Cannot move task directory (${code}): ${taskDir}\n` +
+      `  Target: ${targetShard}/\n` +
+      `  Action: close any process using this directory, then retry or delete it manually.`,
+    );
+    this.name = 'TaskMoveError';
+  }
+}
+
 // ── TaskState ───────────────────────────────────────────────────────────────
 export class TaskState {
   static readonly #cache = new Map<string, Status>();
@@ -164,9 +184,7 @@ export class TaskState {
           rmSync(this.#dir, { recursive: true, force: true });
           this.#dir = dest;
         } else {
-          // Can't move dir — don't update .status either. Consistent state.
-          logFsError(`move ${this.#dir} to ${dest}`, err);
-          return;
+          throw new TaskMoveError(this.#dir, target, err);
         }
         /* v8 ignore stop */
       }
@@ -312,7 +330,14 @@ export class TaskState {
     writeFileSync(join(p, F_OWNER),
       `pid:${process.pid}\nstarted:${Date.now()}\ninstance:${instanceId}\nhost:${hostname()}\n`);
     writeFileSync(join(p, F_BEAT), '');
-    this.status = inProgress(instanceId);
+    try {
+      this.status = inProgress(instanceId);
+    } catch (e: unknown) {
+      /* v8 ignore start -- only fires when filesystem refuses rename (Windows lock) */
+      this.release(Status.PENDING);
+      throw e;
+      /* v8 ignore stop */
+    }
     return true;
   }
 
@@ -556,7 +581,17 @@ export class TaskState {
           return t;
         }
         if (!t.isActionable || !t.dependenciesMet(tasksDir)) continue;
-        if (!t.claim(instanceId)) continue;
+        try {
+          if (!t.claim(instanceId)) continue;
+        } catch (e: unknown) {
+          /* v8 ignore start -- only fires when filesystem refuses rename (Windows lock) */
+          if (e instanceof TaskMoveError) {
+            console.error(`\n  ❌ T${tn}: ${e.message}\n`);
+            continue;
+          }
+          throw e;
+          /* v8 ignore stop */
+        }
         return t;
       }
     }
