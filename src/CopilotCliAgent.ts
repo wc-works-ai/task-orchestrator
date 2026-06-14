@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { TaskState } from './TaskState.js';
 import { env } from './env.js';
 import { resolveCliCommand } from './PiCommand.js';
-import { appendAgentLog, openAgentLog, runLogName } from './AgentLog.js';
+import { appendAgentLog, openAgentLog, runLogName, type AgentLog } from './AgentLog.js';
 import {
   countOccurrences,
   positiveInt,
@@ -18,6 +18,11 @@ const DEFAULT_AGENT_LOG_MAX_BYTES = 10 * 1024 * 1024;
 const METRIC_MARKER = 'METRIC ';
 const AUTH_SCAN_TAIL = 256;
 const AUTH_FAILURE_RE = /(not logged in|authentication|COPILOT_GITHUB_TOKEN)/i;
+
+/* v8 ignore next 4 -- formatting helper for best-effort log failures */
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 export interface CopilotCliAgentOptions extends CodingAgentOptions {
   // CopilotCliAgent accepts exactly CodingAgentOptions; no extras
@@ -94,13 +99,11 @@ export class CopilotCliAgent implements CodingAgent {
     if (reasoning) args.push('--reasoning-effort', reasoning);
     const command = resolveCliCommand('copilot', args);
 
-    try {
-      appendAgentLog(agentLog, [
-        `=== agent session started at ${new Date().toISOString()} ===`,
-        '=== token usage unavailable: copilot -p -s does not report token usage ===',
-        '',
-      ].join('\n'));
-    } catch {}
+    CopilotCliAgent.#appendAgentLog(agentLog, [
+      `=== agent session started at ${new Date().toISOString()} ===`,
+      '=== token usage unavailable: copilot -p -s does not report token usage ===',
+      '',
+    ].join('\n'), 'start agent session');
 
     return new Promise(resolve => {
       let settled = false;
@@ -126,9 +129,10 @@ export class CopilotCliAgent implements CodingAgent {
       let metricTail = '';
       let authTail = '';
       let authFailure = false;
+      let logWriteFailed = false;
 
       const handleData = (txt: string) => {
-        try { appendAgentLog(agentLog, txt); } catch {}
+        logWriteFailed = CopilotCliAgent.#appendAgentLog(agentLog, txt, 'write agent output', logWriteFailed);
 
         const metricScan = `${metricTail}${txt}`;
         iterations += countOccurrences(metricScan, METRIC_MARKER);
@@ -147,14 +151,17 @@ export class CopilotCliAgent implements CodingAgent {
         const authError = 'Copilot CLI authentication failed; sign in or set COPILOT_GITHUB_TOKEN/GITHUB_TOKEN.';
         const exitError = `copilot exited with code ${code ?? 'unknown'}`;
         const error = aborted ? abortedError : authFailure ? authError : code === 0 ? '' : exitError;
-        try {
-          appendAgentLog(agentLog, [
+        CopilotCliAgent.#appendAgentLog(
+          agentLog,
+          [
             `=== agent session ended (exit ${code}) ===`,
             `=== iterations=${iterations} ===`,
             error ? `=== failure ${error} ===` : '',
             '',
-          ].filter(Boolean).join('\n'));
-        } catch {}
+          ].filter(Boolean).join('\n'),
+          'finish agent session',
+          logWriteFailed,
+        );
 
         if (aborted) {
           done({ success: false, iterations, error: abortedError, logPath });
@@ -172,6 +179,19 @@ export class CopilotCliAgent implements CodingAgent {
       });
     });
   }
+
+  /* v8 ignore start -- appendAgentLog failures are best-effort and not exercised via public APIs */
+  static #appendAgentLog(agentLog: AgentLog, text: string, action: string, failed = false): boolean {
+    if (failed) return true;
+    try {
+      appendAgentLog(agentLog, text);
+      return false;
+    } catch (error: unknown) {
+      console.error(`[CopilotCliAgent] failed to ${action}: ${errorMessage(error)}`);
+      return true;
+    }
+  }
+  /* v8 ignore stop */
 
   #prompt(task: TaskState, cwd: string): string {
     const taskDir = task.directory.startsWith(cwd)
