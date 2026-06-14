@@ -133,7 +133,14 @@ export class Engine {
   #log(msg: string, category: LogCategory = 'routine'): void {
     const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
     if (env.logLevel !== 'quiet' || category !== 'routine') console.log(`[${ts}] ${msg}`);
-    try { appendFileSync(resolve(this.#dir, 'orchestrator.log'), `[${ts}] ${msg}\n`); } catch {}
+    try {
+      appendFileSync(resolve(this.#dir, 'orchestrator.log'), `[${ts}] ${msg}\n`);
+    }
+    /* v8 ignore start -- append failures depend on filesystem faults */
+    catch (e: unknown) {
+      console.error(`[${ts}] failed to append orchestrator.log: ${this.#errorDetail(e)}`);
+    }
+    /* v8 ignore stop */
   }
 
   get #stopFile(): string { return resolve(this.#dir, '.stop'); }
@@ -144,15 +151,27 @@ export class Engine {
   async pickByNumber(num: number): Promise<TaskState | null> {
     await TaskState.scan(this.#dir);
     for (const shard of ['pending', 'in_progress', 'failed', 'converged', 'blocked']) {
-      try { for (const e of readdirSync(resolve(this.#dir, shard))) {
-        if (new RegExp(`^T0*${num}-`).test(e)) return new TaskState(resolve(this.#dir, shard, e));
-      }} catch {}
+      const shardDir = resolve(this.#dir, shard);
+      try {
+        for (const e of readdirSync(shardDir)) {
+          if (new RegExp(`^T0*${num}-`).test(e)) return new TaskState(resolve(shardDir, e));
+        }
+      } catch (e: unknown) {
+        this.#bestEffortFailure(`failed to read ${shardDir} while looking for T${num}`, e);
+      }
     }
     return null;
   }
   async tick(): Promise<TickResult | TickNull> {
     if (existsSync(this.#stopFile)) {
-      try { rmSync(this.#stopFile); } catch {}
+      try {
+        rmSync(this.#stopFile);
+      }
+      /* v8 ignore start -- stop-file cleanup failures depend on filesystem faults */
+      catch (e: unknown) {
+        this.#bestEffortFailure(`failed to remove stop file ${this.#stopFile}`, e);
+      }
+      /* v8 ignore stop */
       return { task: null, metric: 0, converged: false, stopped: true };
     }
     this.#recover();
@@ -164,27 +183,32 @@ export class Engine {
     // Check both in-memory worktrees and on-disk in_progress tasks with convergence > 0.
     /* v8 ignore start -- convergence priority requires real worktrees; tested via integration */
     let task: TaskState | null = null;
-    try {
-      const inProgress = readdirSync(resolve(this.#dir, 'in_progress'));
-      for (const entry of inProgress) {
-        if (!entry.startsWith('T')) continue;
-        const candidate = new TaskState(resolve(this.#dir, 'in_progress', entry));
-        if (candidate.convergenceCount > 0 && candidate.isInProgress
-            && candidate.isClaimed && candidate.claimOwnerId === this.#id
-            && !this.#owned.has(candidate.taskNumber)) {
-          task = candidate;
-          // Reconnect worktree if not in memory
-          if (!this.#worktrees.has(candidate.taskNumber) && this.#spawn
-              && existsSync(resolve(this.#repo, '.git')) && !this.#noWorktree) {
-            const reconnected = this.#tryReconnectWorktree(candidate);
-            if (reconnected) {
-              this.#log(`T${candidate.taskNumber} reconnected to worktree for convergence`);
+    const inProgressDir = resolve(this.#dir, 'in_progress');
+    if (existsSync(inProgressDir)) {
+      try {
+        const inProgress = readdirSync(inProgressDir);
+        for (const entry of inProgress) {
+          if (!entry.startsWith('T')) continue;
+          const candidate = new TaskState(resolve(inProgressDir, entry));
+          if (candidate.convergenceCount > 0 && candidate.isInProgress
+              && candidate.isClaimed && candidate.claimOwnerId === this.#id
+              && !this.#owned.has(candidate.taskNumber)) {
+            task = candidate;
+            // Reconnect worktree if not in memory
+            if (!this.#worktrees.has(candidate.taskNumber) && this.#spawn
+                && existsSync(resolve(this.#repo, '.git')) && !this.#noWorktree) {
+              const reconnected = this.#tryReconnectWorktree(candidate);
+              if (reconnected) {
+                this.#log(`T${candidate.taskNumber} reconnected to worktree for convergence`);
+              }
             }
+            break;
           }
-          break;
         }
+      } catch (e: unknown) {
+        this.#bestEffortFailure(`failed to scan ${inProgressDir} for converging tasks`, e);
       }
-    } catch { /* in_progress dir may not exist */ }
+    }
     /* v8 ignore stop */
     // Fall back to normal pick if no converging task found
     if (!task) task = await TaskState.pick(this.#dir, this.#id);
@@ -192,8 +216,14 @@ export class Engine {
       TaskState.cascadeBlockDependencies(this.#dir);
       // Diagnostic: show why nothing was picked
       for (const shard of ['pending', 'in_progress', 'failed', 'blocked'] as const) {
+        const shardDir = resolve(this.#dir, shard);
         let entries: string[];
-        try { entries = readdirSync(resolve(this.#dir, shard)); } catch { continue; }
+        try {
+          entries = readdirSync(shardDir);
+        } catch (e: unknown) {
+          this.#bestEffortFailure(`failed to inspect ${shardDir} while explaining idle state`, e);
+          continue;
+        }
         for (const e of entries) {
           if (!e.startsWith('T')) continue;
           const t = new TaskState(resolve(this.#dir, shard, e));
@@ -561,7 +591,11 @@ export class Engine {
       }
       // Copy node_modules for isolated npm commands (no symlink — avoids circular chain risk)
       const wtNm = join(wt.path, 'node_modules');
-      try { cpSync(join(this.#repo, 'node_modules'), wtNm, { recursive: true }); } catch {}
+      try {
+        cpSync(join(this.#repo, 'node_modules'), wtNm, { recursive: true });
+      } catch (e: unknown) {
+        this.#bestEffortFailure(`failed to copy node_modules into worktree ${wt.path}`, e);
+      }
     }
     return wt;
   }
@@ -648,6 +682,10 @@ export class Engine {
     return this.#singleLine(e instanceof Error ? e.message : String(e));
   }
 
+  #bestEffortFailure(context: string, e: unknown): void {
+    this.#log(`${context}: ${this.#errorDetail(e)}`, 'always');
+  }
+
   async #run(task: TaskState, cwd: string): Promise<number> {
     try {
       const info = { ...task.info, cwd };
@@ -683,7 +721,15 @@ export class Engine {
   #acquireMergeLock(): boolean {
     if (this.#tryMakeMergeLock()) return true;
     if (this.#mergeLockAgeMs() < env.mergeLockMs) return false;
-    try { rmSync(this.#mergeLockDir, { recursive: true, force: true }); } catch {}
+    try {
+      rmSync(this.#mergeLockDir, { recursive: true, force: true });
+    }
+    /* v8 ignore start -- stale-lock cleanup failures are best-effort */
+    catch (e: unknown) {
+      this.#bestEffortFailure(`failed to clear stale merge lock ${this.#mergeLockDir}`, e);
+      return false;
+    }
+    /* v8 ignore stop */
     if (!this.#tryMakeMergeLock()) return false;
     if (this.#mergeLockToken() === this.#currentLockToken) return true;
     this.#currentLockToken = null;
@@ -694,7 +740,21 @@ export class Engine {
     try { mkdirSync(this.#mergeLockDir); } catch { return false; }
     const token = `${process.pid}-${Date.now()}-${randomUUID().slice(0, 8)}`;
     this.#currentLockToken = token;
-    try { writeFileSync(join(this.#mergeLockDir, 'owner'), `pid:${process.pid}\nhost:${hostname()}\nstarted:${Date.now()}\ntoken:${token}\n`); } catch {}
+    try {
+      writeFileSync(join(this.#mergeLockDir, 'owner'), `pid:${process.pid}\nhost:${hostname()}\nstarted:${Date.now()}\ntoken:${token}\n`);
+    }
+    /* v8 ignore start -- owner-file failures depend on filesystem faults */
+    catch (e: unknown) {
+      this.#bestEffortFailure(`failed to write merge lock owner file in ${this.#mergeLockDir}`, e);
+      this.#currentLockToken = null;
+      try {
+        rmSync(this.#mergeLockDir, { recursive: true, force: true });
+      } catch (cleanupError: unknown) {
+        this.#bestEffortFailure(`failed to clean up incomplete merge lock ${this.#mergeLockDir}`, cleanupError);
+      }
+      return false;
+    }
+    /* v8 ignore stop */
     return true;
   }
 
@@ -719,7 +779,13 @@ export class Engine {
       if (this.#currentLockToken !== null && this.#mergeLockToken() === this.#currentLockToken) {
         rmSync(this.#mergeLockDir, { recursive: true, force: true });
       }
-    } catch {} finally {
+    }
+    /* v8 ignore start -- release failures depend on filesystem faults */
+    catch (e: unknown) {
+      this.#bestEffortFailure(`failed to release merge lock ${this.#mergeLockDir}`, e);
+    }
+    /* v8 ignore stop */
+    finally {
       this.#currentLockToken = null;
     }
   }
