@@ -159,7 +159,27 @@ export class Engine {
     await TaskState.scan(this.#dir);
     TaskState.cascadeBlockDependencies(this.#dir);
 
-    const task = await TaskState.pick(this.#dir, this.#id);
+    // Prioritize convergence: finish converging tasks before picking new ones.
+    // This minimizes time between agent work and merge, reducing conflicts.
+    /* v8 ignore start -- convergence priority requires real worktrees; tested via integration */
+    let task: TaskState | null = null;
+    for (const [num] of this.#worktrees) {
+      if (this.#owned.has(num)) continue;
+      try {
+        const entries = readdirSync(resolve(this.#dir, 'in_progress'));
+        const match = entries.find(e => new RegExp(`^T0*${num}-`).test(e));
+        if (!match) continue;
+        const candidate = new TaskState(resolve(this.#dir, 'in_progress', match));
+        if (candidate.convergenceCount > 0 && candidate.isInProgress
+            && candidate.isClaimed && candidate.claimOwnerId === this.#id) {
+          task = candidate;
+          break;
+        }
+      } catch { continue; }
+    }
+    /* v8 ignore stop */
+    // Fall back to normal pick if no converging task found
+    if (!task) task = await TaskState.pick(this.#dir, this.#id);
     if (!task) {
       TaskState.cascadeBlockDependencies(this.#dir);
       // Diagnostic: show why nothing was picked
