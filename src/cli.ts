@@ -300,7 +300,12 @@ if (values.graph) {
   // Read every shard (including converged) so the full DAG is shown.
   for (const shard of ['pending', 'in_progress', 'failed', 'blocked', 'converged'] as const) {
     let entries: string[] = [];
-    try { entries = readdirSync(resolve(dir, shard)); } catch {}
+    const shardPath = resolve(dir, shard);
+    try {
+      entries = readdirSync(shardPath);
+    } catch (e: unknown) {
+      console.warn(`⚠️  Could not read task shard ${shardPath}: ${e instanceof Error ? e.message : String(e)}`);
+    }
     for (const e of entries) {
       if (!/^T\d+-/.test(e)) continue;
       const t = new TaskState(resolve(dir, shard, e));
@@ -365,7 +370,11 @@ const engine = new Engine(dir, {
       const err = e as { stdout?: string; stderr?: string; message?: string };
       out = `${err.stdout ?? ''}${err.stderr ?? ''}`.trim() || (err.message ?? 'benchmark execution failed');
     }
-    try { writeFileSync(reasonPath, out); } catch {}
+    try {
+      writeFileSync(reasonPath, out);
+    } catch (e: unknown) {
+      console.warn(`⚠️  Could not write benchmark log ${reasonPath}: ${e instanceof Error ? e.message : String(e)}`);
+    }
     const r = parseMetrics(out, 1, t.metrics);
     if (r.total > 0) {
       const summary = unmetSummary(r) || `no METRIC lines emitted (treated as ${r.total})`;
@@ -406,7 +415,10 @@ if (values.task) {
     const out = execFileSync(process.execPath, [resolve(task.directory, 'benchmark.js')], { timeout: env.benchmarkTimeoutMs, encoding: 'utf-8', cwd: repo });
     const metric = parseMetrics(out, 1, task.metricNames).total;
     console.log(`${metric === 0 ? '⏳' : '❌'} T${tn}: ${task.goal.slice(0, 60)} (metric=${metric})`);
-  } catch { console.log(`❌ T${tn}: benchmark failed`); }
+  } catch (e: unknown) {
+    const reason = e instanceof Error ? e.message : String(e);
+    console.log(`❌ T${tn}: benchmark failed (${reason})`);
+  }
   process.exit(0);
 }
 
