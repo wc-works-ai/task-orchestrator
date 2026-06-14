@@ -4,6 +4,7 @@ import {
   OrchestratorError,
   DbCorruptError,
   DbBusyError,
+  DbInitError,
   handleOrchestratorError,
   withRetry,
 } from '../src/errors.js';
@@ -33,6 +34,13 @@ describe('OrchestratorError', () => {
     const e = new DbBusyError('locked');
     expect(e.taskId).toBeUndefined();
     expect(e.severity).toBe(Severity.FATAL);
+  });
+
+  it('DbInitError is fatal with an actionable hint', () => {
+    const e = new DbInitError('no WAL');
+    expect(e.severity).toBe(Severity.FATAL);
+    expect(e.action).toContain('WAL');
+    expect(e.name).toBe('DbInitError');
   });
 });
 

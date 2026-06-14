@@ -19,7 +19,10 @@ export {
   OrchestratorError,
   DbCorruptError,
   DbBusyError,
+  DbInitError,
   handleOrchestratorError,
   withRetry,
 } from './errors.js';
 export type { Logger, RetryOptions } from './errors.js';
+export { openDb, requireWal } from './sqlite.js';
+export type { Db, SqlValue, SqlParams, Row, RunResult } from './sqlite.js';

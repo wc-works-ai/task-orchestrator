@@ -48,6 +48,11 @@ export class DbBusyError extends OrchestratorError {
   readonly action = 'state.db stayed locked after retries; close other writers and restart';
 }
 
+export class DbInitError extends OrchestratorError {
+  readonly severity = Severity.FATAL;
+  readonly action = 'state.db could not initialize in WAL mode; ensure it is on a local disk';
+}
+
 /**
  * Classify the error during a tick and decide whether to keep looping.
  * Unknown (non-orchestrator) errors are treated as task-level warnings so a
