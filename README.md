@@ -29,7 +29,7 @@ npm run tick
 
 ## How it works
 
-1. Define a task in `tasks/pending/<name>/autoresearch.md`
+1. Create a task with `orchestrator add` — state is recorded in `tasks/state.db`; content lands in `tasks/T01-<name>/`
 2. Run orchestrator → picks task, runs benchmark, spawns AI agent
 3. Agent iterates in isolated git worktree
    - Spawned agent prompts instruct agents to read worktree-local guidance (`AGENTS.md`, `docs/DEVELOP.md`, `docs/TESTING.md`) and follow local environment/tooling policy.
@@ -45,11 +45,13 @@ npm run tick
 
 **Metric hygiene:** Keep benchmark metric names task-specific (for example `review_report_gap`, not generic `branch_gap`) so live logs stay unambiguous. If needed, adopt strict expected-metric filtering from task metadata as a follow-up hardening option.
 
-**Multi-orchestrator safe:** File-based coordination via atomic claims and heartbeat monitoring. See `docs/DEVELOP.md` for details.
+**State storage:** Task state (status, convergence, failures, claims, dependencies) lives in a single SQLite database, `tasks/state.db`. The filesystem holds only task content (`autoresearch.md`, `benchmark.js`, agent logs).
+
+**Concurrent-safe (single machine):** Multiple worker processes on one host coordinate through the shared `state.db` — atomic claims (one claimant per task) plus heartbeat-based recovery of crashed workers. SQLite WAL requires all processes on the same machine.
 
 **Loop mode (infinite mode):** Run with `--infinite` or `ORCH_INFINITE=1` to keep the orchestrator alive indefinitely. It will continuously poll for new tasks and wait for blocked/failed tasks to be addressed. Polling interval is configurable via `ORCH_IDLE_SLEEP_MS` (default: 5000ms). Exit with `--stop` or Ctrl+C.
 
-**Atomic task claiming:** When running with `--parallel > 1`, task claiming is atomic: only one orchestrator process can claim a task at a time, preventing race conditions. Lock files (`.claim.lock`) are created with exclusive write and cleaned up after task completion. This enables safe concurrent execution across multiple machines.
+**Atomic task claiming:** With `--parallel > 1` (or several processes), each task is claimed by exactly one worker via an atomic database update carrying a per-claim token, preventing races.
 
 ## Key CLI commands
 
@@ -66,28 +68,27 @@ orchestrator --parallel 2     # Run up to 2 tasks concurrently
 Full CLI reference: `orchestrator --help` or `docs/DEVELOP.md`.
 Documentation entrypoint: `docs/INDEX.md`.
 
-## Fleet orchestration
+## Parallel execution
 
-Run multiple orchestrators concurrently on the same task queue for high-throughput unattended execution:
+Run several workers on one machine for high-throughput unattended execution. They share `tasks/state.db` and coordinate automatically:
 
 ```bash
-# On machine 1: wait indefinitely for new tasks, run 2 in parallel
+# Run up to 2 tasks concurrently, waiting indefinitely for new ones
 ORCH_PARALLEL=2 ORCH_INFINITE=1 orchestrator
 
-# On machine 2: same setup (both machines share the task queue)
-ORCH_PARALLEL=2 ORCH_INFINITE=1 orchestrator
-
-# On machine 3: add new task dynamically
+# Add a task dynamically (from another shell)
 orchestrator add "new-task" --goal "Do something"
 
-# Stop all orchestrators
+# Stop the orchestrator
 orchestrator --stop
 ```
 
-All instances coordinate safely via:
-- **Atomic claiming:** Only one process claims each task (`.claim.lock` file with exclusive write)
-- **Heartbeat monitoring:** Fresh heartbeat prevents stale claim reclamation across machines
-- **Stale claim recovery:** Dead processes' claims are released after configurable timeout (default: 30 min)
+Coordination is via:
+- **Atomic claiming:** each task is claimed by one worker via a single DB update (per-claim token)
+- **Heartbeat recovery:** a claim whose heartbeat goes stale (crashed worker) is reclaimed; convergence progress is preserved
+- **Merge lock:** concurrent merges to the same base branch are serialized
+
+> Single machine only — SQLite WAL does not support sharing `state.db` across hosts.
 
 ## Configuration
 
@@ -104,13 +105,14 @@ Use `orchestrator --config` to inspect effective values and their sources.
 ## Task structure
 
 ```
-tasks/pending/T01-my-task/
-├── autoresearch.md   # Goal, metric, scope
-├── autoresearch.sh   # Auto-generated runner
-└── benchmark.js      # Outputs: METRIC name=value (sum must be 0)
+tasks/
+├── state.db            # SQLite: status, convergence, claims, dependencies
+└── T01-my-task/
+    ├── autoresearch.md # Goal, metric, scope
+    └── benchmark.js    # Outputs: METRIC name=value (sum must be 0)
 ```
 
-Task metadata in `autoresearch.md`: `**Model:**`, `**Reasoning:**`, `**Retry limit:**`. See `docs/DEVELOP.md` for details.
+Task metadata in `autoresearch.md`: `**Model:**`, `**Reasoning:**` (read live per run). The retry limit is fixed at creation from `ORCH_MAX_FAILURES`. See `docs/DEVELOP.md` for details.
 
 ## Development
 

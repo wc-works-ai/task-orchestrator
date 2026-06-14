@@ -9,7 +9,6 @@ describe('env', () => {
   const originalAgent = process.env.ORCH_AGENT;
   const originalReasoning = process.env.ORCH_REASONING;
   const originalAutoStash = process.env.ORCH_AUTO_STASH;
-  const originalClaimMaxMs = process.env.ORCH_CLAIM_MAX_MS;
   const originalKeepConverged = process.env.ORCH_KEEP_CONVERGED;
 
   afterEach(() => {
@@ -27,8 +26,6 @@ describe('env', () => {
     else process.env.ORCH_REASONING = originalReasoning;
     if (originalAutoStash === undefined) delete process.env.ORCH_AUTO_STASH;
     else process.env.ORCH_AUTO_STASH = originalAutoStash;
-    if (originalClaimMaxMs === undefined) delete process.env.ORCH_CLAIM_MAX_MS;
-    else process.env.ORCH_CLAIM_MAX_MS = originalClaimMaxMs;
     if (originalKeepConverged === undefined) delete process.env.ORCH_KEEP_CONVERGED;
     else process.env.ORCH_KEEP_CONVERGED = originalKeepConverged;
   });
@@ -93,13 +90,12 @@ describe('env', () => {
     expect(env.reasoning).toBe('high');
   });
 
-  it('defaults claimMaxMs to 1800000 (30 min) and reads override', () => {
-    delete process.env.ORCH_CLAIM_MAX_MS;
-    expect(env.claimMaxMs).toBe(1800000);
-    process.env.ORCH_CLAIM_MAX_MS = '60000';
-    expect(env.claimMaxMs).toBe(60000);
+  it('defaults idleSleepMs to 5000 (5s) and reads override', () => {
+    delete process.env.ORCH_IDLE_SLEEP_MS;
+    expect(env.idleSleepMs).toBe(5000);
+    process.env.ORCH_IDLE_SLEEP_MS = '2000';
+    expect(env.idleSleepMs).toBe(2000);
   });
-
   it('defaults keepConverged to 100 and reads override', () => {
     delete process.env.ORCH_KEEP_CONVERGED;
     expect(env.keepConverged).toBe(100);

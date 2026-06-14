@@ -81,11 +81,9 @@ Adding `TaskState.unblock()` test-first:
 
 ```ts
 // 1. RED — write the test before the method exists; it fails to compile/run.
-it('unblock resets a blocked task to pending with cleared claim and failures', () => {
-  const t = make(dir, 1, 'a');
-  t.claim('A'); for (let i = 0; i < MAX_FAILURES; i++) t.incrementFailures();
-  t.markBlocked();
-  t.unblock();                       // ← method does not exist yet → RED
+it('unblock resets a blocked task to pending with cleared failures and claim', () => {
+  const t = blockedTask(tdb, tasksRoot);   // a BLOCKED task view
+  t.unblock();                             // ← method does not exist yet → RED
   expect(t.status).toBe(Status.PENDING);
   expect(t.failureCount).toBe(0);
   expect(t.isClaimed).toBe(false);
@@ -93,11 +91,9 @@ it('unblock resets a blocked task to pending with cleared claim and failures', (
 ```
 
 ```ts
-// 2. GREEN — minimum implementation to pass.
+// 2. GREEN — minimum implementation: delegate to the DB layer.
 unblock(): void {
-  try { rmSync(join(this.#dir, F_FAILURES)); } catch {}
-  this.resetConvergence();
-  this.release(Status.PENDING);
+  this.#tdb.unblock(this.#id);
 }
 ```
 

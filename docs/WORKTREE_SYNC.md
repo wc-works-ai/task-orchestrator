@@ -5,14 +5,15 @@ Each scenario: ✅ safe, ⚠️ risk, 🔴 problem.
 ## Architecture
 
 Each task gets a git worktree on branch `orchestrator/<taskName>`,
-branched from the task's target branch (`.target_branch` file).
+branched from the task's target branch. Task state lives in SQLite
+(`tasks/state.db`); the worktree and task content live on disk.
 
 | Component | Persistence |
 |-----------|-------------|
 | Worktree (`<worktreesDir>/<taskName>`) | On disk; deleted on convergence |
-| Target branch (`.target_branch`) | On disk; set at task creation |
-| Worktree map (`Engine.#worktrees`) | In-memory; reconnected on restart |
-| Convergence count (`.convergence_count`) | On disk; 0 if missing/corrupt |
+| Target branch | In `state.db`; set at task creation |
+| Convergence count | In `state.db`; preserved across restarts and recovery |
+| Claim (owner + heartbeat token) | In `state.db`; cleared on release/recovery |
 | Agent commits | On worktree branch; auto-committed before benchmark |
 
 ### Behaviors
@@ -35,18 +36,18 @@ branched from the task's target branch (`.target_branch` file).
 | Area | Mechanism |
 |------|-----------|
 | Parallel ticks (same process) | `#owned` Set |
-| Parallel orchestrators | Claims + merge lock |
+| Parallel workers (same host) | DB claim token + merge lock |
 | Cross-task isolation | Separate worktree + branch per task |
 | Branch reuse on restart | `#add()` reuses branch; cleanup only removes uncommitted |
-| Recovery preserves convergence | `#recover()` releases claim but keeps `.convergence_count` |
+| Recovery preserves convergence | `recoverStale()` releases the claim, keeps the convergence count |
 | `--unblock` | Resets failures/convergence/claim → PENDING; worktree/branch preserved |
-| Counter corruption | Missing/unreadable → 0 |
+| Counter corruption | N/A — counts are integer columns in `state.db` |
 | Scope | Advisory (prompt-based); conflicts caught by git |
 | `node_modules` copy failure | Best-effort; benchmark fails → natural retry |
 | Dependencies | Wait for CONVERGED status, not count |
 | Non-git repo / `--no-worktree` | Degrades to benchmark loop; warned in log; no cleanup of main folder |
 | Auto-commit | After agent exits; merge captures validated code |
-| Target branch | Per-task `.target_branch`; merge goes to correct branch |
+| Target branch | Per-task, from `state.db`; merge goes to correct branch |
 | Auto-stash | Stash before merge, pop after (all paths) |
 | Branch restore | After merge, restored to user's branch |
 | Staged cleanup | `cleanWorktree()` runs `git reset HEAD` + `checkout -- .` + `clean -fd` |
@@ -118,24 +119,23 @@ branched from the task's target branch (`.target_branch` file).
 | 33 | Stale claim recovery → FAILED, convergence preserved | ✅ |
 | 34 | `--unblock` → resets state, preserves worktree | ✅ |
 | 35 | `--stop` mid-convergence → convergence persists | ✅ |
-| 36 | EXDEV shard move → non-atomic fallback | ⚠️ Duplicate on crash |
 
-### Multiple orchestrators
+### Multiple workers (same host)
 
 | # | Scenario | Status |
 |---|----------|--------|
-| 37 | Both pick same task → claim is atomic | ✅ |
-| 38 | Orchestrator A dies, B reclaims → committed work survives | ✅ |
-| 39 | Concurrent merges → merge lock serializes | ✅ |
-| 40 | Convergence counter race → bounded (one count lost) | ⚠️ |
+| 36 | Both pick same task → claim is an atomic DB update | ✅ |
+| 37 | Worker A dies, B reclaims via stale heartbeat → committed work survives | ✅ |
+| 38 | Concurrent merges → merge lock serializes | ✅ |
+| 39 | Convergence increments → atomic DB update, no lost counts | ✅ |
 
 ### No-worktree mode
 
 | # | Scenario | Status |
 |---|----------|--------|
-| 41 | `--no-worktree` or no `.git` → agent works in main repo | ✅ |
-| 42 | No cleanup of main repo | ✅ |
-| 43 | Convergence by benchmark only; no merge | ✅ |
+| 40 | `--no-worktree` or no `.git` → agent works in main repo | ✅ |
+| 41 | No cleanup of main repo | ✅ |
+| 42 | Convergence by benchmark only; no merge | ✅ |
 
 ## Remaining problem
 
@@ -160,20 +160,20 @@ Benchmark is a static artifact. By pickup time, codebase may have changed.
 | B2 | Process restart loses worktree | `#tryReconnectWorktree()` |
 | B3 | Convergence without merge | Guard in `#handleZero()` |
 | B4 | Dirty repo blocks merge | Default `autoStashBeforeMerge=true` |
-| B6 | Merge into wrong branch | `.target_branch` per task |
+| B6 | Merge into wrong branch | Per-task target branch |
 | P1 | Repo left on target branch | `checkout prevBranch` after merge |
 | P2 | Stash never restored | `stash pop` in finally block |
 | P4 | Staged changes leak | `git reset HEAD` in `cleanWorktree()` |
 
 ## Appendix: --unblock
 
-| State | Reset? |
-|-------|--------|
-| `.status` | ✅ → PENDING |
-| `.failure_count` | ✅ → 0 |
-| `.convergence_count` | ✅ → 0 |
-| `.claim` | ✅ removed |
-| `.target_branch` | ❌ preserved |
+| State (in `state.db`) | Reset? |
+|-----------------------|--------|
+| status | ✅ → PENDING |
+| failures | ✅ → 0 |
+| convergence | ✅ → 0 |
+| claim (owner + token) | ✅ cleared |
+| target branch | ❌ preserved |
 | Worktree / branch | ❌ preserved |
 | Agent logs | ❌ preserved |
 

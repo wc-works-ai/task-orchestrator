@@ -22,7 +22,6 @@ describe('config', () => {
     'ORCH_MERGE_LOCK_MS',
     'ORCH_VERIFY_CMD',
     'ORCH_HEARTBEAT_MS',
-    'ORCH_CLAIM_MAX_MS',
     'ORCH_PROGRESS_TIMEOUT',
     'ORCH_BENCHMARK_TIMEOUT',
     'ORCH_LOG_LEVEL',
@@ -60,7 +59,6 @@ describe('config', () => {
     ]) {
       expect(help).toContain(group);
     }
-    expect(help).toContain('ORCH_CLAIM_MAX_MS');
     expect(help).toContain('ORCH_MERGE_LOCK_MS');
     expect(help).toContain('--reasoning <level>');
   });

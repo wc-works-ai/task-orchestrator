@@ -47,8 +47,7 @@ Run `orchestrator --config` to inspect effective values.
 
 | Variable | Flag | Default | Purpose |
 |---|---|---|---|
-| `ORCH_HEARTBEAT_MS` | — | `300000` | Claim heartbeat freshness (ms) |
-| `ORCH_CLAIM_MAX_MS` | — | `1800000` | Hard claim ceiling across machines (ms) |
+| `ORCH_HEARTBEAT_MS` | — | `300000` | Reclaim a claim whose heartbeat is older than this (crashed worker, ms) |
 | `ORCH_PROGRESS_TIMEOUT` | — | `120000` | Kill silent agent after (ms) |
 | `ORCH_BENCHMARK_TIMEOUT` | — | `120000` | Kill benchmark after (ms) |
 
@@ -66,5 +65,5 @@ Run `orchestrator --config` to inspect effective values.
 - Millisecond values: 1000 = 1s. Defaults are production-tested.
 - Parallel: `ORCH_PARALLEL=0` = unlimited (clamped to 100). Default 1 = serial.
 - Paths: `ORCH_TASKS`/`ORCH_WORKTREES` auto-derived from `ORCH_STATE_ROOT` if not set.
-- Pruning: converged dirs exceeding `ORCH_KEEP_CONVERGED` are removed; metadata archived to `.archive.jsonl`.
+- Pruning: content dirs of converged tasks exceeding `ORCH_KEEP_CONVERGED` are deleted; the DB rows remain (the converged count is preserved).
 - CLI flags override env vars. Set permanent config in `~/.bashrc`; use flags for one-off overrides.

@@ -58,7 +58,6 @@ export const env = {
   get keepAlive()          { return bool(process.env.ORCH_KEEP_ALIVE); },
   get infinite()           { return bool(process.env.ORCH_INFINITE); },
   get idleSleepMs()        { return ms(process.env.ORCH_IDLE_SLEEP_MS, 5000); },
-  get claimMaxMs()         { return parseInt(process.env.ORCH_CLAIM_MAX_MS ?? '1800000', 10); },
   get mergeLockMs()        { return parseInt(process.env.ORCH_MERGE_LOCK_MS ?? '600000', 10); },
   get verifyCmd()          { return process.env.ORCH_VERIFY_CMD || undefined; },
   get keepConverged(): number {
