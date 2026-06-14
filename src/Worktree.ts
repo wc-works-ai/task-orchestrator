@@ -6,6 +6,10 @@ function gitErrorMessage(e: unknown): string {
   return e instanceof Error ? e.message.replace(/\s+/g, ' ').trim() : String(e);
 }
 
+function logWorktreeWarning(action: string, e: unknown): void {
+  console.warn(`[Worktree] ${action}: ${gitErrorMessage(e)}`);
+}
+
 /** Thrown when merging the task branch into the base branch hits a conflict. */
 export class MergeConflictError extends Error {}
 
@@ -45,11 +49,23 @@ export class Worktree {
 
     try {
       this.#add();
-    } catch {
+    } catch (e: unknown) {
       // Self-heal leftovers from a crashed run: prune stale worktree
       // registrations and drop a partial path, then retry once.
-      try { this.#git('worktree', 'prune'); } catch {}
-      try { rmSync(this.#path, { recursive: true, force: true }); } catch {}
+      /* v8 ignore next */
+      logWorktreeWarning(`initial worktree add failed for ${this.#branch}; attempting self-heal`, e);
+      try {
+        this.#git('worktree', 'prune');
+      } catch (pruneError: unknown) {
+        /* v8 ignore next */
+        logWorktreeWarning(`worktree prune failed for ${this.#branch}`, pruneError);
+      }
+      try {
+        rmSync(this.#path, { recursive: true, force: true });
+      } catch (removeError: unknown) {
+        /* v8 ignore next */
+        logWorktreeWarning(`failed to remove partial worktree path ${this.#path}`, removeError);
+      }
       this.#add();
     }
     // Configure git user in worktree (needed for commits)
@@ -92,7 +108,12 @@ export class Worktree {
       this.#gitInWT('merge', '--no-edit', this.#base);
     } catch (e: unknown) {
       const hasConflict = this.#hasUnmergedPaths(this.#path);
-      try { this.#gitInWT('merge', '--abort'); } catch {}
+      try {
+        this.#gitInWT('merge', '--abort');
+      } catch (abortError: unknown) {
+        /* v8 ignore next */
+        logWorktreeWarning(`failed to abort merge in ${this.#path}`, abortError);
+      }
       if (hasConflict) {
         throw new MergeConflictError(`Conflict updating ${this.#branch} with ${this.#base}: ${gitErrorMessage(e)}`);
       }
@@ -105,7 +126,12 @@ export class Worktree {
     try {
       this.#git('checkout', this.#base);
     } catch (e: unknown) {
-      try { this.#git('checkout', prevBranch); } catch {}
+      try {
+        this.#git('checkout', prevBranch);
+      } catch (restoreError: unknown) {
+        /* v8 ignore next */
+        logWorktreeWarning(`failed to restore parent branch ${prevBranch}`, restoreError);
+      }
       throw new Error(`Unable to switch to ${this.#base} before merging ${this.#branch}: ${gitErrorMessage(e)}`);
     }
 
@@ -113,14 +139,29 @@ export class Worktree {
       this.#git('merge', '--no-ff', this.#branch, '-m', `Merge ${this.#branch}`);
     } catch (e: unknown) {
       const hasConflict = this.#hasUnmergedPaths(this.#repo);
-      try { this.#git('merge', '--abort'); } catch {}
-      try { this.#git('checkout', prevBranch); } catch {}
+      try {
+        this.#git('merge', '--abort');
+      } catch (abortError: unknown) {
+        /* v8 ignore next */
+        logWorktreeWarning(`failed to abort parent merge for ${this.#branch}`, abortError);
+      }
+      try {
+        this.#git('checkout', prevBranch);
+      } catch (restoreError: unknown) {
+        /* v8 ignore next */
+        logWorktreeWarning(`failed to restore parent branch ${prevBranch}`, restoreError);
+      }
       if (hasConflict) {
         throw new MergeConflictError(`Merge conflict in ${this.#name}; branch ${this.#branch} kept: ${gitErrorMessage(e)}`);
       }
       throw new Error(`Merge of ${this.#branch} failed: ${gitErrorMessage(e)}`);
     }
-    try { this.#git('checkout', prevBranch); } catch {}
+    try {
+      this.#git('checkout', prevBranch);
+    } catch (restoreError: unknown) {
+      /* v8 ignore next */
+      logWorktreeWarning(`failed to restore parent branch ${prevBranch}`, restoreError);
+    }
   }
 
   stashParentChanges(message: string): boolean {
@@ -131,12 +172,25 @@ export class Worktree {
 
   /** Discard all uncommitted worktree changes so the agent starts clean. */
   cleanWorktree(): void {
-    try { this.#gitInWT('reset', 'HEAD'); } catch {}
+    try {
+      this.#gitInWT('reset', 'HEAD');
+    } catch (e: unknown) {
+      /* v8 ignore next */
+      logWorktreeWarning(`failed to unstage worktree changes in ${this.#path}`, e);
+    }
     try {
       // Reset tracked files; --quiet suppresses errors for empty repos
       this.#gitInWT('checkout', '--', '.');
-    } catch { /* no tracked files to reset */ }
-    try { this.#gitInWT('clean', '-fd'); } catch {}
+    } catch (e: unknown) {
+      /* v8 ignore next */
+      logWorktreeWarning(`failed to reset tracked files in ${this.#path}`, e);
+    }
+    try {
+      this.#gitInWT('clean', '-fd');
+    } catch (e: unknown) {
+      /* v8 ignore next */
+      logWorktreeWarning(`failed to clean untracked files in ${this.#path}`, e);
+    }
   }
 
   /** Commit any uncommitted changes in the worktree so merge captures
@@ -155,12 +209,25 @@ export class Worktree {
     try {
       this.cleanWorktree();
       this.#gitInWT('reset', '--hard', this.#base);
-    } catch { /* best-effort */ }
+    } catch (e: unknown) {
+      /* v8 ignore next */
+      logWorktreeWarning(`failed to reset ${this.#branch} to ${this.#base} for retry`, e);
+    }
   }
 
   remove(): void {
-    try { this.#git('worktree', 'remove', '--force', this.#path); } catch {}
-    try { this.#git('branch', '-D', this.#branch); } catch {}
+    try {
+      this.#git('worktree', 'remove', '--force', this.#path);
+    } catch (e: unknown) {
+      /* v8 ignore next */
+      logWorktreeWarning(`failed to remove worktree ${this.#path}`, e);
+    }
+    try {
+      this.#git('branch', '-D', this.#branch);
+    } catch (e: unknown) {
+      /* v8 ignore next */
+      logWorktreeWarning(`failed to delete branch ${this.#branch}`, e);
+    }
   }
 
   // ── Private ──────────────────────────────────────────────────────────
