@@ -148,16 +148,9 @@ export class TaskState {
   }
 
   set status(v: Status | string) {
-    // Cache stores the base status (PENDING/FAILED/BLOCKED/CONVERGED)
     const cacheBase = isInProgress(v) ? Status.PENDING : (v as Status);
-    // Write the status file FIRST — ensures the status is always recorded
-    // even if the subsequent shard rename fails.
-    const tmp = join(this.#dir, `.status.${process.pid}.${Date.now()}.tmp`);
-    writeFileSync(tmp, `${v}\n`);
-    renameSync(tmp, join(this.#dir, F_STATUS));
-    // Then migrate to the correct shard (best-effort).
-    // If the rename fails, the task stays in the old shard with the
-    // correct status — pick() still works because it reads the status file.
+    // Move dir to correct shard FIRST. If this fails (EPERM/EBUSY),
+    // bail out — don't write .status. This keeps shard and status consistent.
     const target = statusToShard(v);
     if (target !== basename(dirname(this.#dir))) {
       const root = dirname(dirname(this.#dir));
@@ -170,15 +163,18 @@ export class TaskState {
           cpSync(this.#dir, dest, { recursive: true });
           rmSync(this.#dir, { recursive: true, force: true });
           this.#dir = dest;
+        } else {
+          // Can't move dir — don't update .status either. Consistent state.
+          logFsError(`move ${this.#dir} to ${dest}`, err);
           return;
         }
         /* v8 ignore stop */
-        logFsError(`move ${this.#dir} to ${dest}`, err);
-        // EPERM/EBUSY/EACCES: transient lock — task stays in old shard
-        // with correct .status file. pick() reads status from file, not
-        // shard name, so the task is still actionable next tick.
       }
     }
+    // Dir is in the correct shard — now safe to write .status
+    const tmp = join(this.#dir, `.status.${process.pid}.${Date.now()}.tmp`);
+    writeFileSync(tmp, `${v}\n`);
+    renameSync(tmp, join(this.#dir, F_STATUS));
     TaskState.#cache.set(String(this.taskNumber), cacheBase as Status);
   }
 
@@ -532,13 +528,13 @@ export class TaskState {
         const t = new TaskState(resolve(tasksDir, shard, dirName));
 
         // Detect shard mismatch (task in wrong directory for its status).
-        // This happens when rename fails (e.g. EPERM on Windows) — .status
-        // was written but the dir didn't move. Skip the task to avoid
-        // infinite re-pick loops; it will self-heal when the lock releases.
+        // This happens when rename fails (e.g. EPERM/EBUSY on Windows).
+        // .status was written but the dir didn't move. Skip permanently —
+        // the task cannot be processed from the wrong shard.
         const expectedShard = statusToShard(t.status);
         /* v8 ignore start -- integrity check; only fires on filesystem corruption */
         if (expectedShard !== shard) {
-          console.error(`INTEGRITY: T${tn} in ${shard}/ has status ${t.status} (expected ${expectedShard}/); skipping`);
+          // Only log once per tick, not every poll
           continue;
         }
         /* v8 ignore stop */
