@@ -21,6 +21,14 @@ function detectBranch(repoDir?: string): string | undefined {
   } catch { return undefined; }
 }
 
+function readTaskDirectoryEntries(path: string): readonly string[] {
+  try {
+    return readdirSync(path);
+  } catch {
+    return [];
+  }
+}
+
 export function addTask(tasksDir: string, name: string, opts: AddTaskOptions = {}) {
   if (!name || /[/\\<>:"|?*]/.test(name) || name.includes('..') || /^\s|\s$/.test(name)) {
     throw new Error(`Invalid task name "${name}": must not contain path separators, shell metacharacters, or leading/trailing whitespace`);
@@ -30,9 +38,9 @@ export function addTask(tasksDir: string, name: string, opts: AddTaskOptions = {
   }
   let next = 0;
   for (const s of ['pending','in_progress','converged','failed','blocked']) {
-    try { for (const e of readdirSync(resolve(tasksDir, s))) {
+    for (const e of readTaskDirectoryEntries(resolve(tasksDir, s))) {
       const m = e.match(/^T(\d+)-/); if (m?.[1]) next = Math.max(next, parseInt(m[1]!, 10));
-    }} catch {}
+    }
   }
   next++;
 
@@ -104,7 +112,10 @@ export function addTask(tasksDir: string, name: string, opts: AddTaskOptions = {
     renameSync(stagingDir, finalDir);
   /* v8 ignore start -- defensive cleanup; hard to trigger (rename over dir succeeds on most OS) */
   } catch (e: unknown) {
-    try { rmSync(stagingDir, { recursive: true, force: true }); } catch {}
+    try { rmSync(stagingDir, { recursive: true, force: true }); }
+    catch (cleanupError: unknown) {
+      console.error(`[addTask] failed to remove staging directory ${stagingDir}: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
+    }
     throw e;
   }
   /* v8 ignore stop */
