@@ -538,18 +538,7 @@ export class TaskState {
         const expectedShard = statusToShard(t.status);
         /* v8 ignore start -- integrity check; only fires on filesystem corruption */
         if (expectedShard !== shard) {
-          console.error(`INTEGRITY: T${tn} in ${shard}/ has status ${t.status} (expected ${expectedShard}/); skipping — will retry when lock releases`);
-          // Try to fix: revert .status to match the shard we're actually in
-          try {
-            const revertStatus = shard === 'pending' ? Status.PENDING
-              : shard === 'failed' ? Status.FAILED
-              : null;
-            if (revertStatus) {
-              writeFileSync(join(t.directory, F_STATUS), `${revertStatus}\n`);
-            }
-          } catch (error: unknown) {
-            logFsError(`restore ${F_STATUS} for ${t.directory}`, error);
-          }
+          console.error(`INTEGRITY: T${tn} in ${shard}/ has status ${t.status} (expected ${expectedShard}/); skipping`);
           continue;
         }
         /* v8 ignore stop */
