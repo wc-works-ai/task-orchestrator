@@ -5,6 +5,7 @@ import {
   DbCorruptError,
   DbBusyError,
   DbInitError,
+  SchemaMismatchError,
   handleOrchestratorError,
   withRetry,
 } from '../src/errors.js';
@@ -41,6 +42,13 @@ describe('OrchestratorError', () => {
     expect(e.severity).toBe(Severity.FATAL);
     expect(e.action).toContain('WAL');
     expect(e.name).toBe('DbInitError');
+  });
+
+  it('SchemaMismatchError is fatal with an actionable hint', () => {
+    const e = new SchemaMismatchError('version drift');
+    expect(e.severity).toBe(Severity.FATAL);
+    expect(e.action).toContain('state.db');
+    expect(e.name).toBe('SchemaMismatchError');
   });
 });
 

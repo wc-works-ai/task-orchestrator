@@ -53,6 +53,11 @@ export class DbInitError extends OrchestratorError {
   readonly action = 'state.db could not initialize in WAL mode; ensure it is on a local disk';
 }
 
+export class SchemaMismatchError extends OrchestratorError {
+  readonly severity = Severity.FATAL;
+  readonly action = 'Update the orchestrator, or delete state.db to rebuild from task folders';
+}
+
 /**
  * Classify the error during a tick and decide whether to keep looping.
  * Unknown (non-orchestrator) errors are treated as task-level warnings so a

@@ -20,9 +20,11 @@ export {
   DbCorruptError,
   DbBusyError,
   DbInitError,
+  SchemaMismatchError,
   handleOrchestratorError,
   withRetry,
 } from './errors.js';
 export type { Logger, RetryOptions } from './errors.js';
 export { openDb, requireWal } from './sqlite.js';
 export type { Db, SqlValue, SqlParams, Row, RunResult } from './sqlite.js';
+export { TaskDb, SCHEMA_VERSION } from './TaskDb.js';
