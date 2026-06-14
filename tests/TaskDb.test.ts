@@ -23,6 +23,25 @@ function memTaskDb(): { tdb: TaskDb; db: Db } {
   return { tdb, db };
 }
 
+/** A :memory: TaskDb with a controllable clock for time-based operations. */
+function clockTaskDb(now: () => number): { tdb: TaskDb; db: Db } {
+  const db = openDb(':memory:');
+  const tdb = TaskDb.init(db, now);
+  dbs.push(tdb);
+  return { tdb, db };
+}
+
+/** Insert a task and promote it to PENDING (ready to pick). */
+function ready(tdb: TaskDb, name: string, opts: { maxFailures?: number | null; dependsOn?: number[] } = {}): number {
+  const { taskNumber } = tdb.insert({ name, dir: `T-${name}`, ...opts });
+  tdb.promote(taskNumberToId(tdb, taskNumber));
+  return taskNumber;
+}
+
+function taskNumberToId(tdb: TaskDb, taskNumber: number): number {
+  return tdb.getByNumber(taskNumber)!.id;
+}
+
 const INSERT =
   'INSERT INTO tasks(task_number,name,dir,status,max_failures,created_at,updated_at) ' +
   'VALUES (:n,:name,:dir,:status,:max,0,0)';
@@ -136,5 +155,222 @@ describe('TaskDb backup', () => {
     const bak = join(dir, 'state.db.bak');
     tdb.backup(bak);
     expect(() => tdb.backup(bak)).not.toThrow();
+  });
+});
+
+describe('TaskDb.insert / promote', () => {
+  it('allocates sequential task numbers and starts in CREATING', () => {
+    const { tdb } = memTaskDb();
+    const a = tdb.insert({ name: 'a', dir: 'T1-a' });
+    const b = tdb.insert({ name: 'b', dir: 'T2-b' });
+    expect(a.taskNumber).toBe(1);
+    expect(b.taskNumber).toBe(2);
+    expect(tdb.get(a.id)!.status).toBe('CREATING');
+  });
+
+  it('records max_failures, target_branch, and dependencies', () => {
+    const { tdb } = memTaskDb();
+    tdb.insert({ name: 'a', dir: 'T1-a' });
+    const b = tdb.insert({ name: 'b', dir: 'T2-b', maxFailures: 9, targetBranch: 'dev', dependsOn: [1] });
+    const row = tdb.get(b.id)!;
+    expect(row.max_failures).toBe(9);
+    expect(row.target_branch).toBe('dev');
+    expect(tdb.dependencyNumbers(b.taskNumber)).toEqual([1]);
+  });
+
+  it('promote moves CREATING to PENDING and is a no-op otherwise', () => {
+    const { tdb } = memTaskDb();
+    const { id } = tdb.insert({ name: 'a', dir: 'T1-a' });
+    expect(tdb.promote(id)).toBe(true);
+    expect(tdb.get(id)!.status).toBe('PENDING');
+    expect(tdb.promote(id)).toBe(false); // already PENDING
+  });
+});
+
+describe('TaskDb.pick', () => {
+  it('claims the lowest-numbered actionable task with a fresh token', () => {
+    const { tdb } = clockTaskDb(() => 5000);
+    ready(tdb, 'a');
+    ready(tdb, 'b');
+    const picked = tdb.pick('inst-1')!;
+    expect(picked.task_number).toBe(1);
+    expect(picked.status).toBe('IN_PROGRESS');
+    expect(picked.claimed_by).toBe('inst-1');
+    expect(picked.claim_token).toHaveLength(16);
+    expect(picked.claimed_at).toBe(5000);
+    expect(picked.heartbeat).toBe(5000);
+  });
+
+  it('returns undefined when nothing is actionable', () => {
+    const { tdb } = memTaskDb();
+    tdb.insert({ name: 'a', dir: 'T1-a' }); // CREATING, not pickable
+    expect(tdb.pick('inst-1')).toBeUndefined();
+  });
+
+  it('also picks FAILED tasks', () => {
+    const { tdb } = memTaskDb();
+    const n = ready(tdb, 'a');
+    const id = taskNumberToId(tdb, n);
+    const tok = tdb.pick('i')!.claim_token!;
+    tdb.release(id, tok, 'FAILED');
+    expect(tdb.pick('i2')!.task_number).toBe(n);
+  });
+
+  it('skips a task whose dependency has not converged, then picks it once converged', () => {
+    const { tdb } = memTaskDb();
+    const dep = ready(tdb, 'dep');
+    ready(tdb, 'main', { dependsOn: [dep] });
+    // Only the dependency is actionable first.
+    const first = tdb.pick('i')!;
+    expect(first.task_number).toBe(dep);
+    expect(tdb.pick('i')).toBeUndefined(); // main still blocked by dep
+    tdb.release(first.id, first.claim_token!, 'CONVERGED');
+    expect(tdb.pick('i')!.name).toBe('main');
+  });
+
+  it('treats a dependency on a missing task as unmet (waits, not vacuously satisfied)', () => {
+    const { tdb } = memTaskDb();
+    tdb.insert({ name: 'main', dir: 'T1-main', dependsOn: [99] });
+    tdb.promote(taskNumberToId(tdb, 1));
+    expect(tdb.pick('i')).toBeUndefined();
+  });
+
+  it('skips a task that has exhausted its max_failures', () => {
+    const { tdb } = memTaskDb();
+    const n = ready(tdb, 'a', { maxFailures: 1 });
+    const id = taskNumberToId(tdb, n);
+    const tok = tdb.pick('i')!.claim_token!;
+    tdb.incrementFailures(id, tok);   // failures = 1, == max
+    tdb.release(id, tok, 'FAILED');
+    expect(tdb.pick('i2')).toBeUndefined();
+  });
+
+  it('keeps picking a task with unlimited (NULL) max_failures', () => {
+    const { tdb } = memTaskDb();
+    const n = ready(tdb, 'a', { maxFailures: null });
+    const id = taskNumberToId(tdb, n);
+    const tok = tdb.pick('i')!.claim_token!;
+    tdb.incrementFailures(id, tok);
+    tdb.incrementFailures(id, tok);
+    tdb.release(id, tok, 'FAILED');
+    expect(tdb.pick('i2')!.task_number).toBe(n);
+  });
+});
+
+describe('TaskDb claim-gated writes', () => {
+  it('release sets status and clears all lease fields when the token matches', () => {
+    const { tdb } = memTaskDb();
+    const n = ready(tdb, 'a');
+    const id = taskNumberToId(tdb, n);
+    const tok = tdb.pick('i')!.claim_token!;
+    expect(tdb.release(id, tok, 'CONVERGED')).toBe(true);
+    const row = tdb.get(id)!;
+    expect(row.status).toBe('CONVERGED');
+    expect(row.claim_token).toBeNull();
+    expect(row.claimed_by).toBeNull();
+    expect(row.claimed_at).toBeNull();
+    expect(row.heartbeat).toBeNull();
+  });
+
+  it('rejects writes from a stale token', () => {
+    const { tdb } = memTaskDb();
+    const n = ready(tdb, 'a');
+    const id = taskNumberToId(tdb, n);
+    tdb.pick('i'); // real token differs from the stale one below
+    expect(tdb.release(id, 'STALE', 'CONVERGED')).toBe(false);
+    expect(tdb.incrementConvergence(id, 'STALE')).toBe(false);
+    expect(tdb.resetConvergence(id, 'STALE')).toBe(false);
+    expect(tdb.incrementFailures(id, 'STALE')).toBeNull();
+    expect(tdb.heartbeat(id, 'STALE')).toBe(false);
+  });
+
+  it('increments and resets convergence under the held claim', () => {
+    const { tdb } = memTaskDb();
+    const n = ready(tdb, 'a');
+    const id = taskNumberToId(tdb, n);
+    const tok = tdb.pick('i')!.claim_token!;
+    expect(tdb.incrementConvergence(id, tok)).toBe(true);
+    expect(tdb.incrementConvergence(id, tok)).toBe(true);
+    expect(tdb.get(id)!.convergence).toBe(2);
+    expect(tdb.resetConvergence(id, tok)).toBe(true);
+    expect(tdb.get(id)!.convergence).toBe(0);
+  });
+
+  it('increments failures and returns the new count', () => {
+    const { tdb } = memTaskDb();
+    const n = ready(tdb, 'a');
+    const id = taskNumberToId(tdb, n);
+    const tok = tdb.pick('i')!.claim_token!;
+    expect(tdb.incrementFailures(id, tok)).toBe(1);
+    expect(tdb.incrementFailures(id, tok)).toBe(2);
+  });
+
+  it('refreshes the heartbeat under the held claim', () => {
+    let t = 1000;
+    const { tdb } = clockTaskDb(() => t);
+    const n = ready(tdb, 'a');
+    const id = taskNumberToId(tdb, n);
+    const tok = tdb.pick('i')!.claim_token!;
+    t = 2000;
+    expect(tdb.heartbeat(id, tok)).toBe(true);
+    expect(tdb.get(id)!.heartbeat).toBe(2000);
+  });
+});
+
+describe('TaskDb.recoverStale', () => {
+  it('fails and unclaims IN_PROGRESS tasks whose heartbeat is older than the cutoff', () => {
+    let t = 1000;
+    const { tdb } = clockTaskDb(() => t);
+    const n = ready(tdb, 'a');
+    const id = taskNumberToId(tdb, n);
+    tdb.pick('i'); // claimed at t=1000 (heartbeat=1000)
+    t = 9000;
+    const recovered = tdb.recoverStale(5000); // cutoff 5000 > heartbeat 1000 → stale
+    expect(recovered).toBe(1);
+    const row = tdb.get(id)!;
+    expect(row.status).toBe('FAILED');
+    expect(row.claim_token).toBeNull();
+    expect(row.failures).toBe(1);
+  });
+
+  it('leaves a task with a fresh heartbeat alone', () => {
+    const { tdb } = clockTaskDb(() => 1000);
+    ready(tdb, 'a');
+    tdb.pick('i'); // heartbeat = 1000
+    expect(tdb.recoverStale(500)).toBe(0); // cutoff 500 <= heartbeat 1000 → fresh
+  });
+
+  it('uses claimed_at as a fallback when heartbeat is NULL (migrated/external rows)', () => {
+    const { tdb, db } = clockTaskDb(() => 1000);
+    const n = ready(tdb, 'a');
+    const id = taskNumberToId(tdb, n);
+    tdb.pick('i');
+    db.run('UPDATE tasks SET heartbeat=NULL WHERE id=?', [id]); // claimed_at stays 1000
+    expect(tdb.recoverStale(5000)).toBe(1);
+    expect(tdb.get(id)!.status).toBe('FAILED');
+  });
+});
+
+describe('TaskDb.cascadeBlock', () => {
+  it('blocks tasks that transitively depend on a BLOCKED task', () => {
+    const { tdb } = memTaskDb();
+    const a = ready(tdb, 'a');           // will be blocked
+    const b = ready(tdb, 'b', { dependsOn: [a] });
+    const c = ready(tdb, 'c', { dependsOn: [b] });
+    // Block A directly.
+    const idA = taskNumberToId(tdb, a);
+    const tokA = tdb.pick('i')!.claim_token!;
+    tdb.release(idA, tokA, 'BLOCKED');
+    const blocked = tdb.cascadeBlock();
+    expect(blocked).toBe(2); // b and c
+    expect(tdb.getByNumber(b)!.status).toBe('BLOCKED');
+    expect(tdb.getByNumber(c)!.status).toBe('BLOCKED');
+  });
+
+  it('does not block tasks whose dependencies are fine', () => {
+    const { tdb } = memTaskDb();
+    const a = ready(tdb, 'a');
+    ready(tdb, 'b', { dependsOn: [a] });
+    expect(tdb.cascadeBlock()).toBe(0);
   });
 });

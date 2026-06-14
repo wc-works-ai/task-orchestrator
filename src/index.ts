@@ -28,3 +28,4 @@ export type { Logger, RetryOptions } from './errors.js';
 export { openDb, requireWal } from './sqlite.js';
 export type { Db, SqlValue, SqlParams, Row, RunResult } from './sqlite.js';
 export { TaskDb, SCHEMA_VERSION } from './TaskDb.js';
+export type { TaskRow, NewTask, TaskStatus } from './TaskDb.js';
