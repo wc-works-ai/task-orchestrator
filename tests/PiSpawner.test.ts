@@ -1,12 +1,12 @@
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { rm } from 'node:fs/promises';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
-import { TaskState, Status } from '../src/TaskState.js';
 import { PiSpawner, killTree } from '../src/PiSpawner.js';
+import { memStateDb, seedState, type StateDb } from './helpers.js';
 
 vi.mock('node:child_process', () => ({
   execFileSync: vi.fn(),
@@ -38,9 +38,7 @@ function mockChild(): ChildProcess {
 }
 
 function setup() {
-  const dir = mkdtempSync(resolve(tmpdir(), 'pi-spawn-'));
-  for (const s of ['pending', 'in_progress']) mkdirSync(resolve(dir, s), { recursive: true });
-  return dir;
+  return mkdtempSync(resolve(tmpdir(), 'pi-spawn-'));
 }
 
 function makeWorktree(dir: string): string {
@@ -49,13 +47,10 @@ function makeWorktree(dir: string): string {
   return worktree;
 }
 
-function make(dir: string, n: number, name: string, goal?: string): TaskState {
-  const d = resolve(dir, 'pending', `T${String(n).padStart(2, '0')}-${name}`);
-  mkdirSync(d, { recursive: true });
-  const t = new TaskState(d);
-  t.status = Status.PENDING;
-  if (goal) writeFileSync(resolve(d, 'autoresearch.md'), goal);
-  return t;
+let s: StateDb;
+
+function make(dir: string, n: number, name: string, goal?: string) {
+  return seedState(s, dir, n, name, goal !== undefined ? { autoresearch: goal } : {});
 }
 
 function joinedCalls(spy: { mock: { calls: readonly (readonly unknown[])[] } }): string {
@@ -66,6 +61,7 @@ describe('PiSpawner', () => {
   let dir = '';
   beforeEach(() => {
     dir = setup();
+    s = memStateDb();
     vi.clearAllMocks();
     vi.useRealTimers();
     delete process.env.ORCH_MODEL;
@@ -73,6 +69,7 @@ describe('PiSpawner', () => {
     delete process.env.ORCH_AGENT_LOG_RAW;
   });
   afterEach(async () => {
+    s.db.close();
     vi.useRealTimers();
     delete process.env.ORCH_MODEL;
     delete process.env.ORCH_AGENT_LOG_MAX_BYTES;
@@ -124,7 +121,6 @@ describe('PiSpawner', () => {
 
   it('spawn calls pi with correct model', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
     const worktree = makeWorktree(dir);
@@ -139,7 +135,6 @@ describe('PiSpawner', () => {
 
   it('omits --model so pi can use its default when no model is configured', async () => {
     const t = make(dir, 1, 'a');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
     const worktree = makeWorktree(dir);
@@ -154,7 +149,6 @@ describe('PiSpawner', () => {
 
   it('prints spawn context without internal agent events', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nReview Azure DevOps PR 981660 for FabricSparkCST and write a concise report');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -249,7 +243,6 @@ describe('PiSpawner', () => {
 
   it('prints periodic running status without internal agent output', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -363,7 +356,6 @@ describe('PiSpawner', () => {
 
   it('omits raw stderr output from agent log by default', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
@@ -382,7 +374,6 @@ describe('PiSpawner', () => {
 
   it('captures raw stderr output when raw agent logging is enabled', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
@@ -439,7 +430,6 @@ describe('PiSpawner', () => {
 
   it('captures stdout and counts iterations', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
     const worktree = makeWorktree(dir);
@@ -460,7 +450,6 @@ describe('PiSpawner', () => {
 
   it('totals assistant message_end token usage and writes it to agent log', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
@@ -512,7 +501,6 @@ describe('PiSpawner', () => {
 
   it('caps large agent output in the log without breaking scanners', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -588,7 +576,6 @@ describe('PiSpawner', () => {
 
   it('catches appendFileSync failure on close handler', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
@@ -607,7 +594,6 @@ describe('PiSpawner', () => {
     // When cwd is a parent of the task directory, #prompt uses a relative path
     // This triggers the startsWith(cwd) true branch (line 79)
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
@@ -655,7 +641,6 @@ describe('PiSpawner', () => {
 
   it('handles internal tool_execution_start with path arg', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
@@ -671,7 +656,6 @@ describe('PiSpawner', () => {
 
   it('handles internal tool_execution_start with command arg', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
@@ -687,7 +671,6 @@ describe('PiSpawner', () => {
 
   it('handles internal tool_execution_start with no path or command', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
@@ -703,7 +686,6 @@ describe('PiSpawner', () => {
 
   it('handles internal tool_execution_end with METRIC line', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
@@ -719,7 +701,6 @@ describe('PiSpawner', () => {
 
   it('handles internal tool_execution_end with log_experiment keep', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
@@ -735,7 +716,6 @@ describe('PiSpawner', () => {
 
   it('handles internal tool_execution_end with log_experiment crash', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
@@ -751,7 +731,6 @@ describe('PiSpawner', () => {
 
   it('handles internal tool_execution_end with log_experiment discard', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
@@ -767,7 +746,6 @@ describe('PiSpawner', () => {
 
   it('handles internal tool_execution_end with isError', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
@@ -783,7 +761,6 @@ describe('PiSpawner', () => {
 
   it('handles tool_execution_end with non-text content', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
@@ -799,7 +776,6 @@ describe('PiSpawner', () => {
 
   it('handles tool_execution_end with no content array', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
@@ -815,7 +791,6 @@ describe('PiSpawner', () => {
 
   it('handles unknown event type', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
@@ -831,7 +806,6 @@ describe('PiSpawner', () => {
 
   it('handles tool_execution_start with name fallback', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
@@ -848,7 +822,6 @@ describe('PiSpawner', () => {
 
   it('skips whitespace lines in NDJSON stream', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
@@ -864,7 +837,6 @@ describe('PiSpawner', () => {
 
   it('handles event with no type field', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
@@ -881,7 +853,6 @@ describe('PiSpawner', () => {
 
   it('handles tool_execution_start with no name and no arguments', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
@@ -898,7 +869,6 @@ describe('PiSpawner', () => {
 
   it('handles tool_execution_end with no toolName', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
@@ -915,7 +885,6 @@ describe('PiSpawner', () => {
 
   it('handles log_experiment with empty text content', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
@@ -934,7 +903,6 @@ describe('PiSpawner', () => {
 
   it('progress timeout waits for close before resolving', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
     vi.useFakeTimers();
@@ -962,7 +930,6 @@ describe('PiSpawner', () => {
 
   it('abort resolves after force-kill escalation when child ignores kill', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
     vi.mocked(execFileSync).mockImplementation(() => {
@@ -991,7 +958,6 @@ describe('PiSpawner', () => {
 
   it('progress timeout force-resolves when close never arrives', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
     vi.useFakeTimers();
@@ -1011,7 +977,6 @@ describe('PiSpawner', () => {
 
   it('progress timeout does not kill when output continues', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
@@ -1035,7 +1000,6 @@ describe('PiSpawner', () => {
 
   it('prints activity heartbeat when agent is actively producing output', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -1072,7 +1036,6 @@ describe('PiSpawner', () => {
 
   it('activity heartbeat shows token usage when LLM has responded', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
-    t.status = Status.PENDING;
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});

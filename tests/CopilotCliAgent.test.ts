@@ -1,12 +1,12 @@
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { rm } from 'node:fs/promises';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
-import { TaskState, Status } from '../src/TaskState.js';
 import { CopilotCliAgent } from '../src/CopilotCliAgent.js';
+import { memStateDb, seedState, type StateDb } from './helpers.js';
 
 vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
@@ -26,18 +26,13 @@ function mockChild(): ChildProcess {
 }
 
 function setup(): string {
-  const dir = mkdtempSync(resolve(tmpdir(), '.test-copilot-'));
-  mkdirSync(resolve(dir, 'pending'), { recursive: true });
-  return dir;
+  return mkdtempSync(resolve(tmpdir(), '.test-copilot-'));
 }
 
-function make(dir: string, content = '## Goal\nTest'): TaskState {
-  const taskDir = resolve(dir, 'pending', 'T01-copilot');
-  mkdirSync(taskDir, { recursive: true });
-  writeFileSync(resolve(taskDir, 'autoresearch.md'), content);
-  const task = new TaskState(taskDir);
-  task.status = Status.PENDING;
-  return task;
+let s: StateDb;
+
+function make(dir: string, content = '## Goal\nTest') {
+  return seedState(s, dir, 1, 'copilot', { autoresearch: content });
 }
 
 describe('CopilotCliAgent', () => {
@@ -45,6 +40,7 @@ describe('CopilotCliAgent', () => {
 
   beforeEach(() => {
     dir = setup();
+    s = memStateDb();
     vi.clearAllMocks();
     delete process.env.ORCH_MODEL;
     delete process.env.ORCH_REASONING;
@@ -52,6 +48,7 @@ describe('CopilotCliAgent', () => {
   });
 
   afterEach(async () => {
+    s.db.close();
     delete process.env.ORCH_MODEL;
     delete process.env.ORCH_REASONING;
     delete process.env.ORCH_AGENT_LOG_MAX_BYTES;

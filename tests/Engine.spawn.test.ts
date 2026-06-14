@@ -1,29 +1,15 @@
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { rm } from 'node:fs/promises';
-import { mkdtempSync, mkdirSync, existsSync, writeFileSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { Engine, MergeRecoveryAction } from '../src/Engine.js';
 import { TaskState, Status, type TaskInfo } from '../src/TaskState.js';
+import { memStateDb, seed, statusOf, setupTestDir, type StateDb, type SeedOpts } from './helpers.js';
 
-function setup() {
-  const dir = mkdtempSync(resolve(tmpdir(), 'eng-ts-'));
-  for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
-    mkdirSync(resolve(dir, s), { recursive: true });
-  }
-  return dir;
-}
+let s: StateDb;
 
-function make(dir: string, n: number, name: string, opts?: {
-  status?: Status | string;
-  deps?: readonly number[];
-}): TaskState {
-  const d = resolve(dir, 'pending', `T${String(n).padStart(2, '0')}-${name}`);
-  mkdirSync(d, { recursive: true });
-  const t = new TaskState(d);
-  t.status = opts?.status ?? Status.PENDING;
-  if (opts?.deps) t.dependencies = opts.deps;
-  return t;
+function make(dir: string, n: number, name: string, opts: SeedOpts = {}): void {
+  seed(s.db, dir, n, name, opts);
 }
 
 function joinedCalls(spy: { mock: { calls: readonly (readonly unknown[])[] } }): string {
@@ -46,13 +32,7 @@ async function dirtyMergeScenario(dir: string): Promise<{
   writeFileSync(join(repoDir, 'shared.txt'), 'base');
   execSync('git add shared.txt && git commit -m "base"', { cwd: repoDir });
 
-  for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
-    mk(resolve(tasksDir, s), { recursive: true });
-  }
-
-  const d = resolve(tasksDir, 'pending', 'T01-x');
-  mk(d, { recursive: true });
-  writeFileSync(resolve(d, '.status'), 'PENDING\n');
+  seed(s.db, tasksDir, 1, 'x', {});
 
   // Spawn modifies a file in the worktree and commits, then modifies the same file
   // in the main repo and commits → merge conflict when merging back
@@ -68,15 +48,15 @@ async function dirtyMergeScenario(dir: string): Promise<{
   const benchmark = vi.fn()
     .mockResolvedValueOnce(1).mockResolvedValueOnce(0)
     .mockResolvedValue(0);
-  const engine = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir });
+  const engine = new Engine(tasksDir, { taskDb: s.tdb, benchmark, spawn, repoDir, worktreesDir });
 
   return { engine, tasksDir, worktreesDir };
 }
 
 describe('Engine agent spawning', () => {
   let dir = '';
-  beforeEach(() => { dir = setup(); });
-  afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
+  beforeEach(() => { dir = setupTestDir('eng-spawn-'); s = memStateDb(); });
+  afterEach(async () => { s.db.close(); await rm(dir, { recursive: true, force: true }); });
 
   it('calls spawn when benchmark is non-zero', async () => {
     make(dir, 1, 'a');
@@ -86,7 +66,7 @@ describe('Engine agent spawning', () => {
       .mockResolvedValueOnce(1)
       .mockResolvedValue(0);
 
-    const engine = new Engine(dir, { benchmark, spawn });
+    const engine = new Engine(dir, { taskDb: s.tdb, benchmark, spawn });
     const r = await engine.tick();
     expect(r.metric).toBe(0);
     expect(spawn).toHaveBeenCalledTimes(1);
@@ -98,12 +78,11 @@ describe('Engine agent spawning', () => {
     const spawn = vi.fn().mockResolvedValue({ success: false, iterations: 0 });
     const benchmark = vi.fn().mockResolvedValue(1);
 
-    const engine = new Engine(dir, { benchmark, spawn });
+    const engine = new Engine(dir, { taskDb: s.tdb, benchmark, spawn });
     const r = await engine.tick();
     expect(r.converged).toBe(false);
     // Task should be FAILED
-    const all = await TaskState.scan(dir);
-    expect(all.get('1')!.status).toBe(Status.FAILED);
+    expect(statusOf(s.db, 1)).toBe(Status.FAILED);
   });
 
   it('logs plain-language spawn failure, metric check, and retry decision', async () => {
@@ -118,7 +97,7 @@ describe('Engine agent spawning', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     try {
-      const engine = new Engine(dir, { benchmark, spawn });
+      const engine = new Engine(dir, { taskDb: s.tdb, benchmark, spawn });
       const r = await engine.tick();
       expect(r.converged).toBe(false);
       const output = joinedCalls(logSpy);
@@ -146,7 +125,7 @@ describe('Engine agent spawning', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     try {
-      const engine = new Engine(dir, { benchmark, spawn });
+      const engine = new Engine(dir, { taskDb: s.tdb, benchmark, spawn });
       await engine.tick();
       expect(joinedCalls(logSpy)).toContain(
         'T1 agent finished (2 progress records; tokens: total=30 input=10 output=5 cacheRead=15 cacheWrite=0',
@@ -158,10 +137,9 @@ describe('Engine agent spawning', () => {
 
   it('marks FAILED when no spawner provided and metric is non-zero', async () => {
     make(dir, 1, 'a');
-    const r = await new Engine(dir, { benchmark: () => 1 }).tick();
+    const r = await new Engine(dir, { taskDb: s.tdb, benchmark: () => 1 }).tick();
     expect(r.converged).toBe(false);
-    const all = await TaskState.scan(dir);
-    expect(all.get('1')!.status).toBe(Status.FAILED);
+    expect(statusOf(s.db, 1)).toBe(Status.FAILED);
   });
 
   it('task remains IN_PROGRESS after spawn fixes metric but cz < threshold', async () => {
@@ -171,11 +149,11 @@ describe('Engine agent spawning', () => {
       .mockResolvedValueOnce(1)  // pre-agent: needs work
       .mockResolvedValue(0);     // post-agent: fixed
 
-    const engine = new Engine(dir, { benchmark, spawn });
+    const engine = new Engine(dir, { taskDb: s.tdb, benchmark, spawn });
     const r = await engine.tick();
     expect(r.converged).toBe(false);
     // Claim held, cz=1
-    const all = await TaskState.scan(dir);
+    const all = TaskState.scan(s.tdb, dir);
     expect(all.get('1')!.isInProgress).toBe(true);
     expect(all.get('1')!.convergenceCount).toBe(1);
   });
@@ -191,7 +169,7 @@ describe('Engine agent spawning', () => {
       .mockResolvedValue(0)   // tick 2
       .mockResolvedValue(0);  // tick 3
 
-    const engine = new Engine(dir, { benchmark, spawn });
+    const engine = new Engine(dir, { taskDb: s.tdb, benchmark, spawn });
     let r = await engine.tick();
     expect(r.converged).toBe(false); // cz=1
     r = await engine.tick();
@@ -203,29 +181,22 @@ describe('Engine agent spawning', () => {
   it('spawn errors are caught and counted as failure', async () => {
     make(dir, 1, 'a');
     const spawn = vi.fn().mockRejectedValue(new Error('crash'));
-    const engine = new Engine(dir, { benchmark: () => 1, spawn });
+    const engine = new Engine(dir, { taskDb: s.tdb, benchmark: () => 1, spawn });
     const r = await engine.tick();
     expect(r.converged).toBe(false);
-    const all = await TaskState.scan(dir);
-    expect(all.get('1')!.status).toBe(Status.FAILED);
+    expect(statusOf(s.db, 1)).toBe(Status.FAILED);
   });
 
   it('mergeAndRemove called on convergence when repo has .git', async () => {
     const { execSync } = await import('node:child_process');
-    const { mkdirSync: mk, writeFileSync } = await import('node:fs');
+    const { mkdirSync: mk } = await import('node:fs');
 
     const repoDir = resolve(dir, 'repo');
     const tasksDir = resolve(dir, 'tasks');
     mk(repoDir, { recursive: true });
     execSync('git init && git config user.email test@test && git config user.name test && git commit --allow-empty -m init', { cwd: repoDir });
 
-    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
-      mk(resolve(tasksDir, s), { recursive: true });
-    }
-
-    const d = resolve(tasksDir, 'pending', 'T01-x');
-    mk(d, { recursive: true });
-    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+    seed(s.db, tasksDir, 1, 'x', {});
 
     const spawn = vi.fn().mockResolvedValue({ success: true, iterations: 1 });
     // Tick 1: 1 (reset cz) → spawn → 0 (cz=1)
@@ -236,7 +207,7 @@ describe('Engine agent spawning', () => {
       .mockResolvedValue(0)   // tick 2
       .mockResolvedValue(0);  // tick 3
 
-    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir });
+    const engine = new Engine(tasksDir, { taskDb: s.tdb, benchmark, spawn, repoDir });
     await engine.tick();
     await engine.tick();
     const r = await engine.tick();
@@ -246,26 +217,24 @@ describe('Engine agent spawning', () => {
   });
 
   it('blocks the task and keeps the worktree when merge back fails (no crash)', async () => {
-    const { engine, tasksDir, worktreesDir } = await dirtyMergeScenario(dir);
+    const { engine, worktreesDir } = await dirtyMergeScenario(dir);
     await engine.tick();
     await engine.tick();
     const r = await engine.tick();
 
     expect(r.converged).toBe(false);
-    const all = await TaskState.scan(tasksDir);
-    expect(all.get('1')!.status).toBe(Status.BLOCKED);
+    expect(statusOf(s.db, 1)).toBe(Status.BLOCKED);
     expect(existsSync(join(worktreesDir, 'T01-x', '.git'))).toBe(true);
   });
 
   it('loop blocks a task on merge failure and continues without throwing', async () => {
-    const { engine, tasksDir, worktreesDir } = await dirtyMergeScenario(dir);
+    const { engine, worktreesDir } = await dirtyMergeScenario(dir);
     await engine.tick();
     await engine.tick();
 
     await expect(engine.loop()).resolves.toBe(1);
 
-    const all = await TaskState.scan(tasksDir);
-    expect(all.get('1')!.status).toBe(Status.BLOCKED);
+    expect(statusOf(s.db, 1)).toBe(Status.BLOCKED);
     expect(existsSync(join(worktreesDir, 'T01-x', '.git'))).toBe(true);
   });
 
@@ -287,13 +256,7 @@ describe('Engine agent spawning', () => {
     // Engine will detect 'dev' as base branch
     // The spawn will switch to master and dirty the file, causing checkout-to-dev to fail
 
-    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
-      mk(resolve(tasksDir, s), { recursive: true });
-    }
-
-    const d = resolve(tasksDir, 'pending', 'T01-x');
-    mk(d, { recursive: true });
-    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+    seed(s.db, tasksDir, 1, 'x', {});
 
     const spawn = vi.fn().mockImplementation(async (_task: TaskState, wtPath?: string) => {
       if (!wtPath) throw new Error('missing worktree path');
@@ -309,6 +272,7 @@ describe('Engine agent spawning', () => {
       .mockResolvedValueOnce(1).mockResolvedValueOnce(0)
       .mockResolvedValue(0);
     const engine = new Engine(tasksDir, {
+      taskDb: s.tdb,
       benchmark,
       spawn,
       repoDir,
@@ -328,9 +292,9 @@ describe('Engine agent spawning', () => {
       branch: 'orchestrator/T01-x',
       error: expect.stringContaining('Unable to switch to dev'),
     }));
-    const all = await TaskState.scan(tasksDir);
+    const all = TaskState.scan(s.tdb, tasksDir);
     expect(all.size).toBe(0); // T1 converged and excluded from scan
-    expect(TaskState.countConverged(tasksDir)).toBe(1);
+    expect(TaskState.countConverged(s.tdb)).toBe(1);
     expect(existsSync(join(worktreesDir, 'T01-x', '.git'))).toBe(false);
     expect(execSync('git rev-parse --abbrev-ref HEAD', { cwd: repoDir, encoding: 'utf-8' }).trim()).toBe('master');
     expect(execSync('git show dev:work.txt', { cwd: repoDir, encoding: 'utf-8' })).toBe('worktree');
@@ -356,13 +320,7 @@ describe('Engine agent spawning', () => {
     execSync('git add tracked.txt && git commit -m "dev"', { cwd: repoDir });
     // Engine will detect 'dev' as base branch
 
-    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
-      mk(resolve(tasksDir, s), { recursive: true });
-    }
-
-    const d = resolve(tasksDir, 'pending', 'T01-x');
-    mk(d, { recursive: true });
-    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+    seed(s.db, tasksDir, 1, 'x', {});
 
     const spawn = vi.fn().mockImplementation(async (_task: TaskState, wtPath?: string) => {
       if (!wtPath) throw new Error('missing worktree path');
@@ -379,6 +337,7 @@ describe('Engine agent spawning', () => {
       .mockResolvedValueOnce(1).mockResolvedValueOnce(0)
       .mockResolvedValue(0);
     const engine = new Engine(tasksDir, {
+      taskDb: s.tdb,
       benchmark,
       spawn,
       repoDir,
@@ -412,12 +371,7 @@ describe('Engine agent spawning', () => {
     writeFileSync(join(repoDir, 'shared.txt'), 'base');
     execSync('git add shared.txt && git commit -m "base"', { cwd: repoDir });
 
-    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
-      mk(resolve(tasksDir, s), { recursive: true });
-    }
-    const d = resolve(tasksDir, 'pending', 'T01-x');
-    mk(d, { recursive: true });
-    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+    seed(s.db, tasksDir, 1, 'x', {});
 
     // Worktree changes shared.txt; main changes the same file differently →
     // merge-back conflict.
@@ -432,15 +386,14 @@ describe('Engine agent spawning', () => {
     const benchmark = vi.fn()
       .mockResolvedValueOnce(1).mockResolvedValueOnce(0)
       .mockResolvedValue(0);
-    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir });
+    const engine = new Engine(tasksDir, { taskDb: s.tdb, benchmark, spawn, repoDir, worktreesDir });
 
     await engine.tick();
     await engine.tick();
     const r = await engine.tick();
 
     expect(r.converged).toBe(false);
-    const all = await TaskState.scan(tasksDir);
-    expect(all.get('1')!.status).toBe(Status.BLOCKED);
+    expect(statusOf(s.db, 1)).toBe(Status.BLOCKED);
     // Branch kept for later merge; main untouched and clean — no rerun, no discard
     expect(existsSync(join(worktreesDir, 'T01-x', '.git'))).toBe(true);
     expect(readFileSync(join(repoDir, 'shared.txt'), 'utf-8')).toBe('main change');
@@ -450,43 +403,35 @@ describe('Engine agent spawning', () => {
   it('handles merge conflict error from spawn', async () => {
     make(dir, 1, 'a');
     const spawn = vi.fn().mockRejectedValue(new Error('merge conflict in worktree'));
-    const engine = new Engine(dir, { benchmark: () => 1, spawn });
+    const engine = new Engine(dir, { taskDb: s.tdb, benchmark: () => 1, spawn });
     const r = await engine.tick();
     // Conflict → task FAILED, worktree kept for inspection
     expect(r.converged).toBe(false);
-    const all = await TaskState.scan(dir);
-    expect(all.get('1')!.status).toBe(Status.FAILED);
+    expect(statusOf(s.db, 1)).toBe(Status.FAILED);
   });
 
   it('resets worktree on failed task retry', async () => {
     const { execSync } = await import('node:child_process');
-    const { mkdirSync: mk, writeFileSync } = await import('node:fs');
+    const { mkdirSync: mk } = await import('node:fs');
 
     const repoDir = resolve(dir, 'repo');
     const tasksDir = resolve(dir, 'tasks');
     mk(repoDir, { recursive: true });
     execSync('git init && git config user.email test@test && git config user.name test && git commit --allow-empty -m init', { cwd: repoDir });
 
-    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
-      mk(resolve(tasksDir, s), { recursive: true });
-    }
-
-    const d = resolve(tasksDir, 'pending', 'T01-x');
-    mk(d, { recursive: true });
-    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+    seed(s.db, tasksDir, 1, 'x', {});
 
     const spawn = vi.fn().mockResolvedValue({ success: false, iterations: 0 });
     // Tick 1: benchmark returns 1, spawn fails → task FAILED
     // Tick 2: task picked from failed shard, has worktree → resetForRetry called
     const benchmark = vi.fn().mockResolvedValue(1);
 
-    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir });
+    const engine = new Engine(tasksDir, { taskDb: s.tdb, benchmark, spawn, repoDir });
     const r1 = await engine.tick();
     expect(r1.converged).toBe(false);
 
     // Task should be FAILED
-    const all = await TaskState.scan(tasksDir);
-    expect(all.get('1')!.status).toBe(Status.FAILED);
+    expect(statusOf(s.db, 1)).toBe(Status.FAILED);
 
     // Second tick should pick the failed task and try again
     benchmark.mockResolvedValue(0);
@@ -499,17 +444,16 @@ describe('Engine agent spawning', () => {
     make(dir, 1, 'a');
     // Throw a string instead of Error to cover String(e) branch (Engine L86)
     const spawn = vi.fn().mockRejectedValue('plain string error');
-    const engine = new Engine(dir, { benchmark: () => 1, spawn });
+    const engine = new Engine(dir, { taskDb: s.tdb, benchmark: () => 1, spawn });
     const r = await engine.tick();
     // Non-conflict non-Error → task FAILED
     expect(r.converged).toBe(false);
-    const all = await TaskState.scan(dir);
-    expect(all.get('1')!.status).toBe(Status.FAILED);
+    expect(statusOf(s.db, 1)).toBe(Status.FAILED);
   });
 
   it('spawn creates worktree with custom worktreesDir option (covers line 122 ternary)', async () => {
     const { execSync } = await import('node:child_process');
-    const { mkdirSync: mk, writeFileSync } = await import('node:fs');
+    const { mkdirSync: mk } = await import('node:fs');
 
     const repoDir = resolve(dir, 'repo');
     const tasksDir = resolve(dir, 'tasks');
@@ -520,18 +464,12 @@ describe('Engine agent spawning', () => {
     execSync('git init', { cwd: repoDir, env: gitEnv });
     execSync('git -c user.email=test@test -c user.name=test commit --allow-empty -m init', { cwd: repoDir, env: gitEnv });
 
-    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
-      mk(resolve(tasksDir, s), { recursive: true });
-    }
-
-    const d = resolve(tasksDir, 'pending', 'T01-a');
-    mk(d, { recursive: true });
-    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+    seed(s.db, tasksDir, 1, 'a', {});
 
     const spawn = vi.fn().mockResolvedValue({ success: true, iterations: 1 });
     const benchmark = vi.fn().mockResolvedValueOnce(1).mockResolvedValue(0);
 
-    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir: wtDir });
+    const engine = new Engine(tasksDir, { taskDb: s.tdb, benchmark, spawn, repoDir, worktreesDir: wtDir });
     const r = await engine.tick();
     expect(r.metric).toBe(0);
     expect(spawn).toHaveBeenCalledTimes(1);
@@ -539,20 +477,14 @@ describe('Engine agent spawning', () => {
 
   it('runs the worktree benchmark against the worktree cwd using the task own dir', async () => {
     const { execSync } = await import('node:child_process');
-    const { mkdirSync: mk, writeFileSync } = await import('node:fs');
+    const { mkdirSync: mk } = await import('node:fs');
 
     const repoDir = resolve(dir, 'repo');
     const tasksDir = resolve(repoDir, 'tasks');
     mk(repoDir, { recursive: true });
     execSync('git init && git config user.email test@test && git config user.name test && git commit --allow-empty -m init', { cwd: repoDir });
 
-    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
-      mk(resolve(tasksDir, s), { recursive: true });
-    }
-
-    const d = resolve(tasksDir, 'pending', 'T01-a');
-    mk(d, { recursive: true });
-    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+    seed(s.db, tasksDir, 1, 'a', {});
 
     let worktreePath = '';
     const benchmarkDirs: string[] = [];
@@ -565,14 +497,14 @@ describe('Engine agent spawning', () => {
     const spawn = vi.fn(async (task: TaskState, wt?: string) => {
       worktreePath = wt ?? '';
       // The task is no longer copied into the worktree; it stays in the tasks dir.
-      expect(task.directory).toBe(resolve(tasksDir, 'in_progress', 'T01-a'));
+      expect(task.directory).toBe(resolve(tasksDir, 'T01-a'));
       return { success: true, iterations: 1 };
     });
 
-    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir });
+    const engine = new Engine(tasksDir, { taskDb: s.tdb, benchmark, spawn, repoDir });
     const r = await engine.tick();
 
-    const originalTaskDir = resolve(tasksDir, 'in_progress', 'T01-a');
+    const originalTaskDir = resolve(tasksDir, 'T01-a');
     expect(r.metric).toBe(0);
     expect(worktreePath).toBeTruthy();
     expect(spawn).toHaveBeenCalledTimes(1);
@@ -589,19 +521,14 @@ describe('Engine agent spawning', () => {
     // (not under the repo). The post-agent benchmark must still run against the
     // worktree, not fall back to the repo.
     const { execSync } = await import('node:child_process');
-    const { mkdirSync: mk, writeFileSync } = await import('node:fs');
+    const { mkdirSync: mk } = await import('node:fs');
 
     const repoDir = resolve(dir, 'repo');
     const tasksDir = resolve(dir, 'state', 'tasks'); // sibling of the repo, NOT under it
     mk(repoDir, { recursive: true });
     execSync('git init && git config user.email test@test && git config user.name test && git commit --allow-empty -m init', { cwd: repoDir });
 
-    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
-      mk(resolve(tasksDir, s), { recursive: true });
-    }
-    const d = resolve(tasksDir, 'pending', 'T01-a');
-    mk(d, { recursive: true });
-    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+    seed(s.db, tasksDir, 1, 'a', {});
 
     let worktreePath = '';
     const benchmarkCwds: string[] = [];
@@ -614,7 +541,7 @@ describe('Engine agent spawning', () => {
       return { success: true, iterations: 1 };
     });
 
-    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir });
+    const engine = new Engine(tasksDir, { taskDb: s.tdb, benchmark, spawn, repoDir });
     const r = await engine.tick();
 
     expect(r.metric).toBe(0);
@@ -625,7 +552,7 @@ describe('Engine agent spawning', () => {
 
   it('syncs existing worktree with base before spawn; resets on conflict', async () => {
     const { execSync } = await import('node:child_process');
-    const { mkdirSync: mk, writeFileSync } = await import('node:fs');
+    const { mkdirSync: mk } = await import('node:fs');
     const { Worktree } = await import('../src/Worktree.js');
 
     const repoDir = resolve(dir, 'repo');
@@ -633,12 +560,7 @@ describe('Engine agent spawning', () => {
     mk(repoDir, { recursive: true });
     execSync('git init && git config user.email test@test && git config user.name test && git commit --allow-empty -m init', { cwd: repoDir });
 
-    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
-      mk(resolve(tasksDir, s), { recursive: true });
-    }
-    const d = resolve(tasksDir, 'pending', 'T01-a');
-    mk(d, { recursive: true });
-    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+    seed(s.db, tasksDir, 1, 'a', {});
 
     let tickCount = 0;
     const benchmark = vi.fn(() => {
@@ -650,7 +572,7 @@ describe('Engine agent spawning', () => {
     });
     const spawn = vi.fn(async () => ({ success: true, iterations: 1 }));
 
-    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir });
+    const engine = new Engine(tasksDir, { taskDb: s.tdb, benchmark, spawn, repoDir });
     // First tick creates the worktree
     await engine.tick();
 
@@ -688,25 +610,18 @@ describe('Engine agent spawning', () => {
     mk(resolve(repoDir, 'node_modules'), { recursive: true });
     writeFileSync(resolve(repoDir, 'node_modules', 'dummy.txt'), 'dummy');
 
-    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
-      mk(resolve(tasksDir, s), { recursive: true });
-    }
-
-    const d = resolve(tasksDir, 'pending', 'T01-a');
-    mk(d, { recursive: true });
-    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+    seed(s.db, tasksDir, 1, 'a', {});
 
     const spawn = vi.fn().mockResolvedValue({ success: false, iterations: 0 });
     // Tick 1: metric=1 → spawn → creates worktree + copies node_modules → spawn returns → metric still 1 → FAILED
     // Tick 2: metric=1 → spawn → cached worktree, node_modules exists → skip copy (covers else branch)
     const benchmark = vi.fn().mockResolvedValue(1);
 
-    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir });
+    const engine = new Engine(tasksDir, { taskDb: s.tdb, benchmark, spawn, repoDir });
     const r1 = await engine.tick();
     expect(r1.converged).toBe(false);
 
-    const all = await TaskState.scan(tasksDir);
-    expect(all.get('1')!.status).toBe(Status.FAILED);
+    expect(statusOf(s.db, 1)).toBe(Status.FAILED);
 
     // Tick 2 with same engine instance — worktree cached, node_modules already exists
     const r2 = await engine.tick();
@@ -716,20 +631,14 @@ describe('Engine agent spawning', () => {
 
   it('verifyCmd passes: task merges successfully', async () => {
     const { execSync } = await import('node:child_process');
-    const { mkdirSync: mk, writeFileSync } = await import('node:fs');
+    const { mkdirSync: mk } = await import('node:fs');
 
     const repoDir = resolve(dir, 'repo');
     const tasksDir = resolve(dir, 'tasks');
     mk(repoDir, { recursive: true });
     execSync('git init && git config user.email test@test && git config user.name test && git commit --allow-empty -m init', { cwd: repoDir });
 
-    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
-      mk(resolve(tasksDir, s), { recursive: true });
-    }
-
-    const d = resolve(tasksDir, 'pending', 'T01-x');
-    mk(d, { recursive: true });
-    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+    seed(s.db, tasksDir, 1, 'x', {});
 
     const spawn = vi.fn().mockResolvedValue({ success: true, iterations: 1 });
     const benchmark = vi.fn()
@@ -738,7 +647,7 @@ describe('Engine agent spawning', () => {
 
     // verifyCmd that always passes (exit 0)
     const verifyCmd = process.platform === 'win32' ? 'exit /b 0' : 'true';
-    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir, verifyCmd });
+    const engine = new Engine(tasksDir, { taskDb: s.tdb, benchmark, spawn, repoDir, verifyCmd });
     await engine.tick();
     await engine.tick();
     const r = await engine.tick();
@@ -748,20 +657,14 @@ describe('Engine agent spawning', () => {
 
   it('verifyCmd fails: task goes to rework instead of merging', async () => {
     const { execSync } = await import('node:child_process');
-    const { mkdirSync: mk, writeFileSync } = await import('node:fs');
+    const { mkdirSync: mk } = await import('node:fs');
 
     const repoDir = resolve(dir, 'repo');
     const tasksDir = resolve(dir, 'tasks');
     mk(repoDir, { recursive: true });
     execSync('git init && git config user.email test@test && git config user.name test && git commit --allow-empty -m init', { cwd: repoDir });
 
-    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
-      mk(resolve(tasksDir, s), { recursive: true });
-    }
-
-    const d = resolve(tasksDir, 'pending', 'T01-x');
-    mk(d, { recursive: true });
-    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+    seed(s.db, tasksDir, 1, 'x', {});
 
     const spawn = vi.fn().mockResolvedValue({ success: true, iterations: 1 });
     const benchmark = vi.fn()
@@ -770,33 +673,26 @@ describe('Engine agent spawning', () => {
 
     // verifyCmd that always fails (exit 1)
     const verifyCmd = process.platform === 'win32' ? 'exit /b 1' : 'false';
-    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir, verifyCmd });
+    const engine = new Engine(tasksDir, { taskDb: s.tdb, benchmark, spawn, repoDir, verifyCmd });
     await engine.tick(); // metric=1 → spawn → 0 (cz=1)
     await engine.tick(); // metric=0 (cz=2)
     const r = await engine.tick(); // metric=0 (cz=3 → mergeAndRemove → verifyCmd fails → rework)
 
     expect(r.converged).toBe(false);
     // Task should NOT be converged — verify failure sent it to rework
-    const all = await TaskState.scan(tasksDir);
-    expect(all.get('1')!.status).not.toBe(Status.CONVERGED);
+    expect(statusOf(s.db, 1)).not.toBe(Status.CONVERGED);
   });
 
   it('no verifyCmd: merge proceeds without verification', async () => {
     const { execSync } = await import('node:child_process');
-    const { mkdirSync: mk, writeFileSync } = await import('node:fs');
+    const { mkdirSync: mk } = await import('node:fs');
 
     const repoDir = resolve(dir, 'repo');
     const tasksDir = resolve(dir, 'tasks');
     mk(repoDir, { recursive: true });
     execSync('git init && git config user.email test@test && git config user.name test && git commit --allow-empty -m init', { cwd: repoDir });
 
-    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
-      mk(resolve(tasksDir, s), { recursive: true });
-    }
-
-    const d = resolve(tasksDir, 'pending', 'T01-x');
-    mk(d, { recursive: true });
-    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+    seed(s.db, tasksDir, 1, 'x', {});
 
     const spawn = vi.fn().mockResolvedValue({ success: true, iterations: 1 });
     const benchmark = vi.fn()
@@ -804,7 +700,7 @@ describe('Engine agent spawning', () => {
       .mockResolvedValue(0);
 
     // No verifyCmd — should converge normally
-    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir });
+    const engine = new Engine(tasksDir, { taskDb: s.tdb, benchmark, spawn, repoDir });
     await engine.tick();
     await engine.tick();
     const r = await engine.tick();
@@ -818,7 +714,7 @@ describe('Engine agent spawning', () => {
     const spawn = vi.fn().mockResolvedValue({ success: true, iterations: 1 });
     const benchmark = vi.fn().mockResolvedValue(0);
 
-    const engine = new Engine(dir, { benchmark, spawn, parallel: 1 });
+    const engine = new Engine(dir, { taskDb: s.tdb, benchmark, spawn, parallel: 1 });
     const total = await engine.loop();
 
     // 2 tasks × 3 convergence ticks each = 6 total tick() calls returning a task
@@ -834,7 +730,7 @@ describe('Engine agent spawning', () => {
     const spawn = vi.fn().mockResolvedValue({ success: true, iterations: 1 });
     const benchmark = vi.fn().mockResolvedValue(0);
 
-    const engine = new Engine(dir, { benchmark, spawn, parallel: 2 });
+    const engine = new Engine(dir, { taskDb: s.tdb, benchmark, spawn, parallel: 2 });
     const total = await engine.loop();
 
     // 2 tasks × 3 convergence ticks each = 6 total tick() calls returning a task
@@ -850,7 +746,7 @@ describe('Engine agent spawning', () => {
     const spawn = vi.fn().mockResolvedValue({ success: true, iterations: 1 });
     const benchmark = vi.fn().mockResolvedValue(0);
 
-    const engine = new Engine(dir, { benchmark, spawn, parallel: 0 });
+    const engine = new Engine(dir, { taskDb: s.tdb, benchmark, spawn, parallel: 0 });
     const total = await engine.loop();
 
     // 3 tasks × 3 convergence ticks each = 9 total tick() calls returning a task
@@ -876,12 +772,12 @@ describe('Engine agent spawning', () => {
       return 1;
     });
 
-    const engine = new Engine(dir, { benchmark, spawn, parallel: 2 });
+    const engine = new Engine(dir, { taskDb: s.tdb, benchmark, spawn, parallel: 2 });
     // Run two tick operations to process both tasks
     await engine.tick();
     await engine.tick();
 
-    const all = await TaskState.scan(dir);
+    const all = TaskState.scan(s.tdb, dir);
     const task1 = all.get('1');
     const task2 = all.get('2');
 

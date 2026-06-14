@@ -6,24 +6,20 @@ import { join, resolve } from 'node:path';
 import { Engine } from '../src/Engine.js';
 import { Worktree } from '../src/Worktree.js';
 import { TaskState, type TaskInfo } from '../src/TaskState.js';
+import { memStateDb, seed, type StateDb } from './helpers.js';
 
 const LOCK = '.orchestrator-merge-lock';
 
 /** Real git repo + a single converging task. The agent makes a non-overlapping
  *  change in the worktree and never advances the base, so syncWithBase is a
  *  clean no-op and the merge path is exercised without a real conflict. */
-function scenario(dir: string) {
+function scenario(dir: string, state: StateDb) {
   const repoDir = resolve(dir, 'repo');
   const tasksDir = resolve(dir, 'tasks');
   const worktreesDir = resolve(dir, 'worktrees');
   mkdirSync(repoDir, { recursive: true });
   execSync('git init && git config user.email test@test && git config user.name test && git commit --allow-empty -m init', { cwd: repoDir });
-  for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
-    mkdirSync(resolve(tasksDir, s), { recursive: true });
-  }
-  const d = resolve(tasksDir, 'pending', 'T01-x');
-  mkdirSync(d, { recursive: true });
-  writeFileSync(resolve(d, '.status'), 'PENDING\n');
+  seed(state.db, tasksDir, 1, 'x');
 
   const spawn = vi.fn().mockImplementation(async (_t: TaskState, wtPath?: string) => {
     if (!wtPath) throw new Error('missing worktree path');
@@ -34,20 +30,14 @@ function scenario(dir: string) {
   return { repoDir, tasksDir, worktreesDir, spawn };
 }
 
-function scenarioWithTwoTasks(dir: string) {
+function scenarioWithTwoTasks(dir: string, state: StateDb) {
   const repoDir = resolve(dir, 'repo');
   const tasksDir = resolve(dir, 'tasks');
   const worktreesDir = resolve(dir, 'worktrees');
   mkdirSync(repoDir, { recursive: true });
   execSync('git init && git config user.email test@test && git config user.name test && git commit --allow-empty -m init', { cwd: repoDir });
-  for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
-    mkdirSync(resolve(tasksDir, s), { recursive: true });
-  }
-  for (const taskName of ['T01-a', 'T02-b']) {
-    const d = resolve(tasksDir, 'pending', taskName);
-    mkdirSync(d, { recursive: true });
-    writeFileSync(resolve(d, '.status'), 'PENDING\n');
-  }
+  seed(state.db, tasksDir, 1, 'a');
+  seed(state.db, tasksDir, 2, 'b');
 
   const spawn = vi.fn().mockImplementation(async (task: TaskState, wtPath?: string) => {
     if (!wtPath) throw new Error('missing worktree path');
@@ -70,21 +60,24 @@ function readLockToken(repoDir: string): string {
 
 describe('Engine merge robustness', () => {
   let dir = '';
+  let s: StateDb;
   beforeEach(() => {
     const root = resolve('test-artifacts');
     mkdirSync(root, { recursive: true });
     dir = mkdtempSync(resolve(root, 'eng-merge-'));
+    s = memStateDb();
   });
   afterEach(async () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+    s.db.close();
     await rm(dir, { recursive: true, force: true });
   });
 
   it('defers the merge when another orchestrator holds the merge lock', async () => {
-    const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir);
+    const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir, s);
     const benchmark = vi.fn().mockResolvedValueOnce(1).mockResolvedValue(0);
-    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir });
+    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir, taskDb: s.tdb });
 
     await engine.tick();            // cz=1
     await engine.tick();            // cz=2
@@ -92,16 +85,16 @@ describe('Engine merge robustness', () => {
     const r = await engine.tick();  // cz=3 → merge deferred
 
     expect(r.converged).toBe(false);
-    const t = (await TaskState.scan(tasksDir)).get('1')!;
+    const t = TaskState.scan(s.tdb, tasksDir).get('1')!;
     expect(t.isInProgress).toBe(true);  // not blocked, not converged — will retry
     expect(t.isBlocked).toBe(false);
     expect(existsSync(join(worktreesDir, 'T01-x', '.git'))).toBe(true); // worktree kept
   });
 
   it('breaks a stale merge lock and completes the merge', async () => {
-    const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir);
+    const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir, s);
     const benchmark = vi.fn().mockResolvedValueOnce(1).mockResolvedValue(0);
-    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir });
+    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir, taskDb: s.tdb });
 
     await engine.tick();
     await engine.tick();
@@ -114,9 +107,9 @@ describe('Engine merge robustness', () => {
   });
 
   it('treats a stale lock with a missing owner file as breakable', async () => {
-    const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir);
+    const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir, s);
     const benchmark = vi.fn().mockResolvedValueOnce(1).mockResolvedValue(0);
-    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir });
+    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir, taskDb: s.tdb });
 
     await engine.tick();
     await engine.tick();
@@ -130,7 +123,7 @@ describe('Engine merge robustness', () => {
 
   it('keeps the merge lock directory when its owner file disappears before release', async () => {
     vi.resetModules();
-    const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir);
+    const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir, s);
 
     try {
       vi.doMock('node:fs', async (importOriginal) => {
@@ -149,7 +142,7 @@ describe('Engine merge robustness', () => {
 
       const { Engine: MockedEngine } = await import('../src/Engine.js');
       const benchmark = vi.fn().mockResolvedValueOnce(1).mockResolvedValue(0);
-      const engine = new MockedEngine(tasksDir, { benchmark, spawn, repoDir, worktreesDir });
+      const engine = new MockedEngine(tasksDir, { benchmark, spawn, repoDir, worktreesDir, taskDb: s.tdb });
 
       await engine.tick();
       await engine.tick();
@@ -165,7 +158,7 @@ describe('Engine merge robustness', () => {
 
   it('backs off when another process wins after stale-lock break', async () => {
     vi.resetModules();
-    const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir);
+    const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir, s);
     const benchmark = vi.fn().mockResolvedValueOnce(1).mockResolvedValue(0);
     writeLock(repoDir, Date.now() - 700_000);
 
@@ -191,14 +184,14 @@ describe('Engine merge robustness', () => {
         };
       });
       const { Engine: MockedEngine } = await import('../src/Engine.js');
-      const engine = new MockedEngine(tasksDir, { benchmark, spawn, repoDir, worktreesDir });
+      const engine = new MockedEngine(tasksDir, { benchmark, spawn, repoDir, worktreesDir, taskDb: s.tdb });
 
       await engine.tick();
       await engine.tick();
       const r = await engine.tick();
 
       expect(r.converged).toBe(false);
-      expect((await TaskState.scan(tasksDir)).get('1')!.isInProgress).toBe(true);
+      expect(TaskState.scan(s.tdb, tasksDir).get('1')!.isInProgress).toBe(true);
       expect(existsSync(join(repoDir, LOCK))).toBe(true);
     } finally {
       vi.doUnmock('node:fs');
@@ -208,7 +201,7 @@ describe('Engine merge robustness', () => {
 
   it('returns locked when stale-lock re-acquire loses the mkdir race', async () => {
     vi.resetModules();
-    const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir);
+    const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir, s);
     const benchmark = vi.fn().mockResolvedValueOnce(1).mockResolvedValue(0);
     writeLock(repoDir, Date.now() - 700_000);
 
@@ -229,14 +222,14 @@ describe('Engine merge robustness', () => {
         };
       });
       const { Engine: MockedEngine } = await import('../src/Engine.js');
-      const engine = new MockedEngine(tasksDir, { benchmark, spawn, repoDir, worktreesDir });
+      const engine = new MockedEngine(tasksDir, { benchmark, spawn, repoDir, worktreesDir, taskDb: s.tdb });
 
       await engine.tick();
       await engine.tick();
       const r = await engine.tick();
 
       expect(r.converged).toBe(false);
-      expect((await TaskState.scan(tasksDir)).get('1')!.isInProgress).toBe(true);
+      expect(TaskState.scan(s.tdb, tasksDir).get('1')!.isInProgress).toBe(true);
     } finally {
       vi.doUnmock('node:fs');
       vi.resetModules();
@@ -244,7 +237,7 @@ describe('Engine merge robustness', () => {
   });
 
   it('blocks the task when merge recovery itself throws', async () => {
-    const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir);
+    const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir, s);
     const benchmark = vi.fn().mockResolvedValueOnce(1).mockResolvedValue(0);
     const syncSpy = vi.spyOn(Worktree.prototype, 'syncWithBase').mockRejectedValue(new Error('sync failed'));
     const engine = new Engine(tasksDir, {
@@ -253,6 +246,7 @@ describe('Engine merge robustness', () => {
       repoDir,
       worktreesDir,
       mergeRecovery: () => { throw new Error('recovery exploded'); },
+      taskDb: s.tdb,
     });
 
     await engine.tick();
@@ -260,12 +254,12 @@ describe('Engine merge robustness', () => {
     const r = await engine.tick();
 
     expect(r.converged).toBe(false);
-    expect((await TaskState.scan(tasksDir)).get('1')!.isBlocked).toBe(true);
+    expect(TaskState.scan(s.tdb, tasksDir).get('1')!.isBlocked).toBe(true);
     syncSpy.mockRestore();
   });
 
   it('blocks the task when auto-stash retry throws', async () => {
-    const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir);
+    const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir, s);
     const benchmark = vi.fn().mockResolvedValueOnce(1).mockResolvedValue(0);
     const syncSpy = vi.spyOn(Worktree.prototype, 'syncWithBase').mockRejectedValue(new Error('sync failed'));
     const stashSpy = vi.spyOn(Worktree.prototype, 'stashParentChanges').mockRejectedValue(new Error('stash exploded'));
@@ -275,6 +269,7 @@ describe('Engine merge robustness', () => {
       repoDir,
       worktreesDir,
       mergeRecovery: () => 'stash-and-retry',
+      taskDb: s.tdb,
     });
 
     await engine.tick();
@@ -282,13 +277,13 @@ describe('Engine merge robustness', () => {
     const r = await engine.tick();
 
     expect(r.converged).toBe(false);
-    expect((await TaskState.scan(tasksDir)).get('1')!.isBlocked).toBe(true);
+    expect(TaskState.scan(s.tdb, tasksDir).get('1')!.isBlocked).toBe(true);
     syncSpy.mockRestore();
     stashSpy.mockRestore();
   });
 
   it('logs the no-op auto-stash retry path and merges on retry', async () => {
-    const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir);
+    const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir, s);
     const benchmark = vi.fn().mockResolvedValueOnce(1).mockResolvedValue(0);
     const syncSpy = vi.spyOn(Worktree.prototype, 'syncWithBase')
       .mockRejectedValueOnce(new Error('sync failed'))
@@ -299,6 +294,7 @@ describe('Engine merge robustness', () => {
       repoDir,
       worktreesDir,
       mergeRecovery: () => 'stash-and-retry',
+      taskDb: s.tdb,
     });
 
     await engine.tick();
@@ -311,7 +307,7 @@ describe('Engine merge robustness', () => {
   });
 
   it('covers the clean pre-merge auto-stash branch', async () => {
-    const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir);
+    const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir, s);
     const benchmark = vi.fn().mockResolvedValueOnce(1).mockResolvedValue(0);
     const stashSpy = vi.spyOn(Worktree.prototype, 'stashParentChanges').mockResolvedValue(false);
     const engine = new Engine(tasksDir, {
@@ -320,6 +316,7 @@ describe('Engine merge robustness', () => {
       repoDir,
       worktreesDir,
       autoStashBeforeMerge: true,
+      taskDb: s.tdb,
     });
 
     await engine.tick();
@@ -331,22 +328,22 @@ describe('Engine merge robustness', () => {
   });
 
   it('blocks the task on a plain-string merge failure without recovery', async () => {
-    const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir);
+    const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir, s);
     const benchmark = vi.fn().mockResolvedValueOnce(1).mockResolvedValue(0);
     const syncSpy = vi.spyOn(Worktree.prototype, 'syncWithBase').mockRejectedValue('plain string merge failure');
-    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir });
+    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir, taskDb: s.tdb });
 
     await engine.tick();
     await engine.tick();
     const r = await engine.tick();
 
     expect(r.converged).toBe(false);
-    expect((await TaskState.scan(tasksDir)).get('1')!.isBlocked).toBe(true);
+    expect(TaskState.scan(s.tdb, tasksDir).get('1')!.isBlocked).toBe(true);
     syncSpy.mockRestore();
   });
 
   it('keeps a newer fenced merge lock when a stale holder releases late', async () => {
-    const { repoDir, tasksDir, worktreesDir, spawn } = scenarioWithTwoTasks(dir);
+    const { repoDir, tasksDir, worktreesDir, spawn } = scenarioWithTwoTasks(dir, s);
     const runs = new Map<number, number>();
     const benchmark = vi.fn(async (task: TaskInfo) => {
       const taskNumber = parseInt(task.directory.match(/T(\d+)-/)?.[1] ?? '0', 10);
@@ -354,8 +351,8 @@ describe('Engine merge robustness', () => {
       runs.set(taskNumber, count);
       return count === 1 ? 1 : 0;
     });
-    const engine1 = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir, instanceId: 'engine-1', autoStashBeforeMerge: false });
-    const engine2 = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir, instanceId: 'engine-2', autoStashBeforeMerge: false });
+    const engine1 = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir, instanceId: 'engine-1', autoStashBeforeMerge: false, taskDb: s.tdb });
+    const engine2 = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir, instanceId: 'engine-2', autoStashBeforeMerge: false, taskDb: s.tdb });
 
     await engine1.tick();
     await engine2.tick();
@@ -419,7 +416,7 @@ describe('Engine merge robustness', () => {
   }, 15_000);
 
   it('sends the task back to the agent when base drift breaks acceptance after sync', async () => {
-    const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir);
+    const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir, s);
     writeFileSync(join(repoDir, 'tracked.txt'), 'base');
     execSync('git add tracked.txt && git commit -m "tracked"', { cwd: repoDir });
     // pre, post (tick1), tick2, tick3, then the post-sync re-verify reports
@@ -428,7 +425,7 @@ describe('Engine merge robustness', () => {
       .mockResolvedValueOnce(1).mockResolvedValueOnce(0)
       .mockResolvedValueOnce(0).mockResolvedValueOnce(0)
       .mockResolvedValueOnce(1).mockResolvedValue(0);
-    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir, autoStashBeforeMerge: true });
+    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir, autoStashBeforeMerge: true, taskDb: s.tdb });
 
     await engine.tick();
     await engine.tick();
@@ -436,7 +433,7 @@ describe('Engine merge robustness', () => {
     const r = await engine.tick();
 
     expect(r.converged).toBe(false);
-    const t = (await TaskState.scan(tasksDir)).get('1')!;
+    const t = TaskState.scan(s.tdb, tasksDir).get('1')!;
     expect(t.isInProgress).toBe(true);  // not blocked — the agent gets another pass
     expect(t.convergenceCount).toBe(0); // reset so acceptance must be re-proven
     expect(existsSync(join(worktreesDir, 'T01-x', '.git'))).toBe(true); // worktree kept
@@ -450,12 +447,7 @@ describe('Engine merge robustness', () => {
     const worktreesDir = resolve(dir, 'worktrees');
     mkdirSync(repoDir, { recursive: true });
     execSync('git init && git config user.email test@test && git config user.name test && git commit --allow-empty -m init', { cwd: repoDir });
-    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
-      mkdirSync(resolve(tasksDir, s), { recursive: true });
-    }
-    const d = resolve(tasksDir, 'pending', 'T01-x');
-    mkdirSync(d, { recursive: true });
-    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+    seed(s.db, tasksDir, 1, 'x');
     writeFileSync(join(repoDir, 'tracked.txt'), 'base');
     execSync('git add tracked.txt && git commit -m "tracked"', { cwd: repoDir });
     writeFileSync(join(repoDir, 'tracked.txt'), 'dirty parent change');
@@ -473,6 +465,7 @@ describe('Engine merge robustness', () => {
       repoDir,
       worktreesDir,
       autoStashBeforeMerge: true,
+      taskDb: s.tdb,
     });
 
     await engine.tick();
@@ -487,12 +480,7 @@ describe('Engine merge robustness', () => {
   it('heartbeats during the pre-spawn benchmark before the agent starts', async () => {
     vi.useFakeTimers();
     const tasksDir = resolve(dir, 'tasks');
-    for (const s of ['pending', 'in_progress', 'converged', 'failed', 'blocked']) {
-      mkdirSync(resolve(tasksDir, s), { recursive: true });
-    }
-    const d = resolve(tasksDir, 'pending', 'T01-heartbeat');
-    mkdirSync(d, { recursive: true });
-    writeFileSync(resolve(d, '.status'), 'PENDING\n');
+    seed(s.db, tasksDir, 1, 'heartbeat');
 
     const heartbeat = vi.spyOn(TaskState.prototype, 'heartbeat');
     const spawn = vi.fn().mockResolvedValue({ success: false, iterations: 0 });
@@ -504,7 +492,7 @@ describe('Engine merge robustness', () => {
       }
       return 1;
     });
-    const engine = new Engine(tasksDir, { benchmark, spawn });
+    const engine = new Engine(tasksDir, { benchmark, spawn, taskDb: s.tdb });
 
     const ticking = engine.tick();
     await vi.waitFor(() => expect(benchmark).toHaveBeenCalledTimes(1));

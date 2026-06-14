@@ -1,24 +1,12 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, renameSync, readdirSync, cpSync, appendFileSync } from 'node:fs';
-import { readdir } from 'node:fs/promises';
-import { resolve, basename, join, dirname } from 'node:path';
-import { hostname } from 'node:os';
+import { readFileSync, rmSync } from 'node:fs';
+import { resolve, basename, join } from 'node:path';
 import {
   Status, inProgress, isInProgress, isActionable,
-  CONVERGENCE_THRESHOLD, MAX_FAILURES, statusToShard, SHARDS,
+  CONVERGENCE_THRESHOLD, MAX_FAILURES,
 } from './Status.js';
+import { TaskDb, type TaskRow } from './TaskDb.js';
 
 export { Status, inProgress, isInProgress, CONVERGENCE_THRESHOLD, MAX_FAILURES };
-
-// ── File names ──────────────────────────────────────────────────────────────
-const F_STATUS   = '.status';
-const F_COUNTER  = '.convergence_count';
-const F_FAILURES = '.failure_count';
-const F_DEPS     = '.dependencies';
-const D_CLAIM    = '.claim';
-const F_OWNER    = 'owner';
-const F_BEAT     = 'heartbeat';
-const F_CLAIM_LOCK = '.claim.lock';
-const F_TARGET_BRANCH = '.target_branch';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 export interface TaskInfo {
@@ -54,83 +42,64 @@ export interface TickNull {
   readonly environmentError?: string;
 }
 
-// ── Claim types ─────────────────────────────────────────────────────────────
-interface ClaimOwner {
-  readonly pid: number;
-  readonly startedAt: number;
-  readonly instanceId: string;
-  readonly host: string;
-}
-
-/* v8 ignore start -- tiny logging helpers; behavior exercised via callers */
-function errnoCode(error: unknown): string | undefined {
-  return typeof error === 'object' && error !== null && 'code' in error
-    ? String((error as { code?: string }).code)
-    : undefined;
-}
-
-function errorDetail(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function logFsError(action: string, error: unknown): void {
-  console.error(`[TaskState] failed to ${action}: ${errorDetail(error)}`);
-}
-
-function logUnexpectedFsError(action: string, error: unknown, ignoredCodes: readonly string[] = []): void {
-  const code = errnoCode(error);
-  if (code && ignoredCodes.includes(code)) return;
-  logFsError(action, error);
-}
-/* v8 ignore stop */
-
-// ── Errors ───────────────────────────────────────────────────────────────────
-
-/** Thrown when a task directory cannot be moved between shards (e.g. Windows file lock). */
-export class TaskMoveError extends Error {
-  constructor(
-    readonly taskDir: string,
-    readonly targetShard: string,
-    readonly cause: unknown,
-  ) {
-    /* v8 ignore next -- fallback for non-errno errors */
-    const code = (cause as NodeJS.ErrnoException)?.code ?? 'unknown';
-    super(
-      `Cannot move task directory (${code}): ${taskDir}\n` +
-      `  Target: ${targetShard}/\n` +
-      `  Action: close any process using this directory, then retry or delete it manually.`,
-    );
-    this.name = 'TaskMoveError';
-  }
-}
-
-// ── TaskState ───────────────────────────────────────────────────────────────
+/**
+ * A DB-backed view of one task. State (status, convergence, failures, claim,
+ * dependencies, target branch, retry limit) is read live from {@link TaskDb}
+ * on every access — matching the old "always read fresh" semantics. Content
+ * (goal, model, metrics, scope) is parsed from `autoresearch.md` in the task's
+ * content directory. Gated mutators carry the claim token this process holds.
+ */
 export class TaskState {
-  static readonly #cache = new Map<string, Status>();
+  readonly #tdb: TaskDb;
+  readonly #tasksRoot: string;
+  readonly #id: number;
+  readonly #taskNumber: number;
+  readonly #dir: string;   // content dir name relative to the tasks root, e.g. "T01-auth"
+  readonly #token: string; // claim token held by this process ('' = unheld; gated writes no-op)
 
-  #dir: string;
-
-  constructor(dir: string) {
-    this.#dir = resolve(dir);
+  private constructor(tdb: TaskDb, tasksRoot: string, row: TaskRow) {
+    this.#tdb = tdb;
+    this.#tasksRoot = tasksRoot;
+    this.#id = row.id;
+    this.#taskNumber = row.task_number;
+    this.#dir = row.dir;
+    this.#token = row.claim_token ?? '';
   }
 
-  get directory(): string {
-    return this.#dir;
+  /** Build a view from a DB row, capturing any claim token the row carries. */
+  static fromRow(tdb: TaskDb, tasksRoot: string, row: TaskRow): TaskState {
+    return new TaskState(tdb, resolve(tasksRoot), row);
+  }
+
+  #row(): TaskRow | undefined {
+    return this.#tdb.get(this.#id);
   }
 
   // ── Identity ────────────────────────────────────────────────────────
+  get directory(): string {
+    return resolve(this.#tasksRoot, this.#dir);
+  }
   get taskNumber(): number {
-    return parseInt(basename(this.#dir).match(/^T(\d+)-/)?.[1] ?? '', 10) || 0;
+    return this.#taskNumber;
+  }
+  get number(): number {
+    return this.#taskNumber;
   }
   get taskName(): string {
     return basename(this.#dir);
   }
+  get name(): string {
+    return this.taskName;
+  }
+  /** Default cwd — overridden by Engine with the actual worktree/repo root. */
+  get cwd(): string {
+    return this.directory;
+  }
 
   get info(): TaskInfo {
-    // Return a materialized plain object (not `this`): callers such as
-    // Engine spread it (`{ ...task.info, cwd }`) to run benchmarks in a
-    // worktree, and spreading the instance would drop getter-based fields
-    // (number, goal, ...), surfacing as `Tundefined` in logs.
+    // Return a materialized plain object (not `this`): callers such as Engine
+    // spread it (`{ ...task.info, cwd }`) to run benchmarks in a worktree, and
+    // spreading the instance would drop getter-based fields.
     return {
       directory: this.directory,
       number: this.number,
@@ -143,57 +112,16 @@ export class TaskState {
       metrics: this.metricNames,
     };
   }
-  /** Default cwd — overridden by Engine with actual worktree/repo root */
-  get cwd(): string { return this.#dir; }
-  get number(): number {
-    return this.taskNumber;
-  }
-  get name(): string {
-    return this.taskName;
-  }
 
   // ── Status ──────────────────────────────────────────────────────────
-  get status(): Status {
-    let raw: string;
-    try {
-      raw = readFileSync(join(this.#dir, F_STATUS), 'utf-8').trim();
-    } catch { return Status.PENDING; }
-    if (isInProgress(raw)) return raw as Status;
-    if (raw === Status.PENDING || raw === Status.FAILED || raw === Status.BLOCKED || raw === Status.CONVERGED) {
-      return raw as Status;
-    }
-    // Empty, unknown, or corrupted value — recover as PENDING so the task is
-    // re-processed instead of being silently stranded in an unrecognized state.
-    return Status.PENDING;
-  }
-
-  set status(v: Status | string) {
-    const cacheBase = isInProgress(v) ? Status.PENDING : (v as Status);
-    // Move dir to correct shard FIRST. If this fails (EPERM/EBUSY),
-    // bail out — don't write .status. This keeps shard and status consistent.
-    const target = statusToShard(v);
-    if (target !== basename(dirname(this.#dir))) {
-      const root = dirname(dirname(this.#dir));
-      const dest = resolve(root, target, basename(this.#dir));
-      mkdirSync(dirname(dest), { recursive: true });
-      try { renameSync(this.#dir, dest); this.#dir = dest; } catch (err: unknown) {
-        const code = errnoCode(err);
-        /* v8 ignore start: cross-device rename fallback */
-        if (code === 'EXDEV') {
-          cpSync(this.#dir, dest, { recursive: true });
-          rmSync(this.#dir, { recursive: true, force: true });
-          this.#dir = dest;
-        } else {
-          throw new TaskMoveError(this.#dir, target, err);
-        }
-        /* v8 ignore stop */
-      }
-    }
-    // Dir is in the correct shard — now safe to write .status
-    const tmp = join(this.#dir, `.status.${process.pid}.${Date.now()}.tmp`);
-    writeFileSync(tmp, `${v}\n`);
-    renameSync(tmp, join(this.#dir, F_STATUS));
-    TaskState.#cache.set(String(this.taskNumber), cacheBase as Status);
+  get status(): string {
+    const row = this.#row();
+    if (!row) return Status.PENDING;
+    if (row.status === 'IN_PROGRESS') return inProgress(row.claimed_by ?? '');
+    // CREATING is a transient publish state; surface it as PENDING so a view
+    // built from one is treated as not-yet-started rather than unrecognized.
+    if (row.status === 'CREATING') return Status.PENDING;
+    return row.status;
   }
 
   get isPending(): boolean    { return this.status === Status.PENDING; }
@@ -205,194 +133,75 @@ export class TaskState {
 
   // ── Convergence ─────────────────────────────────────────────────────
   get convergenceCount(): number {
-    try { return TaskState.#nonNegInt(readFileSync(join(this.#dir, F_COUNTER), 'utf-8')); }
-    catch { return 0; }
-  }
-  incrementConvergence(): number {
-    const n = this.convergenceCount + 1;
-    writeFileSync(join(this.#dir, F_COUNTER), `${n}\n`);
-    return n;
-  }
-  resetConvergence(): void {
-    try { rmSync(join(this.#dir, F_COUNTER)); }
-    catch (error: unknown) { logUnexpectedFsError(`remove ${F_COUNTER} in ${this.#dir}`, error, ['ENOENT']); }
+    return this.#row()?.convergence ?? 0;
   }
   get hasConverged(): boolean {
     return this.convergenceCount >= CONVERGENCE_THRESHOLD;
   }
+  incrementConvergence(): void {
+    this.#tdb.incrementConvergence(this.#id, this.#token);
+  }
+  resetConvergence(): void {
+    this.#tdb.resetConvergence(this.#id, this.#token);
+  }
 
   // ── Failures ────────────────────────────────────────────────────────
   get failureCount(): number {
-    try {
-      return TaskState.#nonNegInt(readFileSync(join(this.#dir, F_FAILURES), 'utf-8'));
-    } catch {
-      return 0;
-    }
+    return this.#row()?.failures ?? 0;
   }
+  /** Bump the failure count, returning the new total (0 if the claim is stale). */
   incrementFailures(): number {
-    const n = this.failureCount + 1;
-    writeFileSync(join(this.#dir, F_FAILURES), `${n}\n`);
-    return n;
+    return this.#tdb.incrementFailures(this.#id, this.#token) ?? 0;
+  }
+
+  get maxFailures(): number {
+    const m = this.#row()?.max_failures;
+    return m ?? Infinity;
+  }
+
+  // ── Claim ───────────────────────────────────────────────────────────
+  get isClaimed(): boolean {
+    return this.#row()?.claimed_by != null;
+  }
+  get claimOwnerId(): string {
+    return this.#row()?.claimed_by ?? '';
+  }
+  heartbeat(): void {
+    this.#tdb.heartbeat(this.#id, this.#token);
+  }
+  release(newStatus: Status = Status.PENDING): void {
+    this.#tdb.release(this.#id, this.#token, newStatus);
+  }
+
+  /** Terminally block this task (clears convergence and the claim). Works on
+   *  unclaimed tasks — used for exhausted retries and blocked dependencies. */
+  markBlocked(): void {
+    this.#tdb.block(this.#id);
+  }
+
+  /** Reset a blocked/failed task back to PENDING: clear failures, convergence,
+   *  and the claim so the loop retries it from scratch. Safe while the loop is
+   *  active — blocked/failed tasks are not being processed. */
+  unblock(): void {
+    this.#tdb.unblock(this.#id);
   }
 
   // ── Dependencies ────────────────────────────────────────────────────
   get dependencies(): readonly number[] {
-    try {
-      // Tolerate corrupted/garbage lines: keep only valid positive task
-      // numbers so a malformed entry can't become a NaN dependency that
-      // never resolves (deadlocking the task).
-      return readFileSync(join(this.#dir, F_DEPS), 'utf-8')
-        .trim().split('\n')
-        .map(s => parseInt(s.trim(), 10))
-        .filter(n => Number.isInteger(n) && n > 0);
-    } catch { return []; }
-  }
-  set dependencies(nums: readonly number[]) {
-    writeFileSync(join(this.#dir, F_DEPS), nums.join('\n') + '\n');
+    return this.#tdb.dependencyNumbers(this.#taskNumber);
   }
 
-  dependenciesMet(tasksDir: string): boolean {
+  dependenciesMet(): boolean {
     for (const d of this.dependencies) {
-      // Read from disk — cache is per-process, another process may have changed status
-      const depTask = TaskState.#findByNumber(tasksDir, d);
-      if (!depTask || depTask.status !== Status.CONVERGED) return false;
+      // Missing dep counts as unmet (its row is gone or never converged).
+      if (this.#tdb.getByNumber(d)?.status !== 'CONVERGED') return false;
     }
     return true;
   }
 
-  hasBlockedDependency(tasksDir: string): boolean {
-    for (const d of this.dependencies) {
-      // Missing deps still wait; only terminal BLOCKED deps cascade.
-      const depTask = TaskState.#findByNumber(tasksDir, d);
-      if (depTask?.status === Status.BLOCKED) return true;
-    }
-    return false;
-  }
-
-  /** Parse a counter file's contents into a non-negative integer; any
-   *  corrupted/garbage/negative value is treated as 0 so it cannot push a task
-   *  into a bogus converged/blocked state. */
-  static #nonNegInt(raw: string): number {
-    const n = parseInt(raw.trim(), 10);
-    return Number.isInteger(n) && n > 0 ? n : 0;
-  }
-
-  static #findByNumber(tasksDir: string, num: number): TaskState | null {
-    for (const shard of SHARDS) {
-      const shardDir = resolve(tasksDir, shard);
-      let entries: string[];
-      try { entries = readdirSync(shardDir); } catch { continue; }
-      const match = entries.find(e => new RegExp(`^T0*${num}-`).test(e));
-      if (match) return new TaskState(resolve(shardDir, match));
-    }
-    return null;
-  }
-
-  // ── Cascade ─────────────────────────────────────────────────────────
-  /** Iteratively mark tasks BLOCKED whose dependencies are blocked. */
-  static cascadeBlockDependencies(tasksDir: string): void {
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const shard of ['pending', 'failed'] as const) {
-        let entries: string[];
-        try { entries = readdirSync(resolve(tasksDir, shard)); } catch { continue; }
-        for (const e of entries) {
-          if (!e.startsWith('T')) continue;
-          const task = new TaskState(resolve(tasksDir, shard, e));
-          if (task.isConverged || task.isBlocked || task.isInProgress) continue;
-          if (!task.hasBlockedDependency(tasksDir)) continue;
-          task.markBlocked();
-          changed = true;
-        }
-      }
-    }
-  }
-
-  // ── Claim ───────────────────────────────────────────────────────────
-  claim(instanceId: string): boolean {
-    const p = join(this.#dir, D_CLAIM);
-    const lockFile = join(this.#dir, F_CLAIM_LOCK);
-    
-    // Try atomic claim: create lock file with exclusive write flag
-    // Only succeeds if file doesn't exist (atomic operation)
-    try {
-      writeFileSync(lockFile, `pid:${process.pid}\nstarted:${Date.now()}\ninstance:${instanceId}\nhost:${hostname()}\n`, { flag: 'wx' });
-    } catch {
-      // Lock file already exists - another process claimed it
-      return false;
-    }
-
-    // We own the lock now, create the claim directory for metadata
-    try { mkdirSync(p); }
-    /* v8 ignore next -- only fires on unexpected filesystem errors */
-    catch (error: unknown) { logUnexpectedFsError(`create claim directory ${p}`, error, ['EEXIST']); }
-    writeFileSync(join(p, F_OWNER),
-      `pid:${process.pid}\nstarted:${Date.now()}\ninstance:${instanceId}\nhost:${hostname()}\n`);
-    writeFileSync(join(p, F_BEAT), '');
-    try {
-      this.status = inProgress(instanceId);
-    } catch (e: unknown) {
-      /* v8 ignore start -- only fires when filesystem refuses rename (Windows lock) */
-      this.release(Status.PENDING);
-      throw e;
-      /* v8 ignore stop */
-    }
-    return true;
-  }
-
-  get isClaimed(): boolean { return existsSync(join(this.#dir, D_CLAIM)); }
-
-  get claimOwner(): ClaimOwner | null {
-    try {
-      const raw = readFileSync(join(this.#dir, D_CLAIM, F_OWNER), 'utf-8');
-      return {
-        pid:        parseInt(raw.match(/pid:(\d+)/)?.[1] ?? '0', 10),
-        startedAt:  parseInt(raw.match(/started:(\d+)/)?.[1] ?? '0', 10),
-        instanceId: raw.match(/instance:(.+)/)?.[1] ?? '',
-        host:       raw.match(/host:(.+)/)?.[1] ?? '',
-      };
-    } catch { return null; }
-  }
-
-  get claimOwnerId(): string { return this.claimOwner?.instanceId ?? ''; }
-
-  heartbeat(): void {
-    try { writeFileSync(join(this.#dir, D_CLAIM, F_BEAT), ''); }
-    /* v8 ignore next -- only fires on unexpected filesystem errors */
-    catch (error: unknown) { logUnexpectedFsError(`write heartbeat for ${this.#dir}`, error, ['ENOENT']); }
-  }
-
-  release(newStatus: Status = Status.PENDING): void {
-    this.status = newStatus;
-    try { rmSync(join(this.#dir, D_CLAIM), { recursive: true, force: true }); }
-    /* v8 ignore next -- only fires on unexpected filesystem errors */
-    catch (error: unknown) { logUnexpectedFsError(`remove claim directory in ${this.#dir}`, error, ['ENOENT']); }
-    try { rmSync(join(this.#dir, F_CLAIM_LOCK), { force: true }); }
-    /* v8 ignore next -- only fires on unexpected filesystem errors */
-    catch (error: unknown) { logUnexpectedFsError(`remove claim lock in ${this.#dir}`, error, ['ENOENT']); }
-  }
-
-  markBlocked(): void {
-    this.release(Status.BLOCKED);
-    this.resetConvergence();
-  }
-
-  /** Reset a blocked/failed task back to PENDING: clear the claim, zero the
-   *  failure count and convergence, and move it to the pending shard so the
-   *  loop retries it from scratch. Safe to run while a loop is active — no stop
-   *  signal needed, since blocked/failed tasks are not being processed. */
-  unblock(): void {
-    try { rmSync(join(this.#dir, F_FAILURES)); }
-    /* v8 ignore next -- only fires on unexpected filesystem errors */
-    catch (error: unknown) { logUnexpectedFsError(`remove ${F_FAILURES} in ${this.#dir}`, error, ['ENOENT']); }
-    this.resetConvergence();
-    this.release(Status.PENDING);
-  }
-
-  // ── Metadata ────────────────────────────────────────────────────────
+  // ── Content (parsed from autoresearch.md) ───────────────────────────
   #readAutoresearch(): string {
-    try { return readFileSync(join(this.#dir, 'autoresearch.md'), 'utf-8'); }
+    try { return readFileSync(join(this.directory, 'autoresearch.md'), 'utf-8'); }
     catch { return ''; }
   }
 
@@ -404,13 +213,10 @@ export class TaskState {
     return raw ? raw.split('\n').map(s => s.replace(/^[-*]\s*/, '').trim()).filter(Boolean) : [];
   }
 
-  /** Git branch this task targets for worktree creation and merge.
-   *  Set at task creation time. Falls back to undefined (Engine uses its own baseBranch). */
+  /** Git branch this task targets for worktree creation and merge. Set at task
+   *  creation; undefined means Engine uses its own baseBranch. */
   get targetBranch(): string | undefined {
-    try {
-      const v = readFileSync(join(this.#dir, F_TARGET_BRANCH), 'utf-8').trim();
-      return v || undefined;
-    } catch { return undefined; }
+    return this.#row()?.target_branch ?? undefined;
   }
 
   get goal(): string {
@@ -439,166 +245,50 @@ export class TaskState {
     return [...new Set(names)];
   }
 
-  get maxFailures(): number {
-    const raw = this.#readAutoresearch().match(/\*\*Retry limit:\*\*\s*(.+)/i)?.[1]?.trim() ?? '';
-    if (/^(infinite|unlimited|inf)$/i.test(raw)) return Infinity;
-    if (!/^\d+$/.test(raw)) return MAX_FAILURES;
-    const n = Number(raw);
-    return n >= 1 ? n : MAX_FAILURES;
-  }
+  // ── Static (DB-backed) ──────────────────────────────────────────────
 
-  // ── Static ──────────────────────────────────────────────────────────
-
-  /** Scan active shards (pending, in_progress, failed, blocked) and return a Map of task number → TaskState.
-   *  Converged tasks are excluded — they are terminal and counted separately via countConverged(). */
-  static async scan(tasksDir: string): Promise<Map<string, TaskState>> {
-    TaskState.#cache.clear();
+  /** All non-converged tasks (PENDING/IN_PROGRESS/FAILED/BLOCKED), keyed by
+   *  task number. Converged tasks are terminal and counted via countConverged(). */
+  static scan(tdb: TaskDb, tasksRoot: string): Map<string, TaskState> {
     const all = new Map<string, TaskState>();
-    const seen = new Map<string, string>(); // taskNumber → first shard
-    for (const shard of ['pending', 'in_progress', 'failed', 'blocked'] as const) {
-      try {
-        for (const entry of await readdir(resolve(tasksDir, shard))) {
-          const m = entry.match(/^T(\d+)-/);
-          if (!m?.[1]) continue;
-          const dir = resolve(tasksDir, shard, entry);
-          try { await readdir(dir); } catch { continue; } // not a dir
-          const key = String(parseInt(m[1], 10));
-          const prevShard = seen.get(key);
-          /* v8 ignore start -- integrity: duplicate detection only fires on corruption */
-          if (prevShard) {
-            console.error(`INTEGRITY: T${key} exists in both ${prevShard}/ and ${shard}/ — duplicate task directory`);
-            continue;
-          }
-          /* v8 ignore stop */
-          seen.set(key, shard);
-          const t = new TaskState(dir);
-          all.set(key, t);
-          TaskState.#cache.set(key, t.status);
-        }
-      } catch { /* shard doesn't exist */ }
+    for (const row of tdb.byStatus(['PENDING', 'IN_PROGRESS', 'FAILED', 'BLOCKED'])) {
+      all.set(String(row.task_number), TaskState.fromRow(tdb, tasksRoot, row));
     }
     return all;
   }
 
-  /** Remove oldest converged task dirs beyond `keep`, archiving summaries to .archive.jsonl.
+  /** Atomically claim the next actionable task, or null if none is ready. */
+  static pick(tdb: TaskDb, tasksRoot: string, instanceId: string): TaskState | null {
+    const row = tdb.pick(instanceId);
+    return row ? TaskState.fromRow(tdb, tasksRoot, row) : null;
+  }
+
+  /** Look up a task by its number without claiming it (read-only view). */
+  static pickByNumber(tdb: TaskDb, tasksRoot: string, taskNumber: number): TaskState | null {
+    const row = tdb.getByNumber(taskNumber);
+    return row ? TaskState.fromRow(tdb, tasksRoot, row) : null;
+  }
+
+  /** Total converged tasks. */
+  static countConverged(tdb: TaskDb): number {
+    return tdb.byStatus(['CONVERGED']).length;
+  }
+
+  /** Delete content dirs of the oldest converged tasks beyond `keep` (best
+   *  effort), preserving the DB rows so the converged count is unaffected.
    *  keep=0 means unlimited (no pruning). */
-  static pruneConverged(tasksDir: string, keep: number): void {
+  static pruneConverged(tdb: TaskDb, tasksRoot: string, keep: number): void {
     if (keep === 0) return;
-    const convergedDir = resolve(tasksDir, 'converged');
-    let entries: string[];
-    try { entries = readdirSync(convergedDir); }
-    catch (error: unknown) {
-      logUnexpectedFsError(`read converged shard ${convergedDir}`, error, ['ENOENT']);
-      return;
-    }
-
-    const taskDirs = entries
-      .filter(e => /^T\d+/.test(e))
-      .map(e => ({ name: e, num: parseInt(e.slice(1), 10) }))
-      .sort((a, b) => a.num - b.num);
-
-    const toPrune = taskDirs.slice(0, Math.max(0, taskDirs.length - keep));
-    for (const { name } of toPrune) {
-      const dir = resolve(convergedDir, name);
-      const t = new TaskState(dir);
-      const summary = JSON.stringify({ T: t.taskNumber, name: t.taskName, goal: t.goal, convergedAt: Date.now() });
-      try { appendFileSync(resolve(convergedDir, '.archive.jsonl'), summary + '\n'); }
-      /* v8 ignore next -- only fires on unexpected filesystem errors */
-      catch (error: unknown) { logFsError(`append converged archive in ${convergedDir}`, error); }
-      try { rmSync(dir, { recursive: true, force: true }); }
-      /* v8 ignore next -- only fires on unexpected filesystem errors */
-      catch (error: unknown) { logUnexpectedFsError(`remove converged task ${dir}`, error, ['ENOENT']); }
+    const root = resolve(tasksRoot);
+    const converged = tdb.byStatus(['CONVERGED']); // ordered by task_number asc
+    const toPrune = converged.slice(0, Math.max(0, converged.length - keep));
+    for (const row of toPrune) {
+      rmSync(resolve(root, row.dir), { recursive: true, force: true });
     }
   }
 
-  /** Count total converged tasks: task dirs in converged/ plus lines in .archive.jsonl */
-  static countConverged(tasksDir: string): number {
-    const convergedDir = resolve(tasksDir, 'converged');
-    let dirCount = 0;
-    let archiveCount = 0;
-    try {
-      dirCount = readdirSync(convergedDir).filter(e => /^T\d+/.test(e)).length;
-    } catch (error: unknown) {
-      logUnexpectedFsError(`read converged shard ${convergedDir}`, error, ['ENOENT']);
-      dirCount = 0;
-    }
-    try {
-      archiveCount = readFileSync(resolve(convergedDir, '.archive.jsonl'), 'utf-8')
-        .trim().split('\n').filter(Boolean).length;
-    } catch (error: unknown) {
-      logUnexpectedFsError(`read converged archive in ${convergedDir}`, error, ['ENOENT']);
-      archiveCount = 0;
-    }
-    return dirCount + archiveCount;
-  }
-
-  /** Pick the highest-priority actionable task. Returns null if none. */
-  static async pick(
-    tasksDir: string,
-    instanceId: string,
-  ): Promise<TaskState | null> {
-    for (const shard of ['pending', 'failed', 'in_progress'] as const) {
-      let entries: string[];
-      try { entries = await readdir(resolve(tasksDir, shard)); }
-      catch { continue; }
-
-      const nums = entries
-        .map(e => { const m = e.match(/^T(\d+)-/); return m?.[1] ? parseInt(m[1], 10) : 0; })
-        .filter(Boolean)
-        .sort((a, b) => a - b);
-
-      for (const tn of nums) {
-        const dirName = entries.find(e =>
-          new RegExp(`^T0*${tn}-`).test(e))!;
-        const t = new TaskState(resolve(tasksDir, shard, dirName));
-
-        // Detect shard mismatch (task in wrong directory for its status).
-        // This happens when rename fails (e.g. EPERM/EBUSY on Windows).
-        // .status was written but the dir didn't move. Skip permanently —
-        // the task cannot be processed from the wrong shard.
-        const expectedShard = statusToShard(t.status);
-        /* v8 ignore start -- integrity check; only fires on filesystem corruption */
-        if (expectedShard !== shard) {
-          // Only log once per tick, not every poll
-          continue;
-        }
-        /* v8 ignore stop */
-
-        if (t.isClaimed && !t.isInProgress) {
-          try { rmSync(join(t.directory, D_CLAIM), { recursive: true, force: true }); }
-          /* v8 ignore next -- only fires on unexpected filesystem errors */
-          catch (error: unknown) { logUnexpectedFsError(`remove stale claim directory in ${t.directory}`, error, ['ENOENT']); }
-          try { rmSync(join(t.directory, F_CLAIM_LOCK), { force: true }); }
-          /* v8 ignore next -- only fires on unexpected filesystem errors */
-          catch (error: unknown) { logUnexpectedFsError(`remove stale claim lock in ${t.directory}`, error, ['ENOENT']); }
-        }
-        /* v8 ignore next -- blocked/converged tasks are in their own shards, not scanned by pick() */
-        if (t.isConverged || t.isBlocked) continue;
-        if (t.isFailed && t.failureCount >= t.maxFailures) { t.markBlocked(); continue; }
-        if (t.isInProgress) {
-          if (!t.isClaimed) { t.release(Status.FAILED); continue; }
-          if (t.claimOwnerId !== instanceId) continue;
-          return t;
-        }
-        if (!t.isActionable || !t.dependenciesMet(tasksDir)) continue;
-        try {
-          if (!t.claim(instanceId)) continue;
-        } catch (e: unknown) {
-          /* v8 ignore start -- only fires when filesystem refuses rename (Windows lock) */
-          if (e instanceof TaskMoveError) {
-            console.error(`\n  ❌ T${tn}: ${e.message}\n`);
-            continue;
-          }
-          throw e;
-          /* v8 ignore stop */
-        }
-        return t;
-      }
-    }
-    return null;
-  }
-
-  static get statusCache(): ReadonlyMap<string, Status> {
-    return TaskState.#cache;
+  /** Block every task that transitively depends on a BLOCKED task. */
+  static cascadeBlockDependencies(tdb: TaskDb): void {
+    tdb.cascadeBlock();
   }
 }

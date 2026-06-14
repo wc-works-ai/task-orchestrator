@@ -1,41 +1,40 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createCodingAgent } from '../src/agents.js';
 import { PiSpawner, type PiSpawnerOptions } from '../src/PiSpawner.js';
-import { TaskState } from '../src/TaskState.js';
+import { memStateDb, seedState, type StateDb } from './helpers.js';
 
 vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
   spawnSync: vi.fn(() => ({ status: 0, stdout: '1.0.0\n', stderr: '' })),
 }));
 
-function makeTask(dir: string): TaskState {
-  const taskDir = resolve(dir, 'pending', 'T01-agent');
-  mkdirSync(taskDir, { recursive: true });
-  writeFileSync(resolve(taskDir, 'autoresearch.md'), '- **Model:** task-model\n## Goal\nTest');
-  return new TaskState(taskDir);
+function makeTask(s: StateDb, dir: string) {
+  return seedState(s, dir, 1, 'agent', { autoresearch: '- **Model:** task-model\n## Goal\nTest' });
 }
 
 describe('createCodingAgent', () => {
   let dir = '';
+  let s: StateDb;
 
   beforeEach(() => {
     dir = mkdtempSync(resolve(tmpdir(), '.test-agents-'));
-    mkdirSync(resolve(dir, 'pending'), { recursive: true });
+    s = memStateDb();
     vi.mocked(spawnSync).mockReturnValue({ status: 0, stdout: '1.0.0\n', stderr: '' } as ReturnType<typeof spawnSync>);
   });
 
   afterEach(async () => {
+    s.db.close();
     await rm(dir, { recursive: true, force: true });
   });
 
   it.each([undefined, '', 'pi'])('creates the pi agent for %s', (name) => {
     const opts: PiSpawnerOptions = { model: 'default-model', workDir: dir };
-    const task = makeTask(dir);
+    const task = makeTask(s, dir);
     const agent = createCodingAgent(name, opts);
 
     expect(agent.name).toBe('pi');

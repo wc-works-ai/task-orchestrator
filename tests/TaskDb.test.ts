@@ -376,3 +376,76 @@ describe('TaskDb.cascadeBlock', () => {
     expect(tdb.cascadeBlock()).toBe(0);
   });
 });
+
+describe('TaskDb.byStatus', () => {
+  it('returns tasks in any of the given statuses, ordered by task_number', () => {
+    const { tdb, db } = memTaskDb();
+    addRow(db, 3, 'T03-c', 'FAILED');
+    addRow(db, 1, 'T01-a', 'PENDING');
+    addRow(db, 2, 'T02-b', 'CONVERGED');
+    const rows = tdb.byStatus(['PENDING', 'FAILED']);
+    expect(rows.map(r => r.task_number)).toEqual([1, 3]);
+  });
+
+  it('returns an empty array when nothing matches', () => {
+    const { tdb } = memTaskDb();
+    ready(tdb, 'a');
+    expect(tdb.byStatus(['BLOCKED'])).toEqual([]);
+  });
+});
+
+describe('TaskDb.block', () => {
+  it('forces a task to BLOCKED and clears convergence and the lease', () => {
+    const { tdb } = memTaskDb();
+    const n = ready(tdb, 'a');
+    const id = taskNumberToId(tdb, n);
+    const tok = tdb.pick('i')!.claim_token!;
+    tdb.incrementConvergence(id, tok);
+    expect(tdb.block(id)).toBe(true);
+    const row = tdb.get(id)!;
+    expect(row.status).toBe('BLOCKED');
+    expect(row.convergence).toBe(0);
+    expect(row.claimed_by).toBeNull();
+    expect(row.claim_token).toBeNull();
+  });
+
+  it('returns false for an unknown id', () => {
+    const { tdb } = memTaskDb();
+    expect(tdb.block(999)).toBe(false);
+  });
+});
+
+describe('TaskDb.unblock', () => {
+  it('resets a task to PENDING, clearing failures, convergence, and the lease', () => {
+    const { tdb, db } = memTaskDb();
+    addRow(db, 1, 'T01-a', 'BLOCKED');
+    const id = taskNumberToId(tdb, 1);
+    db.run('UPDATE tasks SET failures=4, convergence=2 WHERE id=?', [id]);
+    expect(tdb.unblock(id)).toBe(true);
+    const row = tdb.get(id)!;
+    expect(row.status).toBe('PENDING');
+    expect(row.failures).toBe(0);
+    expect(row.convergence).toBe(0);
+    expect(row.claim_token).toBeNull();
+  });
+
+  it('returns false for an unknown id', () => {
+    const { tdb } = memTaskDb();
+    expect(tdb.unblock(999)).toBe(false);
+  });
+});
+
+describe('TaskDb.remove', () => {
+  it('deletes a task row', () => {
+    const { tdb } = memTaskDb();
+    const n = ready(tdb, 'a');
+    const id = taskNumberToId(tdb, n);
+    expect(tdb.remove(id)).toBe(true);
+    expect(tdb.get(id)).toBeUndefined();
+  });
+
+  it('returns false for an unknown id', () => {
+    const { tdb } = memTaskDb();
+    expect(tdb.remove(999)).toBe(false);
+  });
+});

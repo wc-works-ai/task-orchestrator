@@ -124,6 +124,17 @@ export class TaskDb {
     ).map(r => r.depends_on);
   }
 
+  /** Every task in any of `statuses`, ordered by task_number. Callers pass a
+   *  non-empty list (scan, converged accounting, startup reconciliation). */
+  byStatus(statuses: readonly TaskStatus[]): TaskRow[] {
+    const placeholders = statuses.map(() => '?').join(',');
+    return withRetry(() =>
+      this.#db.all<TaskRow>(`SELECT * FROM tasks WHERE status IN (${placeholders}) ORDER BY task_number`, [
+        ...statuses,
+      ]),
+    );
+  }
+
   // ── Creation ────────────────────────────────────────────────────────
   /** Allocate the next task_number, derive its content dir, and insert as
    *  CREATING with its deps — all atomically. Returns the id, number, and dir. */
@@ -267,6 +278,41 @@ export class TaskDb {
       ),
     );
     return r.changes;
+  }
+
+  /** Force a task to BLOCKED, clearing convergence and every lease field.
+   *  Not claim-gated: terminal blocking of unclaimed tasks (exhausted retries,
+   *  missing content dir). */
+  block(id: number): boolean {
+    const r = withRetry(() =>
+      this.#db.run(
+        `UPDATE tasks SET status='BLOCKED', convergence=0, claimed_by=NULL, claim_token=NULL,
+                claimed_at=NULL, heartbeat=NULL, updated_at=:now
+         WHERE id=:id`,
+        { now: this.#now(), id },
+      ),
+    );
+    return r.changes > 0;
+  }
+
+  /** Reset a task to PENDING, clearing failures, convergence, and every lease
+   *  field. Not claim-gated: terminal tasks hold no claim. */
+  unblock(id: number): boolean {
+    const r = withRetry(() =>
+      this.#db.run(
+        `UPDATE tasks SET status='PENDING', failures=0, convergence=0, claimed_by=NULL,
+                claim_token=NULL, claimed_at=NULL, heartbeat=NULL, updated_at=:now
+         WHERE id=:id`,
+        { now: this.#now(), id },
+      ),
+    );
+    return r.changes > 0;
+  }
+
+  /** Delete a task row outright (stale CREATING reconciliation). */
+  remove(id: number): boolean {
+    const r = withRetry(() => this.#db.run('DELETE FROM tasks WHERE id=?', [id]));
+    return r.changes > 0;
   }
 
   integrityOk(): boolean {

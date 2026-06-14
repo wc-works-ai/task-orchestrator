@@ -1,11 +1,13 @@
-import { statSync, readFileSync, readdirSync, existsSync, rmSync, mkdirSync, writeFileSync, appendFileSync, cpSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, rmSync, mkdirSync, writeFileSync, appendFileSync, cpSync } from 'node:fs';
 import { resolve, join, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { TaskState, Status, type BenchmarkFn, type TaskInfo, type TickResult, type TickNull } from './TaskState.js';
+import { TaskDb } from './TaskDb.js';
 import { Worktree, MergeConflictError } from './Worktree.js';
 import { env } from './env.js';
+import { handleOrchestratorError, type Logger } from './errors.js';
 import type { SpawnFn, TokenUsage } from './CodingAgent.js';
 
 // Re-export contract types so external importers keep working
@@ -61,6 +63,9 @@ export interface EngineOptions {
   readonly sleep?: SleepFn;
   readonly onTick?: (result: TickResult | TickNull, total: number) => void | Promise<void>;
   readonly keepConverged?: number;
+  /** Inject a shared state DB (tests). When provided, the Engine does not own
+   *  it and will not close it; otherwise it opens `<tasksDir>/state.db`. */
+  readonly taskDb?: TaskDb;
 }
 
 export class Engine {
@@ -82,6 +87,11 @@ export class Engine {
   readonly #keepConverged: number;
   readonly #sleep: SleepFn;
   readonly #baseBranch: string;
+  readonly #tdb: TaskDb;
+  readonly #ownsTdb: boolean;
+  readonly #logger: Logger;
+  #disposed = false;
+  #reconciled = false;
   #environmentError?: string;
   #stopReason?: StopReason;
   /** Track active worktrees by task number */
@@ -112,6 +122,12 @@ export class Engine {
     this.#parallel = opts.parallel ?? env.parallelTasks;
     this.#keepConverged = opts.keepConverged ?? env.keepConverged;
     this.#sleep = opts.sleep ?? sleep;
+    this.#ownsTdb = opts.taskDb === undefined;
+    this.#tdb = opts.taskDb ?? TaskDb.open(resolve(tasksDir, 'state.db'));
+    this.#logger = {
+      warn: (msg: string) => this.#log(msg, 'always'),
+      error: (msg: string) => this.#log(msg, 'always'),
+    };
     this.#baseBranch = this.#detectBaseBranch();
   }
 
@@ -119,6 +135,14 @@ export class Engine {
   get environmentError(): string | undefined { return this.#environmentError; }
   get stopReason(): StopReason | undefined { return this.#stopReason; }
   get baseBranch(): string { return this.#baseBranch; }
+  get taskDb(): TaskDb { return this.#tdb; }
+
+  /** Release the owned state DB handle (no-op when the DB was injected). */
+  dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    if (this.#ownsTdb) this.#tdb.close();
+  }
 
   #detectBaseBranch(): string {
     try {
@@ -148,19 +172,8 @@ export class Engine {
   // ── Single tick ─────────────────────────────────────────────────────
 
 
-  async pickByNumber(num: number): Promise<TaskState | null> {
-    await TaskState.scan(this.#dir);
-    for (const shard of ['pending', 'in_progress', 'failed', 'converged', 'blocked']) {
-      const shardDir = resolve(this.#dir, shard);
-      try {
-        for (const e of readdirSync(shardDir)) {
-          if (new RegExp(`^T0*${num}-`).test(e)) return new TaskState(resolve(shardDir, e));
-        }
-      } catch (e: unknown) {
-        this.#bestEffortFailure(`failed to read ${shardDir} while looking for T${num}`, e);
-      }
-    }
-    return null;
+  pickByNumber(num: number): TaskState | null {
+    return TaskState.pickByNumber(this.#tdb, this.#dir, num);
   }
   async tick(): Promise<TickResult | TickNull> {
     if (existsSync(this.#stopFile)) {
@@ -174,87 +187,22 @@ export class Engine {
       /* v8 ignore stop */
       return { task: null, metric: 0, converged: false, stopped: true };
     }
-    this.#recover();
-    await TaskState.scan(this.#dir);
-    TaskState.cascadeBlockDependencies(this.#dir);
+    this.#reconcileOnce();
+    // Recover stale claims (dead/crashed workers), then block tasks that have
+    // exhausted their retries and cascade blocks to their dependents — all
+    // before picking, so the queue reflects reality this tick.
+    this.#tdb.recoverStale(Date.now() - env.heartbeatMs);
+    this.#blockExhausted();
+    this.#tdb.cascadeBlock();
 
-    // Prioritize convergence: finish converging tasks before picking new ones.
-    // This minimizes time between agent work and merge, reducing conflicts.
-    // Check both in-memory worktrees and on-disk in_progress tasks with convergence > 0.
-    /* v8 ignore start -- convergence priority requires real worktrees; tested via integration */
-    let task: TaskState | null = null;
-    const inProgressDir = resolve(this.#dir, 'in_progress');
-    if (existsSync(inProgressDir)) {
-      try {
-        const inProgress = readdirSync(inProgressDir);
-        for (const entry of inProgress) {
-          if (!entry.startsWith('T')) continue;
-          const candidate = new TaskState(resolve(inProgressDir, entry));
-          if (candidate.convergenceCount > 0 && candidate.isInProgress
-              && candidate.isClaimed && candidate.claimOwnerId === this.#id
-              && !this.#owned.has(candidate.taskNumber)) {
-            task = candidate;
-            // Reconnect worktree if not in memory
-            if (!this.#worktrees.has(candidate.taskNumber) && this.#spawn
-                && existsSync(resolve(this.#repo, '.git')) && !this.#noWorktree) {
-              const reconnected = this.#tryReconnectWorktree(candidate);
-              if (reconnected) {
-                this.#log(`T${candidate.taskNumber} reconnected to worktree for convergence`);
-              }
-            }
-            break;
-          }
-        }
-      } catch (e: unknown) {
-        this.#bestEffortFailure(`failed to scan ${inProgressDir} for converging tasks`, e);
-      }
-    }
-    /* v8 ignore stop */
-    // Fall back to normal pick if no converging task found
-    if (!task) task = await TaskState.pick(this.#dir, this.#id);
+    // Prefer finishing our own in-progress tasks (pick() never returns them) so
+    // convergence completes before new work starts, minimizing merge conflicts.
+    const task = this.#continueOwned() ?? TaskState.pick(this.#tdb, this.#dir, this.#id);
     if (!task) {
-      TaskState.cascadeBlockDependencies(this.#dir);
-      // Diagnostic: show why nothing was picked
-      for (const shard of ['pending', 'in_progress', 'failed', 'blocked'] as const) {
-        const shardDir = resolve(this.#dir, shard);
-        let entries: string[];
-        try {
-          entries = readdirSync(shardDir);
-        } catch (e: unknown) {
-          this.#bestEffortFailure(`failed to inspect ${shardDir} while explaining idle state`, e);
-          continue;
-        }
-        for (const e of entries) {
-          if (!e.startsWith('T')) continue;
-          const t = new TaskState(resolve(this.#dir, shard, e));
-          const tn = `T${t.taskNumber}`;
-          /* v8 ignore next -- converged tasks in non-converged shards: shard mismatch */
-          if (t.isConverged) continue;
-          if (t.isBlocked) {
-            this.#log(`${tn}: skipped — blocked (${t.failureCount} failures)`);
-            continue;
-          }
-          if (t.isInProgress && t.isClaimed) {
-            const owner = t.claimOwnerId;
-            /* c8 ignore start: byUs=true is unreachable — pick() returns our own claims */
-            const byUs = owner === this.#id;
-            this.#log(`${tn}: skipped — ${byUs ? 'our claim (convergence check)' : `claim held by ${owner.slice(0, 12)}...`}`);
-            /* c8 ignore stop */
-          } else if (!t.dependenciesMet(this.#dir)) {
-            this.#log(`${tn}: skipped — unmet deps [${t.dependencies.join(',')}]`);
-          }
-        }
-      }
-      this.#log('No actionable tasks');
+      this.#logIdle();
       return { task: null, metric: 0, converged: false };
     }
 
-    // In-process guard: if another worker in this process already owns this
-    // task number (e.g. two concurrent ticks both received our own in-progress
-    // claim), skip it here. The owning worker will carry it to completion.
-    if (this.#owned.has(task.taskNumber)) {
-      return { task: null, metric: 0, converged: false };
-    }
     this.#owned.add(task.taskNumber);
     try {
       this.#log(`T${task.taskNumber} | picked up | ${this.#singleLine(task.goal)}`, 'transition');
@@ -316,7 +264,6 @@ export class Engine {
           } catch (e: unknown) {
             const msg = this.#errorDetail(e);
             if (msg.includes('conflict')) {
-              task.status = Status.FAILED;
               this.#retryCooldowns.set(task.taskNumber, Date.now());
               console.error(`  ⚠️  T${task.taskNumber}: merge conflict — task FAILED, worktree kept for inspection`);
             } else {
@@ -348,64 +295,74 @@ export class Engine {
     let announcedIdle = false;
     let consecutiveErrors = 0;
     let lastErrorMsg = '';
-    while (true) {
-      try {
-        // Determine how many concurrent ticks to spawn
-        // If parallel=0 (unlimited), spawn at most 100 ticks to avoid file system thrashing
-        // Otherwise spawn up to the parallel limit
-        const tickCount = parallel === 0 ? 100 : parallel;
-        
-        // Run up to `tickCount` ticks concurrently
-        const tickPromises: Promise<TickResult | TickNull>[] = [];
-        for (let i = 0; i < tickCount; i++) {
-          tickPromises.push(this.tick());
-        }
-        const results = await Promise.all(tickPromises);
-        consecutiveErrors = 0;
+    try {
+      while (true) {
+        try {
+          // Determine how many concurrent ticks to spawn
+          // If parallel=0 (unlimited), spawn at most 100 ticks to avoid file system thrashing
+          // Otherwise spawn up to the parallel limit
+          const tickCount = parallel === 0 ? 100 : parallel;
 
-        // Stop signal (.stop / --stop) or a fatal run-wide failure surfaced by a tick.
-        if (results.some(r => r.stopped)) {
-          this.#stopReason = this.#environmentError ? 'environment' : 'signal';
-          break;
-        }
+          // Run up to `tickCount` ticks concurrently
+          const tickPromises: Promise<TickResult | TickNull>[] = [];
+          for (let i = 0; i < tickCount; i++) {
+            tickPromises.push(this.tick());
+          }
+          const results = await Promise.all(tickPromises);
+          consecutiveErrors = 0;
 
-        // Count tasks that completed and check if we're idle
-        const tasksCompleted = results.filter(r => r.task !== null);
-        const anyTaskCompleted = tasksCompleted.length > 0;
+          // Stop signal (.stop / --stop) or a fatal run-wide failure surfaced by a tick.
+          if (results.some(r => r.stopped)) {
+            this.#stopReason = this.#environmentError ? 'environment' : 'signal';
+            break;
+          }
 
-        if (!anyTaskCompleted) {
-          if (infinite) {
-            if (!announcedIdle) {
-              this.#log(`idle: waiting for new tasks or for blocked/failed tasks to be addressed (infinite mode; polling every ${idleSleepMs}ms; --stop to exit)`);
-              announcedIdle = true;
+          // Count tasks that completed and check if we're idle
+          const tasksCompleted = results.filter(r => r.task !== null);
+          const anyTaskCompleted = tasksCompleted.length > 0;
+
+          if (!anyTaskCompleted) {
+            if (infinite) {
+              if (!announcedIdle) {
+                this.#log(`idle: waiting for new tasks or for blocked/failed tasks to be addressed (infinite mode; polling every ${idleSleepMs}ms; --stop to exit)`);
+                announcedIdle = true;
+              }
+              await sleepFn(idleSleepMs);
+              continue;
             }
+            if (!keepAlive || this.#isRunComplete()) { this.#stopReason = 'complete'; break; }
             await sleepFn(idleSleepMs);
             continue;
           }
-          if (!keepAlive || await this.#isRunComplete()) { this.#stopReason = 'complete'; break; }
+          announcedIdle = false;
+
+          // Report on completed tasks
+          for (const result of tasksCompleted) {
+            total++;
+            if (opts.onTick) await opts.onTick(result as TickResult, total);
+          }
+        } catch (e: unknown) {
+          // A FATAL DB error (corrupt/locked/schema) means state.db is unusable —
+          // stop the run. Everything else is treated as a task-level hiccup: skip
+          // and keep looping until repeated failures cross the ceiling.
+          if (handleOrchestratorError(e, this.#logger) === 'stop') {
+            this.#environmentError = this.#errorDetail(e);
+            this.#stopReason = 'environment';
+            break;
+          }
+          lastErrorMsg = this.#errorDetail(e);
+          consecutiveErrors++;
+          if (consecutiveErrors >= MAX_CONSECUTIVE_TICK_ERRORS) {
+            this.#environmentError = `repeated tick failures (${consecutiveErrors}x): ${this.#singleLine(lastErrorMsg)}`;
+            this.#stopReason = 'environment';
+            break;
+          }
           await sleepFn(idleSleepMs);
           continue;
         }
-        announcedIdle = false;
-
-        // Report on completed tasks
-        for (const result of tasksCompleted) {
-          total++;
-          if (opts.onTick) await opts.onTick(result as TickResult, total);
-        }
-      } catch (e: unknown) {
-        const msg = this.#errorDetail(e);
-        lastErrorMsg = msg;
-        consecutiveErrors++;
-        this.#log(`tick error: ${this.#singleLine(msg)}`, 'always');
-        if (consecutiveErrors >= MAX_CONSECUTIVE_TICK_ERRORS) {
-          this.#environmentError = `repeated tick failures (${consecutiveErrors}x): ${this.#singleLine(lastErrorMsg)}`;
-          this.#stopReason = 'environment';
-          break;
-        }
-        await sleepFn(idleSleepMs);
-        continue;
       }
+    } finally {
+      this.dispose();
     }
     return total;
   }
@@ -454,8 +411,8 @@ export class Engine {
       }
       /* v8 ignore stop */
       // No-spawn mode: tree===null is legitimate — converge without merge
-      task.status = Status.CONVERGED;
-      TaskState.pruneConverged(this.#dir, this.#keepConverged);
+      task.release(Status.CONVERGED);
+      TaskState.pruneConverged(this.#tdb, this.#dir, this.#keepConverged);
       this.#log(`T${task.taskNumber} CONVERGED`, 'transition');
       return { task: task.info, metric, converged: true };
     }
@@ -542,10 +499,11 @@ export class Engine {
     this.#log(`T${task.taskNumber} merge failed: ${reason}; task BLOCKED; worktree kept for inspection`, 'transition');
   }
 
-  async #isRunComplete(): Promise<boolean> {
-    const all = await TaskState.scan(this.#dir);
-    for (const task of all.values()) {
-      if (!task.isConverged && !task.isBlocked) return false;
+  #isRunComplete(): boolean {
+    // scan() excludes CONVERGED, so a run is complete once every remaining task
+    // is terminally BLOCKED (nothing left that could still be worked).
+    for (const task of TaskState.scan(this.#tdb, this.#dir).values()) {
+      if (!task.isBlocked) return false;
     }
     return true;
   }
@@ -790,80 +748,85 @@ export class Engine {
     }
   }
 
-  #recover(): void {
-    const dir = resolve(this.#dir, 'in_progress');
-    const heartbeatMaxMs = env.heartbeatMs;
-    const claimMaxMs = env.claimMaxMs;
-    const localHost = hostname();
+  // ── State reconciliation (DB-backed) ────────────────────────────────
+
+  /** Re-acquire our own in-progress tasks across ticks: pick() never returns
+   *  IN_PROGRESS rows, so without this a task we already claimed would stall.
+   *  Returns the lowest-numbered one we are not already processing, or null.
+   *  The scan-built view carries the claim token from the row, so gated
+   *  mutators keep working. */
+  #continueOwned(): TaskState | null {
+    const mine = [...TaskState.scan(this.#tdb, this.#dir).values()]
+      .filter(t => t.isInProgress && t.claimOwnerId === this.#id && !this.#owned.has(t.taskNumber))
+      .sort((a, b) => a.taskNumber - b.taskNumber);
+    return mine[0] ?? null;
+  }
+
+  /** Block FAILED tasks that have exhausted their retry budget. recoverStale()
+   *  can push a task to its limit without going through #handleFailure, so this
+   *  enforces the ceiling each tick before picking. */
+  #blockExhausted(): void {
+    for (const t of TaskState.scan(this.#tdb, this.#dir).values()) {
+      if (t.isFailed && t.failureCount >= t.maxFailures) t.markBlocked();
+    }
+  }
+
+  /** Explain why nothing was picked (blocked, claimed elsewhere, unmet deps). */
+  #logIdle(): void {
+    for (const t of TaskState.scan(this.#tdb, this.#dir).values()) {
+      const tn = `T${t.taskNumber}`;
+      if (t.isBlocked) {
+        this.#log(`${tn}: skipped — blocked (${t.failureCount} failures)`);
+      } else if (t.isInProgress) {
+        const owner = t.claimOwnerId;
+        const byUs = owner === this.#id;
+        this.#log(`${tn}: skipped — ${byUs ? 'our claim (convergence check)' : `claim held by ${owner.slice(0, 12)}...`}`);
+      } else {
+        // PENDING/FAILED yet unpicked ⇒ deps unmet: an actionable task would
+        // have been claimed this tick (scan yields no other states here).
+        this.#log(`${tn}: skipped — unmet deps [${t.dependencies.join(',')}]`);
+      }
+    }
+    this.#log('No actionable tasks');
+  }
+
+  /** One-time startup reconciliation between the DB and the content tree:
+   *   - stale CREATING rows: promote if content landed (benchmark.js present),
+   *     else drop the row and its abandoned staging dir(s);
+   *   - actionable rows whose content dir vanished: BLOCK (cannot be worked).
+   *  Non-task entries (state.db*, .staging*) are never treated as tasks. */
+  #reconcileOnce(): void {
+    if (this.#reconciled) return;
+    this.#reconciled = true;
+
+    for (const row of this.#tdb.byStatus(['CREATING'])) {
+      if (existsSync(resolve(this.#dir, row.dir, 'benchmark.js'))) {
+        this.#tdb.promote(row.id);
+        this.#log(`reconcile: T${row.task_number} promoted (content found)`, 'transition');
+      } else {
+        this.#tdb.remove(row.id);
+        this.#removeStaging(row.dir);
+        this.#log(`reconcile: T${row.task_number} dropped (incomplete create)`, 'transition');
+      }
+    }
+
+    for (const row of this.#tdb.byStatus(['PENDING', 'IN_PROGRESS', 'FAILED'])) {
+      if (!existsSync(resolve(this.#dir, row.dir))) {
+        this.#tdb.block(row.id);
+        this.#log(`reconcile: T${row.task_number} blocked (content dir missing)`, 'transition');
+      }
+    }
+  }
+
+  #removeStaging(dir: string): void {
     let entries: string[];
-    try { entries = readdirSync(dir); } catch { return; }
-
-    for (const e of entries) {
-      if (!e.startsWith('T')) continue;
-      const task = new TaskState(resolve(dir, e));
-      if (!task.isInProgress || !task.isClaimed) continue;
-
-      // 1. Compute claim age = now - max(heartbeat mtime, startedAt)
-      const claimAge = this.#claimAge(task);
-
-      // 2. Fresh heartbeat → SKIP (machine-independent proof of life)
-      //    This guard MUST come before any PID logic.
-      if (claimAge < heartbeatMaxMs) continue;
-
-      // 3. Heartbeat is stale. Check same-host fast path.
-      const ownerHost = this.#ownerHost(task);
-      const ownerPid = this.#ownerPid(task);
-      if (ownerHost === localHost && (ownerPid === null || !this.#alive(ownerPid))) {
-        // Same host, owner PID is dead → reclaim
-        task.release(Status.FAILED);
-        this.#log(`STALE: ${task.taskName} claim released (convergence=${task.convergenceCount})`);
-        continue;
+    try { entries = readdirSync(this.#dir); }
+    /* v8 ignore next -- tasks dir is always readable here; defensive */
+    catch (e: unknown) { this.#bestEffortFailure(`failed to read ${this.#dir} for staging cleanup`, e); return; }
+    for (const entry of entries) {
+      if (entry.startsWith(`.staging-${dir}-`)) {
+        rmSync(resolve(this.#dir, entry), { recursive: true, force: true });
       }
-
-      // 4. Hard ceiling: if claimAge >= claimMaxMs → reclaim (covers dead owner on another machine)
-      if (claimAge >= claimMaxMs) {
-        task.release(Status.FAILED);
-        this.#log(`STALE: ${task.taskName} claim released (hard timeout ${claimMaxMs}ms exceeded; convergence=${task.convergenceCount})`);
-        continue;
-      }
-
-      // 5. Stale but within ceiling, owner on another host → SKIP
     }
-  }
-
-  #claimAge(task: TaskState): number {
-    const now = Date.now();
-    let heartbeatMs: number | null = null;
-    try {
-      heartbeatMs = statSync(join(task.directory, '.claim', 'heartbeat')).mtimeMs;
-    } catch { /* heartbeat file missing */ }
-
-    const startedAt = task.claimOwner?.startedAt ?? 0;
-
-    // Use the most recent of heartbeat mtime or startedAt; if both missing, treat as Infinity
-    if (heartbeatMs !== null && startedAt > 0) {
-      return now - Math.max(heartbeatMs, startedAt);
-    } else if (heartbeatMs !== null) {
-      return now - heartbeatMs;
-    } else if (startedAt > 0) {
-      return now - startedAt;
-    }
-    return Infinity;
-  }
-
-  #ownerHost(task: TaskState): string {
-    return task.claimOwner?.host ?? '';
-  }
-
-  #ownerPid(task: TaskState): number | null {
-    try {
-      const raw = readFileSync(join(task.directory, '.claim', 'owner'), 'utf-8');
-      return parseInt(raw.match(/pid:(\d+)/)?.[1] ?? '', 10) || null;
-    } catch { return null; }
-  }
-
-  #alive(pid: number): boolean {
-    try { process.kill(pid, 0); return true; }
-    catch { return false; }
   }
 }

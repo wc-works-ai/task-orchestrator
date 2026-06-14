@@ -8,6 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { addTask } from './addTask.js';
 import { Engine, MergeRecoveryAction, type MergeRecoveryFailure } from './Engine.js';
 import { TaskState, type TaskInfo } from './TaskState.js';
+import { TaskDb } from './TaskDb.js';
 import { createCodingAgent } from './agents.js';
 import type { CodingAgent } from './CodingAgent.js';
 import { Prerequisites } from './Prerequisites.js';
@@ -230,7 +231,7 @@ if (positionals[0] === 'edit') {
   const tn = parseInt(positionals[1] ?? '', 10);
   if (isNaN(tn)) { console.error('Usage: orchestrator edit <n> [--goal ...] [--metric ...] [--scope ...]'); process.exit(1); }
   const engine = new Engine(dir, { repoDir: repo });
-  const task = await engine.pickByNumber(tn);
+  const task = engine.pickByNumber(tn);
   if (!task) { console.error(`T${tn} not found`); process.exit(1); }
   const { readFileSync, writeFileSync } = await import('node:fs');
   const { join } = await import('node:path');
@@ -270,54 +271,50 @@ if (values.check) {
 
 
 if (values.status) {
-  const all = await TaskState.scan(dir);
-  const nums = [...all.keys()].map(Number).sort((a, b) => a - b);
-  console.log('');
-  for (const k of nums) {
-    const t = all.get(String(k));
-    if (!t) continue;
-    let label = 'UNKNOWN';
-    if (t.isConverged) label = 'CONVERGED';
-    else if (t.isFailed) label = 'FAILED';
-    else if (t.isBlocked) label = 'BLOCKED';
-    else if (t.isPending) label = 'PENDING';
-    else if (t.isInProgress) label = 'RUNNING';
-    const deps = t.dependencies.length > 0 ? `  <- depends: ${t.dependencies.join(', ')}` : '';
-    const goal = t.goal.length > 55 ? t.goal.slice(0, 52) + '...' : t.goal;
-    console.log(`  ${label.padEnd(9)} T${k}  ${goal}${deps}`);
-    if (t.isBlocked) {
-      console.log(`       blocked after ${t.failureCount} failures`);
+  const tdb = TaskDb.open(resolve(dir, 'state.db'));
+  try {
+    const all = TaskState.scan(tdb, dir);
+    const nums = [...all.keys()].map(Number).sort((a, b) => a - b);
+    console.log('');
+    for (const k of nums) {
+      const t = all.get(String(k));
+      if (!t) continue;
+      let label = 'UNKNOWN';
+      if (t.isConverged) label = 'CONVERGED';
+      else if (t.isFailed) label = 'FAILED';
+      else if (t.isBlocked) label = 'BLOCKED';
+      else if (t.isPending) label = 'PENDING';
+      else if (t.isInProgress) label = 'RUNNING';
+      const deps = t.dependencies.length > 0 ? `  <- depends: ${t.dependencies.join(', ')}` : '';
+      const goal = t.goal.length > 55 ? t.goal.slice(0, 52) + '...' : t.goal;
+      console.log(`  ${label.padEnd(9)} T${k}  ${goal}${deps}`);
+      if (t.isBlocked) {
+        console.log(`       blocked after ${t.failureCount} failures`);
+      }
     }
+    console.log(`  -- ${all.size} total\n`);
+  } finally {
+    tdb.close();
   }
-  console.log(`  -- ${all.size} total\n`);
   process.exit(0);
 }
 
 if (values.graph) {
-  const { readdirSync } = await import('node:fs');
-  const seen = new Set<number>();
-  const nodes: GraphNode[] = [];
-  // Read every shard (including converged) so the full DAG is shown.
-  for (const shard of ['pending', 'in_progress', 'failed', 'blocked', 'converged'] as const) {
-    let entries: string[] = [];
-    const shardPath = resolve(dir, shard);
-    try {
-      entries = readdirSync(shardPath);
-    } catch (e: unknown) {
-      console.warn(`⚠️  Could not read task shard ${shardPath}: ${e instanceof Error ? e.message : String(e)}`);
-    }
-    for (const e of entries) {
-      if (!/^T\d+-/.test(e)) continue;
-      const t = new TaskState(resolve(dir, shard, e));
-      if (seen.has(t.taskNumber)) continue;
-      seen.add(t.taskNumber);
-      const status = shard === 'in_progress' ? 'running' : shard;
+  const tdb = TaskDb.open(resolve(dir, 'state.db'));
+  try {
+    const nodes: GraphNode[] = [];
+    // Read every status (including converged) so the full DAG is shown.
+    for (const row of tdb.byStatus(['PENDING', 'IN_PROGRESS', 'FAILED', 'BLOCKED', 'CONVERGED'])) {
+      const t = TaskState.fromRow(tdb, dir, row);
+      const status = row.status === 'IN_PROGRESS' ? 'running' : row.status.toLowerCase();
       nodes.push({ number: t.taskNumber, status, goal: t.goal, deps: [...t.dependencies] });
     }
+    console.log('');
+    for (const line of formatTaskGraph(nodes)) console.log(line);
+    console.log('');
+  } finally {
+    tdb.close();
   }
-  console.log('');
-  for (const line of formatTaskGraph(nodes)) console.log(line);
-  console.log('');
   process.exit(0);
 }
 
@@ -389,7 +386,7 @@ const engine = new Engine(dir, {
 // because blocked tasks are terminal — nobody is processing them).
 if (values.unblock) {
   if (values.unblock.toLowerCase() === 'all') {
-    const blocked = [...(await TaskState.scan(dir)).values()].filter(t => t.isBlocked);
+    const blocked = [...TaskState.scan(engine.taskDb, dir).values()].filter(t => t.isBlocked);
     if (blocked.length === 0) { console.log('No blocked tasks to unblock.'); process.exit(0); }
     for (const t of blocked) t.unblock();
     console.log(`Unblocked ${blocked.length} task(s) → PENDING: ${blocked.map(t => `T${t.taskNumber}`).join(', ')}. They will be picked up on the next tick.`);
@@ -397,7 +394,7 @@ if (values.unblock) {
   }
   const tn = parseInt(values.unblock, 10);
   if (isNaN(tn)) { console.error('Invalid task number (use a number or "all")'); process.exit(1); }
-  const task = await engine.pickByNumber(tn);
+  const task = engine.pickByNumber(tn);
   if (!task) { console.error(`T${tn} not found`); process.exit(1); }
   if (task.isConverged) { console.error(`T${tn} is CONVERGED; nothing to unblock`); process.exit(1); }
   task.unblock();
@@ -409,7 +406,7 @@ if (values.unblock) {
 if (values.task) {
   const tn = parseInt(values.task, 10);
   if (isNaN(tn)) { console.error('Invalid task number'); process.exit(1); }
-  const task = await engine.pickByNumber(tn);
+  const task = engine.pickByNumber(tn);
   if (!task) { console.error(`T${tn} not found`); process.exit(1); }
   try {
     const out = execFileSync(process.execPath, [resolve(task.directory, 'benchmark.js')], { timeout: env.benchmarkTimeoutMs, encoding: 'utf-8', cwd: repo });
