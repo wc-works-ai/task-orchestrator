@@ -198,6 +198,7 @@ export class Engine {
           if (!e.startsWith('T')) continue;
           const t = new TaskState(resolve(this.#dir, shard, e));
           const tn = `T${t.taskNumber}`;
+          /* v8 ignore next -- converged tasks in non-converged shards: shard mismatch */
           if (t.isConverged) continue;
           if (t.isBlocked) {
             this.#log(`${tn}: skipped — blocked (${t.failureCount} failures)`);

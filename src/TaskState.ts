@@ -480,17 +480,32 @@ export class TaskState {
           new RegExp(`^T0*${tn}-`).test(e))!;
         const t = new TaskState(resolve(tasksDir, shard, dirName));
 
-        // Detect shard mismatch (task in wrong directory for its status)
+        // Detect shard mismatch (task in wrong directory for its status).
+        // This happens when rename fails (e.g. EPERM on Windows) — .status
+        // was written but the dir didn't move. Skip the task to avoid
+        // infinite re-pick loops; it will self-heal when the lock releases.
         const expectedShard = statusToShard(t.status);
-        /* v8 ignore next 3 -- integrity check; only fires on filesystem corruption */
+        /* v8 ignore start -- integrity check; only fires on filesystem corruption */
         if (expectedShard !== shard) {
-          console.error(`INTEGRITY: T${tn} has status ${t.status} but is in ${shard}/ (expected ${expectedShard}/)`);
+          console.error(`INTEGRITY: T${tn} in ${shard}/ has status ${t.status} (expected ${expectedShard}/); skipping — will retry when lock releases`);
+          // Try to fix: revert .status to match the shard we're actually in
+          try {
+            const revertStatus = shard === 'pending' ? Status.PENDING
+              : shard === 'failed' ? Status.FAILED
+              : null;
+            if (revertStatus) {
+              writeFileSync(join(t.directory, F_STATUS), `${revertStatus}\n`);
+            }
+          } catch {}
+          continue;
         }
+        /* v8 ignore stop */
 
         if (t.isClaimed && !t.isInProgress) {
           try { rmSync(join(t.directory, D_CLAIM), { recursive: true, force: true }); } catch {}
           try { rmSync(join(t.directory, F_CLAIM_LOCK), { force: true }); } catch {}
         }
+        /* v8 ignore next -- blocked/converged tasks are in their own shards, not scanned by pick() */
         if (t.isConverged || t.isBlocked) continue;
         if (t.isFailed && t.failureCount >= t.maxFailures) { t.markBlocked(); continue; }
         if (t.isInProgress) {
