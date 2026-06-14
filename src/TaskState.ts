@@ -396,6 +396,7 @@ export class TaskState {
   static async scan(tasksDir: string): Promise<Map<string, TaskState>> {
     TaskState.#cache.clear();
     const all = new Map<string, TaskState>();
+    const seen = new Map<string, string>(); // taskNumber → first shard
     for (const shard of ['pending', 'in_progress', 'failed', 'blocked'] as const) {
       try {
         for (const entry of await readdir(resolve(tasksDir, shard))) {
@@ -403,9 +404,18 @@ export class TaskState {
           if (!m?.[1]) continue;
           const dir = resolve(tasksDir, shard, entry);
           try { await readdir(dir); } catch { continue; } // not a dir
+          const key = String(parseInt(m[1], 10));
+          const prevShard = seen.get(key);
+          /* v8 ignore start -- integrity: duplicate detection only fires on corruption */
+          if (prevShard) {
+            console.error(`INTEGRITY: T${key} exists in both ${prevShard}/ and ${shard}/ — duplicate task directory`);
+            continue;
+          }
+          /* v8 ignore stop */
+          seen.set(key, shard);
           const t = new TaskState(dir);
-          all.set(String(parseInt(m[1], 10)), t);
-          TaskState.#cache.set(String(parseInt(m[1], 10)), t.status);
+          all.set(key, t);
+          TaskState.#cache.set(key, t.status);
         }
       } catch { /* shard doesn't exist */ }
     }
@@ -469,6 +479,13 @@ export class TaskState {
         const dirName = entries.find(e =>
           new RegExp(`^T0*${tn}-`).test(e))!;
         const t = new TaskState(resolve(tasksDir, shard, dirName));
+
+        // Detect shard mismatch (task in wrong directory for its status)
+        const expectedShard = statusToShard(t.status);
+        /* v8 ignore next 3 -- integrity check; only fires on filesystem corruption */
+        if (expectedShard !== shard) {
+          console.error(`INTEGRITY: T${tn} has status ${t.status} but is in ${shard}/ (expected ${expectedShard}/)`);
+        }
 
         if (t.isClaimed && !t.isInProgress) {
           try { rmSync(join(t.directory, D_CLAIM), { recursive: true, force: true }); } catch {}
