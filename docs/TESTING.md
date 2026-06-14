@@ -2,6 +2,7 @@
 
 ## Rules
 
+- **No monkey-patching** — fix root causes; if a fix needs another fix, the first was wrong
 - **Isolated filesystem** — every test uses `mkdtempSync`, never real files
 - **Mock at module boundary** — `vi.mock('node:child_process')`
 - **Test error paths** — every `try/catch`, `throw`, `continue`
