@@ -62,6 +62,28 @@ interface ClaimOwner {
   readonly host: string;
 }
 
+/* v8 ignore start -- tiny logging helpers; behavior exercised via callers */
+function errnoCode(error: unknown): string | undefined {
+  return typeof error === 'object' && error !== null && 'code' in error
+    ? String((error as { code?: string }).code)
+    : undefined;
+}
+
+function errorDetail(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function logFsError(action: string, error: unknown): void {
+  console.error(`[TaskState] failed to ${action}: ${errorDetail(error)}`);
+}
+
+function logUnexpectedFsError(action: string, error: unknown, ignoredCodes: readonly string[] = []): void {
+  const code = errnoCode(error);
+  if (code && ignoredCodes.includes(code)) return;
+  logFsError(action, error);
+}
+/* v8 ignore stop */
+
 // ── TaskState ───────────────────────────────────────────────────────────────
 export class TaskState {
   static readonly #cache = new Map<string, Status>();
@@ -142,14 +164,16 @@ export class TaskState {
       const dest = resolve(root, target, basename(this.#dir));
       mkdirSync(dirname(dest), { recursive: true });
       try { renameSync(this.#dir, dest); this.#dir = dest; } catch (err: unknown) {
-        const code = (err as NodeJS.ErrnoException).code;
+        const code = errnoCode(err);
         /* v8 ignore start: cross-device rename fallback */
         if (code === 'EXDEV') {
           cpSync(this.#dir, dest, { recursive: true });
           rmSync(this.#dir, { recursive: true, force: true });
           this.#dir = dest;
+          return;
         }
         /* v8 ignore stop */
+        logFsError(`move ${this.#dir} to ${dest}`, err);
         // EPERM/EBUSY/EACCES: transient lock — task stays in old shard
         // with correct .status file. pick() reads status from file, not
         // shard name, so the task is still actionable next tick.
@@ -175,7 +199,10 @@ export class TaskState {
     writeFileSync(join(this.#dir, F_COUNTER), `${n}\n`);
     return n;
   }
-  resetConvergence(): void { try { rmSync(join(this.#dir, F_COUNTER)); } catch {} }
+  resetConvergence(): void {
+    try { rmSync(join(this.#dir, F_COUNTER)); }
+    catch (error: unknown) { logUnexpectedFsError(`remove ${F_COUNTER} in ${this.#dir}`, error, ['ENOENT']); }
+  }
   get hasConverged(): boolean {
     return this.convergenceCount >= CONVERGENCE_THRESHOLD;
   }
@@ -283,7 +310,9 @@ export class TaskState {
     }
 
     // We own the lock now, create the claim directory for metadata
-    try { mkdirSync(p); } catch { /* may already exist from previous claim */ }
+    try { mkdirSync(p); }
+    /* v8 ignore next -- only fires on unexpected filesystem errors */
+    catch (error: unknown) { logUnexpectedFsError(`create claim directory ${p}`, error, ['EEXIST']); }
     writeFileSync(join(p, F_OWNER),
       `pid:${process.pid}\nstarted:${Date.now()}\ninstance:${instanceId}\nhost:${hostname()}\n`);
     writeFileSync(join(p, F_BEAT), '');
@@ -308,13 +337,19 @@ export class TaskState {
   get claimOwnerId(): string { return this.claimOwner?.instanceId ?? ''; }
 
   heartbeat(): void {
-    try { writeFileSync(join(this.#dir, D_CLAIM, F_BEAT), ''); } catch {}
+    try { writeFileSync(join(this.#dir, D_CLAIM, F_BEAT), ''); }
+    /* v8 ignore next -- only fires on unexpected filesystem errors */
+    catch (error: unknown) { logUnexpectedFsError(`write heartbeat for ${this.#dir}`, error, ['ENOENT']); }
   }
 
   release(newStatus: Status = Status.PENDING): void {
     this.status = newStatus;
-    try { rmSync(join(this.#dir, D_CLAIM), { recursive: true, force: true }); } catch {}
-    try { rmSync(join(this.#dir, F_CLAIM_LOCK), { force: true }); } catch {}
+    try { rmSync(join(this.#dir, D_CLAIM), { recursive: true, force: true }); }
+    /* v8 ignore next -- only fires on unexpected filesystem errors */
+    catch (error: unknown) { logUnexpectedFsError(`remove claim directory in ${this.#dir}`, error, ['ENOENT']); }
+    try { rmSync(join(this.#dir, F_CLAIM_LOCK), { force: true }); }
+    /* v8 ignore next -- only fires on unexpected filesystem errors */
+    catch (error: unknown) { logUnexpectedFsError(`remove claim lock in ${this.#dir}`, error, ['ENOENT']); }
   }
 
   markBlocked(): void {
@@ -327,7 +362,9 @@ export class TaskState {
    *  loop retries it from scratch. Safe to run while a loop is active — no stop
    *  signal needed, since blocked/failed tasks are not being processed. */
   unblock(): void {
-    try { rmSync(join(this.#dir, F_FAILURES)); } catch {}
+    try { rmSync(join(this.#dir, F_FAILURES)); }
+    /* v8 ignore next -- only fires on unexpected filesystem errors */
+    catch (error: unknown) { logUnexpectedFsError(`remove ${F_FAILURES} in ${this.#dir}`, error, ['ENOENT']); }
     this.resetConvergence();
     this.release(Status.PENDING);
   }
@@ -428,7 +465,11 @@ export class TaskState {
     if (keep === 0) return;
     const convergedDir = resolve(tasksDir, 'converged');
     let entries: string[];
-    try { entries = readdirSync(convergedDir); } catch { return; }
+    try { entries = readdirSync(convergedDir); }
+    catch (error: unknown) {
+      logUnexpectedFsError(`read converged shard ${convergedDir}`, error, ['ENOENT']);
+      return;
+    }
 
     const taskDirs = entries
       .filter(e => /^T\d+/.test(e))
@@ -440,8 +481,12 @@ export class TaskState {
       const dir = resolve(convergedDir, name);
       const t = new TaskState(dir);
       const summary = JSON.stringify({ T: t.taskNumber, name: t.taskName, goal: t.goal, convergedAt: Date.now() });
-      try { appendFileSync(resolve(convergedDir, '.archive.jsonl'), summary + '\n'); } catch {}
-      try { rmSync(dir, { recursive: true, force: true }); } catch {}
+      try { appendFileSync(resolve(convergedDir, '.archive.jsonl'), summary + '\n'); }
+      /* v8 ignore next -- only fires on unexpected filesystem errors */
+      catch (error: unknown) { logFsError(`append converged archive in ${convergedDir}`, error); }
+      try { rmSync(dir, { recursive: true, force: true }); }
+      /* v8 ignore next -- only fires on unexpected filesystem errors */
+      catch (error: unknown) { logUnexpectedFsError(`remove converged task ${dir}`, error, ['ENOENT']); }
     }
   }
 
@@ -452,11 +497,17 @@ export class TaskState {
     let archiveCount = 0;
     try {
       dirCount = readdirSync(convergedDir).filter(e => /^T\d+/.test(e)).length;
-    } catch {}
+    } catch (error: unknown) {
+      logUnexpectedFsError(`read converged shard ${convergedDir}`, error, ['ENOENT']);
+      dirCount = 0;
+    }
     try {
       archiveCount = readFileSync(resolve(convergedDir, '.archive.jsonl'), 'utf-8')
         .trim().split('\n').filter(Boolean).length;
-    } catch {}
+    } catch (error: unknown) {
+      logUnexpectedFsError(`read converged archive in ${convergedDir}`, error, ['ENOENT']);
+      archiveCount = 0;
+    }
     return dirCount + archiveCount;
   }
 
@@ -496,14 +547,20 @@ export class TaskState {
             if (revertStatus) {
               writeFileSync(join(t.directory, F_STATUS), `${revertStatus}\n`);
             }
-          } catch {}
+          } catch (error: unknown) {
+            logFsError(`restore ${F_STATUS} for ${t.directory}`, error);
+          }
           continue;
         }
         /* v8 ignore stop */
 
         if (t.isClaimed && !t.isInProgress) {
-          try { rmSync(join(t.directory, D_CLAIM), { recursive: true, force: true }); } catch {}
-          try { rmSync(join(t.directory, F_CLAIM_LOCK), { force: true }); } catch {}
+          try { rmSync(join(t.directory, D_CLAIM), { recursive: true, force: true }); }
+          /* v8 ignore next -- only fires on unexpected filesystem errors */
+          catch (error: unknown) { logUnexpectedFsError(`remove stale claim directory in ${t.directory}`, error, ['ENOENT']); }
+          try { rmSync(join(t.directory, F_CLAIM_LOCK), { force: true }); }
+          /* v8 ignore next -- only fires on unexpected filesystem errors */
+          catch (error: unknown) { logUnexpectedFsError(`remove stale claim lock in ${t.directory}`, error, ['ENOENT']); }
         }
         /* v8 ignore next -- blocked/converged tasks are in their own shards, not scanned by pick() */
         if (t.isConverged || t.isBlocked) continue;
