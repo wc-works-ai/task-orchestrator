@@ -220,6 +220,7 @@ describe('PiAgent', () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
+    vi.useFakeTimers();
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     try {
@@ -229,8 +230,9 @@ describe('PiAgent', () => {
         progressStatusInterval: 40,
       }).spawn(t, dir);
 
-      // Wait 55ms: safely within one interval [40, 80) so exactly 1 status line fires
-      await new Promise(r => setTimeout(r, 55));
+      // Advance exactly 55ms on the FAKE clock: within one interval [40, 80) so
+      // exactly 1 status line fires — deterministic, not subject to real-timer jitter.
+      await vi.advanceTimersByTimeAsync(55);
       const statusLines = joinedCalls(logSpy).split('\n').filter(line => line.includes('WARN still running:'));
       expect(statusLines.length).toBe(1);
 
