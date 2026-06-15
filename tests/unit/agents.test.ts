@@ -4,7 +4,7 @@ import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { createCodingAgent } from '../../src/agents.js';
+import { createCodingAgent, SUPPORTED_AGENTS } from '../../src/agents.js';
 import { PiSpawner, type PiSpawnerOptions } from '../../src/PiSpawner.js';
 import { memStateDb, seedState, type StateDb } from '../shared/helpers.js';
 
@@ -42,13 +42,20 @@ describe('createCodingAgent', () => {
   });
 
   it('rejects unsupported agents with supported names', () => {
-    expect(() => createCodingAgent('nope', {})).toThrow(/Supported agents: pi, copilot/);
+    expect(() => createCodingAgent('nope', {})).toThrow(/Supported agents: pi, copilot, exec/);
   });
 
   it('creates the copilot agent', () => {
     const agent = createCodingAgent('copilot', { workDir: dir });
 
     expect(agent.name).toBe('copilot');
+  });
+
+  it('creates the exec agent', () => {
+    const agent = createCodingAgent('exec', { workDir: dir });
+
+    expect(agent.name).toBe('exec');
+    expect(SUPPORTED_AGENTS).toContain('exec');
   });
 
   it('created agent exposes checkPrerequisites', () => {

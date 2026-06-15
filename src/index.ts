@@ -9,6 +9,8 @@ export { PiSpawner } from './PiSpawner.js';
 export type { PiSpawnerOptions } from './PiSpawner.js';
 export { CopilotCliAgent } from './CopilotCliAgent.js';
 export type { CopilotCliAgentOptions } from './CopilotCliAgent.js';
+export { ExecAgent } from './ExecAgent.js';
+export type { ExecAgentOptions } from './ExecAgent.js';
 export type { CodingAgent, CodingAgentOptions, PrerequisiteResult, SpawnResult, SpawnFn } from './CodingAgent.js';
 export { createCodingAgent, SUPPORTED_AGENTS } from './agents.js';
 export { defaultStateRoot, repoSlug, resolveStatePaths } from './StatePaths.js';

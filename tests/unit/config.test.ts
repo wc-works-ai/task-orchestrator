@@ -11,6 +11,7 @@ describe('config', () => {
     'ORCH_AGENT',
     'ORCH_MODEL',
     'ORCH_REASONING',
+    'ORCH_AGENT_CMD',
     'ORCH_KEEP_ALIVE',
     'ORCH_INFINITE',
     'ORCH_IDLE_SLEEP_MS',
@@ -52,6 +53,7 @@ describe('config', () => {
     for (const group of [
       'Paths',
       'Coding agent',
+      'Agent',
       'Run mode',
       'Convergence & merge',
       'Concurrency & timeouts',
@@ -60,6 +62,7 @@ describe('config', () => {
       expect(help).toContain(group);
     }
     expect(help).toContain('ORCH_MERGE_LOCK_MS');
+    expect(help).toContain('ORCH_AGENT_CMD');
     expect(help).toContain('--reasoning <level>');
   });
 

@@ -1,10 +1,12 @@
 import { PiSpawner } from './PiSpawner.js';
 import { CopilotCliAgent } from './CopilotCliAgent.js';
+import { ExecAgent } from './ExecAgent.js';
 import type { CodingAgent, CodingAgentOptions } from './CodingAgent.js';
 
 const REGISTRY: Record<string, (opts: CodingAgentOptions) => CodingAgent> = {
   pi: (opts) => new PiSpawner(opts),
   copilot: (opts) => new CopilotCliAgent(opts),
+  exec: (opts) => new ExecAgent(opts),
 };
 
 export const SUPPORTED_AGENTS = Object.keys(REGISTRY);

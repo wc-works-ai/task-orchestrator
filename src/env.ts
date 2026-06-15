@@ -38,6 +38,7 @@ export const env = {
   get repoDir()      { return process.env.ORCH_REPO || undefined; },
   get stateRoot()    { return process.env.ORCH_STATE_ROOT || undefined; },
   get agent()        { return process.env.ORCH_AGENT || 'pi'; },
+  get agentCmd()     { return process.env.ORCH_AGENT_CMD || ''; },
   get model()        { return process.env.ORCH_MODEL || undefined; },
   get reasoning()    { return process.env.ORCH_REASONING || undefined; },
   get autoStash() {

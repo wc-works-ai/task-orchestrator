@@ -16,6 +16,7 @@ export const CONFIG_SPEC: readonly ConfigItem[] = [
   { group: 'Coding agent', env: 'ORCH_AGENT', flag: 'agent', kind: 'string', def: 'pi', desc: 'Coding agent: pi or copilot' },
   { group: 'Coding agent', env: 'ORCH_MODEL', flag: 'model', kind: 'string', def: 'agent default', desc: 'Model override passed to the agent' },
   { group: 'Coding agent', env: 'ORCH_REASONING', flag: 'reasoning', kind: 'string', def: 'unset', desc: 'Reasoning effort for supported agents' },
+  { group: 'Agent', env: 'ORCH_AGENT_CMD', kind: 'string', def: 'unset', desc: 'Command run as the agent when ORCH_AGENT=exec' },
   { group: 'Run mode', env: 'ORCH_KEEP_ALIVE', flag: 'keep-alive', kind: 'boolean', def: 'off', desc: 'Wait through transient idle/cooldown periods' },
   { group: 'Run mode', env: 'ORCH_INFINITE', flag: 'infinite', kind: 'boolean', def: 'off', desc: 'Daemon mode; wait for new/addressed tasks (alias: --loop)' },
   { group: 'Run mode', env: 'ORCH_IDLE_SLEEP_MS', kind: 'number', def: '5000', desc: 'Idle poll interval for keep-alive/infinite (ms)' },
