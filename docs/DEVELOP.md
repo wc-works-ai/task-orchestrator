@@ -21,7 +21,7 @@ Maintenance: When adding new docs relevant to coding agent behavior, update `doc
 - `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noUnusedLocals`
 - Private fields: `#name`, never `private name`
 - Imports: `import type` for type-only, `verbatimModuleSyntax`
-- Files: one class per file, barrel exports in `index.ts`
+- Files: one class per file (exception: a cohesive type hierarchy like `errors.ts`); barrel exports in `index.ts`
 
 ## Before committing
 
@@ -40,8 +40,10 @@ Use `orchestrator --config` to inspect effective values and their sources.
 
 #### Style conventions
 
-- File naming: PascalCase for classes (`Engine.ts`); lowercase for utilities (`env.ts`, `cli.ts`)
+- File naming: `PascalCase.ts` when the primary export is a class (`Engine.ts`) or an eponymous type (`CodingAgent.ts`, `BenchmarkMeta.ts`, `Status.ts`); `camelCase.ts` for utility/function/value/collection modules (`config.ts`, `errors.ts`, `agents.ts`, `addTask.ts`, `cli.ts`)
+- Type names: PascalCase, no `I` prefix; suffixes `…Options`, `…Fn`, `…Result`
 - Constants: `UPPER_CASE` for module constants; PascalCase for enum-like objects
+- Variables/functions: `camelCase` (`snake_case` only in DB-row types mirroring SQLite columns)
 - Top-level helpers: `function` for utilities; arrow-const for single-expression helpers
 
 #### Error handling

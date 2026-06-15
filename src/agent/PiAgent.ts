@@ -3,7 +3,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { TaskState } from '../state/TaskState.js';
 import { env } from '../shared/env.js';
-import { resolveCliCommand } from './CliCommand.js';
+import { resolveCliCommand } from './cliCommand.js';
 import { appendAgentLog, openAgentLog, runLogName, type AgentLog } from './AgentLog.js';
 import {
   countOccurrences,

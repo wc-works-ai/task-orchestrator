@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { rmSync } from 'node:fs';
-import { formatOverview, formatRunSummary, printOverview, printRunSummary } from '../../src/engine/RunReport.js';
+import { formatOverview, formatRunSummary, printOverview, printRunSummary } from '../../src/engine/runReport.js';
 import { openStateDb, seed, setupTestDir, type SeedOpts } from '../shared/helpers.js';
 
 function seedAll(dir: string, specs: Array<[number, string, SeedOpts]>): void {

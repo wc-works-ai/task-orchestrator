@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { resolveCliCommand } from '../../src/agent/CliCommand.js';
+import { resolveCliCommand } from '../../src/agent/cliCommand.js';
 
 vi.mock('node:child_process', () => ({ spawnSync: vi.fn() }));
 vi.mock('node:fs', () => ({

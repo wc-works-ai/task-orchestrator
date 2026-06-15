@@ -13,9 +13,9 @@ import type { CodingAgent } from './agent/CodingAgent.js';
 import { Prerequisites } from './agent/Prerequisites.js';
 import { env } from './shared/env.js';
 import { resolveStatePaths } from './state/StatePaths.js';
-import { printOverview, printRunSummary } from './engine/RunReport.js';
+import { printOverview, printRunSummary } from './engine/runReport.js';
 import { parseMetrics, unmetSummary, classifyBenchmark } from './shared/metrics.js';
-import { formatTaskGraph, type GraphNode } from './engine/TaskGraph.js';
+import { formatTaskGraph, type GraphNode } from './engine/taskGraph.js';
 import { formatEffectiveConfig, formatHelp } from './shared/config.js';
 import { appVersion } from './shared/version.js';
 

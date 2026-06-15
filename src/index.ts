@@ -9,7 +9,7 @@ export {
 export {
   resolveCliCommand,
   type ResolvedCommand,
-} from './agent/CliCommand.js';
+} from './agent/cliCommand.js';
 
 export {
   countOccurrences,
@@ -65,12 +65,12 @@ export {
   formatRunSummary,
   printOverview,
   printRunSummary,
-} from './engine/RunReport.js';
+} from './engine/runReport.js';
 
 export {
   formatTaskGraph,
   type GraphNode,
-} from './engine/TaskGraph.js';
+} from './engine/taskGraph.js';
 
 export {
   MergeConflictError,

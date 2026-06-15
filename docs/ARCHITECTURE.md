@@ -38,13 +38,13 @@ Lower layers never import higher ones. `shared/` is the base; `cli.ts` sits on t
 **agent/** — how work gets done in a worktree
 - `CodingAgent` — interface + shared helpers · `agents` — registry
 - `PiAgent` — pi · `CopilotAgent` — copilot · `ExecAgent` — deterministic command agent
-- `CliCommand` — cross-platform CLI-spawn resolution (shared by pi + copilot)
+- `cliCommand` — cross-platform CLI-spawn resolution (shared by pi + copilot)
 - `AgentLog` — per-run logs · `Prerequisites` — preflight checks
 
 **engine/** — orchestration
 - `Engine` — the tick loop (pick → benchmark → converge/fail → merge), recovery, reconciliation
-- `Worktree` — git worktree create/sync/merge · `TaskGraph` — dependency DAG render
-- `RunReport` — `--status` dashboard
+- `Worktree` — git worktree create/sync/merge · `taskGraph` — dependency DAG render
+- `runReport` — `--status` dashboard
 
 ## Entry points
 

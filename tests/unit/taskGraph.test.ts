@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatTaskGraph, type GraphNode } from '../../src/engine/TaskGraph.js';
+import { formatTaskGraph, type GraphNode } from '../../src/engine/taskGraph.js';
 
 function n(number: number, deps: number[] = [], status = 'pending', goal = ''): GraphNode {
   return { number, status, goal, deps };
