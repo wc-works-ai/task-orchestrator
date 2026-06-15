@@ -10,7 +10,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync, spawn } from 'node:child_process';
 import { resolveStatePaths } from '../../src/state/StatePaths.js';
 import { TaskDb, taskDirName, type TaskRow } from '../../src/state/TaskDb.js';
 
@@ -103,6 +103,33 @@ export function runCli(args: readonly string[], opts: RunOpts): RunResult {
 export const tick = (opts: RunOpts): RunResult => runCli(['--once'], opts);
 /** Run the default loop until the run is complete (all tasks terminal). */
 export const loop = (opts: RunOpts): RunResult => runCli([], opts);
+/**
+ * Like {@link loop}, but non-blocking — returns a Promise so several worker
+ * processes can run concurrently against the same state root + repo (the
+ * blocking spawnSync used elsewhere can't overlap). Resolves when the child
+ * exits, with its captured status/stdout/stderr.
+ */
+export function loopAsync(opts: RunOpts): Promise<RunResult> {
+  return new Promise<RunResult>((resolveRun) => {
+    const child = spawn(process.execPath, [TSX, CLI], {
+      cwd: opts.cwd ?? opts.repo,
+      env: {
+        ...process.env,
+        GIT_CONFIG_GLOBAL: '',
+        ORCH_REPO: opts.repo,
+        ORCH_STATE_ROOT: opts.stateRoot,
+        ...opts.env,
+      },
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf-8');
+    child.stderr.setEncoding('utf-8');
+    child.stdout.on('data', (d: string) => { stdout += d; });
+    child.stderr.on('data', (d: string) => { stderr += d; });
+    child.on('close', (code) => resolveRun({ status: code, stdout, stderr }));
+  });
+}
 /** `add <name>` with optional extra flags (e.g. ['--metric','foo']). */
 export const addTask = (name: string, opts: RunOpts, extra: readonly string[] = []): RunResult =>
   runCli(['add', name, ...extra], opts);
