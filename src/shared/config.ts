@@ -102,3 +102,95 @@ export function formatEffectiveConfig(values: Record<string, unknown>, environ: 
 
   return lines.join('\n');
 }
+
+// ── Help (--help) ───────────────────────────────────────────────────────────
+// Commands, operations, and examples are declared once here so `--help` stays in
+// sync with the parser; the FLAGS block reuses formatSettingsHelp() above.
+
+export interface HelpItem {
+  readonly name: string;
+  readonly desc: string;
+}
+
+export const COMMAND_SPEC: readonly HelpItem[] = [
+  { name: '(default)',  desc: 'Run all pending tasks until complete' },
+  { name: 'add <name>', desc: 'Create a new task' },
+  { name: 'edit <n>',   desc: 'Edit task metadata' },
+] as const;
+
+export const OPERATION_SPEC: readonly HelpItem[] = [
+  { name: '--status',          desc: 'Show task dashboard' },
+  { name: '--graph',           desc: 'Show task dependency graph' },
+  { name: '--check',           desc: 'Run benchmarks without spawning agents' },
+  { name: '--task <n>',        desc: 'Run a single task by number' },
+  { name: '--unblock <n|all>', desc: 'Reset blocked/failed task(s) to pending' },
+  { name: '--stop',            desc: 'Send stop signal to a running loop' },
+  { name: '--config',          desc: 'Show all resolved configuration with sources' },
+  { name: '--once',            desc: 'Run one tick, then exit' },
+  { name: '--loop',            desc: 'Daemon mode: never exit (alias of --infinite)' },
+  { name: '-h, --help',        desc: 'Show this help' },
+] as const;
+
+export interface ExampleItem {
+  readonly cmd: string;
+  readonly desc: string;
+}
+
+export const EXAMPLES: readonly ExampleItem[] = [
+  { cmd: 'orchestrator',                  desc: 'Run with defaults' },
+  { cmd: 'orchestrator --loop',           desc: 'Daemon mode' },
+  { cmd: 'orchestrator --agent copilot',  desc: 'Override agent for this run' },
+  { cmd: 'ORCH_MODEL=gpt-5 orchestrator', desc: 'Set model via env var' },
+  { cmd: 'orchestrator --config',         desc: 'Verify effective configuration' },
+] as const;
+
+/** Live setting values shown in the help footer (resolved by the caller). */
+export interface HelpSettings {
+  readonly agent: string;
+  readonly model: string;
+  readonly reasoning: string;
+  readonly parallel: number;
+  readonly converge: number;
+  readonly maxFailures: string;
+  readonly autoStash: boolean;
+  readonly noWorktree: boolean;
+  readonly logLevel: string;
+}
+
+function helpRow(item: HelpItem): string {
+  return `  ${item.name.padEnd(18)}${item.desc}`;
+}
+
+/** Build the full `--help` output from the declarative specs above, the passed
+ *  version, and a resolved settings snapshot. Pure — the caller supplies the
+ *  version (see version.ts) and current settings (from env). */
+export function formatHelp(version: string, s: HelpSettings): string {
+  return [
+    '',
+    `Task Orchestrator v${version} — autonomous coding agent task runner`,
+    '',
+    'USAGE',
+    '  orchestrator [command] [flags]',
+    '',
+    'COMMANDS',
+    ...COMMAND_SPEC.map(helpRow),
+    '',
+    'OPERATIONS',
+    ...OPERATION_SPEC.map(helpRow),
+    '',
+    formatSettingsHelp(),
+    '',
+    '  No flags are required. All settings have ORCH_* env var equivalents.',
+    '  Priority: --flag > ORCH_* env var > default.',
+    '',
+    'CURRENT SETTINGS (from env vars / defaults — flags override these)',
+    `  agent=${s.agent}  model=${s.model || '(agent default)'}  reasoning=${s.reasoning || '(off)'}`,
+    `  parallel=${s.parallel}  converge=${s.converge}  max-failures=${s.maxFailures}`,
+    `  auto-stash=${s.autoStash ? 'on' : 'off'}  no-worktree=${s.noWorktree ? 'on' : 'off'}  log-level=${s.logLevel}`,
+    '  Run --config for the full list with sources.',
+    '',
+    'EXAMPLES',
+    ...EXAMPLES.map(e => `  ${e.cmd.padEnd(32)}${e.desc}`),
+    '',
+  ].join('\n');
+}

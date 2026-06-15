@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CONFIG_SPEC, formatEffectiveConfig, formatSettingsHelp } from '../../src/shared/config.js';
+import { CONFIG_SPEC, COMMAND_SPEC, OPERATION_SPEC, EXAMPLES, formatEffectiveConfig, formatSettingsHelp, formatHelp } from '../../src/shared/config.js';
 
 describe('config', () => {
   const expectedEnvNames = [
@@ -106,5 +106,51 @@ describe('config', () => {
 
     expect(output).toContain('ORCH_AUTO_STASH (--auto-stash) = on   [flag]');
     expect(output).toContain('ORCH_MERGE_LOCK_MS = 12345   [env]');
+  });
+});
+
+describe('formatHelp', () => {
+  const defaults = {
+    agent: 'pi', model: '', reasoning: '', parallel: 1, converge: 3,
+    maxFailures: '5', autoStash: true, noWorktree: false, logLevel: 'normal',
+  };
+
+  it('embeds the passed version and the core sections', () => {
+    const help = formatHelp('1.2.3', defaults);
+    expect(help).toContain('Task Orchestrator v1.2.3');
+    expect(help).toContain('USAGE');
+    expect(help).toContain('COMMANDS');
+    expect(help).toContain('OPERATIONS');
+    expect(help).toContain('EXAMPLES');
+    expect(help).toContain('Priority: --flag > ORCH_* env var > default.');
+  });
+
+  it('renders every command, operation, and example from the specs', () => {
+    const help = formatHelp('0.0.0', defaults);
+    for (const c of COMMAND_SPEC) expect(help).toContain(c.name);
+    for (const o of OPERATION_SPEC) expect(help).toContain(o.name);
+    for (const e of EXAMPLES) expect(help).toContain(e.cmd);
+  });
+
+  it('reuses formatSettingsHelp for the settings block', () => {
+    expect(formatHelp('0.0.0', defaults)).toContain(formatSettingsHelp());
+  });
+
+  it('shows default placeholders for empty model/reasoning and on/off toggles', () => {
+    const help = formatHelp('0.0.0', defaults);
+    expect(help).toContain('model=(agent default)');
+    expect(help).toContain('reasoning=(off)');
+    expect(help).toContain('auto-stash=on');
+    expect(help).toContain('no-worktree=off');
+  });
+
+  it('shows explicit values and flipped toggles when set', () => {
+    const help = formatHelp('0.0.0', {
+      ...defaults, model: 'gpt-5', reasoning: 'high', autoStash: false, noWorktree: true,
+    });
+    expect(help).toContain('model=gpt-5');
+    expect(help).toContain('reasoning=high');
+    expect(help).toContain('auto-stash=off');
+    expect(help).toContain('no-worktree=on');
   });
 });

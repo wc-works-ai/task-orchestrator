@@ -17,7 +17,8 @@ import { resolveStatePaths } from './state/StatePaths.js';
 import { printOverview, printRunSummary } from './engine/RunReport.js';
 import { parseMetrics, unmetSummary, classifyBenchmark } from './shared/metrics.js';
 import { formatTaskGraph, type GraphNode } from './engine/TaskGraph.js';
-import { formatEffectiveConfig } from './shared/config.js';
+import { formatEffectiveConfig, formatHelp } from './shared/config.js';
+import { appVersion } from './shared/version.js';
 
 async function promptMergeRecovery(failure: MergeRecoveryFailure): Promise<MergeRecoveryAction> {
   console.error('');
@@ -92,64 +93,17 @@ try {
 const { values, positionals } = parseResult!;
 
 if (values.help) {
-  const a = env.agent;
-  const m = env.model || '(agent default)';
-  const r = env.reasoning || '(off)';
-  const p = env.parallelTasks;
-  const c = env.converge;
-  const mf = env.maxFailures === Infinity ? 'infinite' : String(env.maxFailures);
-  const as = env.autoStash ? 'on' : 'off';
-  const ll = env.logLevel;
-
-  console.log(`
-Task Orchestrator v0.0.1 — autonomous coding agent task runner
-
-USAGE
-  orchestrator [command] [flags]
-
-COMMANDS
-  (default)         Run all pending tasks until complete
-  add <name>        Create a new task
-  edit <n>          Edit task metadata
-
-OPERATIONS
-  --status          Show task dashboard
-  --graph           Show task dependency graph
-  --check           Run benchmarks without spawning agents
-  --task <n>        Run a single task by number
-  --unblock <n|all> Reset blocked/failed task(s) to pending
-  --stop            Send stop signal to a running loop
-  --config          Show all resolved configuration with sources
-
-FLAGS (all optional — override env vars; env vars override defaults)
-  --repo <dir>      Target repository                 [default: cwd]
-  --agent <name>    Coding agent: pi | copilot        [default: pi]
-  --model <model>   Model override                    [default: agent picks]
-  --reasoning <lvl> Reasoning effort                  [default: off]
-  --parallel <n>    Concurrent tasks (0=unlimited)    [default: 1]
-  --auto-stash      Stash repo changes before merge   [default: on]
-  --no-worktree     Work directly in main repo        [default: off]
-  --keep-alive      Stay alive through idle periods   [default: off]
-  --loop            Daemon mode: never exit           [default: off]
-  --once            Run one tick, then exit
-  -h, --help        Show this help
-
-  No flags are required. All have ORCH_* env var equivalents.
-  Priority: --flag > ORCH_* env var > default.
-
-CURRENT SETTINGS (from env vars / defaults — flags override these)
-  agent=${a}  model=${m}  reasoning=${r}
-  parallel=${p}  converge=${c}  max-failures=${mf}
-  auto-stash=${as}  no-worktree=${env.noWorktree ? 'on' : 'off'}  log-level=${ll}
-  Run --config for full list with sources.
-
-EXAMPLES
-  orchestrator                     Run with defaults
-  orchestrator --loop              Daemon mode
-  orchestrator --agent copilot     Override agent for this run
-  ORCH_MODEL=gpt-5 orchestrator   Set model via env var
-  orchestrator --config            Verify effective configuration
-`);
+  console.log(formatHelp(appVersion(), {
+    agent: env.agent,
+    model: env.model ?? '',
+    reasoning: env.reasoning ?? '',
+    parallel: env.parallelTasks,
+    converge: env.converge,
+    maxFailures: env.maxFailures === Infinity ? 'infinite' : String(env.maxFailures),
+    autoStash: env.autoStash,
+    noWorktree: env.noWorktree,
+    logLevel: env.logLevel,
+  }));
   process.exit(0);
 }
 
