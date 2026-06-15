@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseMetrics, unmetSummary, classifyBenchmark } from '../../src/metrics.js';
+import { parseMetrics, unmetSummary, classifyBenchmark } from '../../src/shared/metrics.js';
 
 describe('metrics', () => {
   describe('parseMetrics', () => {

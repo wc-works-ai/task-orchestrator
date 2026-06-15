@@ -5,7 +5,7 @@ import {
   CONVERGENCE_THRESHOLD, MAX_FAILURES,
 } from './Status.js';
 import { TaskDb, type TaskRow } from './TaskDb.js';
-import { sha256 } from './BenchmarkMeta.js';
+import { sha256 } from '../shared/BenchmarkMeta.js';
 
 export { Status, inProgress, isInProgress, CONVERGENCE_THRESHOLD, MAX_FAILURES };
 

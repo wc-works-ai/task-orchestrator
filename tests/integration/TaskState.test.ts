@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import {
   TaskState, Status, inProgress, CONVERGENCE_THRESHOLD,
-} from '../../src/TaskState.js';
+} from '../../src/state/TaskState.js';
 import { memStateDb, seed, seedState, rowOf, statusOf, type StateDb } from '../shared/helpers.js';
 
 const FULL_AR = [

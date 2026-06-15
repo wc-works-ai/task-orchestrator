@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { join } from 'node:path';
-import { Engine } from '../../src/Engine.js';
-import { Status, CONVERGENCE_THRESHOLD } from '../../src/TaskState.js';
-import { DbBusyError } from '../../src/errors.js';
-import { taskDirName, type TaskRow, type TaskStatus, type TaskDb } from '../../src/TaskDb.js';
+import { Engine } from '../../src/engine/Engine.js';
+import { Status, CONVERGENCE_THRESHOLD } from '../../src/state/TaskState.js';
+import { DbBusyError } from '../../src/shared/errors.js';
+import { taskDirName, type TaskRow, type TaskStatus, type TaskDb } from '../../src/state/TaskDb.js';
 
 // Engine decision logic only — no real git, filesystem, or SQLite. node:child_process
 // (base-branch detection) and node:fs (stop file, logging) are mocked; migrate.ts and
@@ -32,7 +32,7 @@ vi.mock('node:fs', async (orig) => {
 });
 
 const migrateMock = vi.hoisted(() => vi.fn(() => 0));
-vi.mock('../../src/migrate.js', () => ({ migrateShards: migrateMock }));
+vi.mock('../../src/state/migrate.js', () => ({ migrateShards: migrateMock }));
 
 const DIR = join('virtual', 'engine-root');
 const INSTANCE = 'inst-unit';

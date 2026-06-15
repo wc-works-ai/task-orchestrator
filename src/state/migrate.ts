@@ -16,7 +16,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { TaskDb, TaskStatus } from './TaskDb.js';
-import { env } from './env.js';
+import { env } from '../shared/env.js';
 
 const SHARDS = ['pending', 'in_progress', 'converged', 'failed', 'blocked'] as const;
 const TASK_DIR = /^T(\d+)-(.+)$/;

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { piCommand } from '../../src/PiCommand.js';
+import { piCommand } from '../../src/agent/PiCommand.js';
 
 vi.mock('node:child_process', () => ({ spawnSync: vi.fn() }));
 vi.mock('node:fs', () => ({

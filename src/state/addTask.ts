@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync, renameSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { resolve, join } from 'node:path';
 import { TaskDb } from './TaskDb.js';
-import { env } from './env.js';
+import { env } from '../shared/env.js';
 
 export interface AddTaskOptions {
   readonly goal?: string;

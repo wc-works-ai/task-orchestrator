@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
 import { resolve, join } from 'node:path';
-import { TaskState, Status, inProgress, CONVERGENCE_THRESHOLD } from '../../src/TaskState.js';
-import { taskDirName, type TaskRow, type TaskStatus, type TaskDb } from '../../src/TaskDb.js';
+import { TaskState, Status, inProgress, CONVERGENCE_THRESHOLD } from '../../src/state/TaskState.js';
+import { taskDirName, type TaskRow, type TaskStatus, type TaskDb } from '../../src/state/TaskDb.js';
 
 // TaskState reads content from autoresearch.md via node:fs and prunes via rmSync.
 // Mock both so content getters and pruning are exercised without touching disk.

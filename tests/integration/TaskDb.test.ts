@@ -2,9 +2,9 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { openDb, type Db } from '../../src/sqlite.js';
-import { TaskDb, SCHEMA_VERSION } from '../../src/TaskDb.js';
-import { SchemaMismatchError } from '../../src/errors.js';
+import { openDb, type Db } from '../../src/state/sqlite.js';
+import { TaskDb, SCHEMA_VERSION } from '../../src/state/TaskDb.js';
+import { SchemaMismatchError } from '../../src/shared/errors.js';
 
 const dirs: string[] = [];
 const dbs: Array<{ close(): void }> = [];

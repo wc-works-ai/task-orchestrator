@@ -38,7 +38,7 @@ export default defineConfig({
       reporter: ['text', 'text-summary', 'html', 'lcov'],
       reportsDirectory: 'coverage',
       thresholds: { 100: true },
-      exclude: ['vitest.config.ts', 'src/env.ts'],
+      exclude: ['vitest.config.ts', 'src/shared/env.ts'],
     },
   },
 });

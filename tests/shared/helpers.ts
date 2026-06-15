@@ -1,9 +1,9 @@
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
-import { openDb, type Db } from '../../src/sqlite.js';
-import { TaskDb, taskDirName, type TaskRow, type TaskStatus } from '../../src/TaskDb.js';
-import { TaskState } from '../../src/TaskState.js';
+import { openDb, type Db } from '../../src/state/sqlite.js';
+import { TaskDb, taskDirName, type TaskRow, type TaskStatus } from '../../src/state/TaskDb.js';
+import { TaskState } from '../../src/state/TaskState.js';
 
 export interface SeedOpts {
   status?: TaskStatus;

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { Prerequisites } from '../../src/Prerequisites.js';
+import { Prerequisites } from '../../src/agent/Prerequisites.js';
 
 describe('Prerequisites', () => {
   it('checks node version', async () => {

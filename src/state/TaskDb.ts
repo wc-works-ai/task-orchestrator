@@ -6,7 +6,7 @@
  */
 import { existsSync, rmSync } from 'node:fs';
 import { openDb, type Db } from './sqlite.js';
-import { SchemaMismatchError, withRetry } from './errors.js';
+import { SchemaMismatchError, withRetry } from '../shared/errors.js';
 
 export const SCHEMA_VERSION = 1;
 

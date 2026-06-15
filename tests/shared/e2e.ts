@@ -11,8 +11,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { resolveStatePaths } from '../../src/StatePaths.js';
-import { TaskDb, taskDirName, type TaskRow } from '../../src/TaskDb.js';
+import { resolveStatePaths } from '../../src/state/StatePaths.js';
+import { TaskDb, taskDirName, type TaskRow } from '../../src/state/TaskDb.js';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
 const TSX = resolve(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');

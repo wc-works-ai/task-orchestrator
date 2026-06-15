@@ -3,16 +3,16 @@ import { resolve, join, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
-import { TaskState, Status, type BenchmarkFn, type TaskInfo, type TickResult, type TickNull } from './TaskState.js';
-import { TaskDb } from './TaskDb.js';
-import { migrateShards } from './migrate.js';
+import { TaskState, Status, type BenchmarkFn, type TaskInfo, type TickResult, type TickNull } from '../state/TaskState.js';
+import { TaskDb } from '../state/TaskDb.js';
+import { migrateShards } from '../state/migrate.js';
 import { Worktree, MergeConflictError } from './Worktree.js';
-import { env } from './env.js';
-import { handleOrchestratorError, type Logger } from './errors.js';
-import type { SpawnFn, TokenUsage } from './CodingAgent.js';
+import { env } from '../shared/env.js';
+import { handleOrchestratorError, type Logger } from '../shared/errors.js';
+import type { SpawnFn, TokenUsage } from '../agent/CodingAgent.js';
 
 // Re-export contract types so external importers keep working
-export type { SpawnResult, SpawnFn, TokenUsage } from './CodingAgent.js';
+export type { SpawnResult, SpawnFn, TokenUsage } from '../agent/CodingAgent.js';
 
 const MAX_CONSECUTIVE_TICK_ERRORS = 10;
 

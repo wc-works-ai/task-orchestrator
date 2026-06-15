@@ -13,9 +13,9 @@
 import { join } from 'node:path';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { openDb, type Db, type SqlValue } from '../../src/sqlite.js';
-import { TaskDb, taskDirName, type TaskStatus } from '../../src/TaskDb.js';
-import { resolveStatePaths } from '../../src/StatePaths.js';
+import { openDb, type Db, type SqlValue } from '../../src/state/sqlite.js';
+import { TaskDb, taskDirName, type TaskStatus } from '../../src/state/TaskDb.js';
+import { resolveStatePaths } from '../../src/state/StatePaths.js';
 import { tasksDirOf } from '../shared/e2e.js';
 
 // ── Raw state DB access ─────────────────────────────────────────────────────

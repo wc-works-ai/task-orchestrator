@@ -3,7 +3,7 @@ import { rm } from 'node:fs/promises';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
-import { ExecAgent } from '../../src/ExecAgent.js';
+import { ExecAgent } from '../../src/agent/ExecAgent.js';
 import { memStateDb, seedState, type StateDb } from '../shared/helpers.js';
 
 let s: StateDb;

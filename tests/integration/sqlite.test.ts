@@ -2,8 +2,8 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { openDb, requireWal, type Db } from '../../src/sqlite.js';
-import { DbInitError } from '../../src/errors.js';
+import { openDb, requireWal, type Db } from '../../src/state/sqlite.js';
+import { DbInitError } from '../../src/shared/errors.js';
 
 const open: Db[] = [];
 const dirs: string[] = [];

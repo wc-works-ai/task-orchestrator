@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { defaultStateRoot, repoSlug, resolveStatePaths } from '../../src/StatePaths.js';
+import { defaultStateRoot, repoSlug, resolveStatePaths } from '../../src/state/StatePaths.js';
 
 describe('StatePaths', () => {
   it('derives tasks and worktrees from provided state root and repo slug', () => {

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
-import { CopilotCliAgent } from '../../src/CopilotCliAgent.js';
+import { CopilotCliAgent } from '../../src/agent/CopilotCliAgent.js';
 import { memStateDb, seedState, type StateDb } from '../shared/helpers.js';
 
 vi.mock('node:child_process', () => ({

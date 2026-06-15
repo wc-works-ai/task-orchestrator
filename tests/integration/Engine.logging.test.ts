@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { Engine } from '../../src/Engine.js';
+import { Engine } from '../../src/engine/Engine.js';
 import { memStateDb, seed, setupTestDir, type StateDb } from '../shared/helpers.js';
 
 describe('Engine logging', () => {

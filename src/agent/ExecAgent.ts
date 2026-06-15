@@ -1,9 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { join } from 'node:path';
-import { env } from './env.js';
+import { env } from '../shared/env.js';
 import { appendAgentLog, openAgentLog, runLogName, type AgentLog } from './AgentLog.js';
 import { positiveInt } from './CodingAgent.js';
-import type { TaskState } from './TaskState.js';
+import type { TaskState } from '../state/TaskState.js';
 import type { SpawnResult, PrerequisiteResult, CodingAgentOptions, CodingAgent } from './CodingAgent.js';
 
 const DEFAULT_AGENT_LOG_MAX_BYTES = 10 * 1024 * 1024;

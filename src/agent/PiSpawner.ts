@@ -1,8 +1,8 @@
 import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { TaskState } from './TaskState.js';
-import { env } from './env.js';
+import { TaskState } from '../state/TaskState.js';
+import { env } from '../shared/env.js';
 import { piCommand } from './PiCommand.js';
 import { appendAgentLog, openAgentLog, runLogName, type AgentLog } from './AgentLog.js';
 import {

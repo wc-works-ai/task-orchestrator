@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { join } from 'node:path';
-import type { ImportTask, TaskDb } from '../../src/TaskDb.js';
+import type { ImportTask, TaskDb } from '../../src/state/TaskDb.js';
 
 // migrate.ts touches the filesystem only through node:fs. Mocking it lets us
 // drive every sanitizer/mapping branch from an in-memory virtual filesystem —
@@ -26,7 +26,7 @@ vi.mock('node:fs', () => ({
   },
 }));
 
-const { migrateShards } = await import('../../src/migrate.js');
+const { migrateShards } = await import('../../src/state/migrate.js');
 
 const ROOT = join('virtual', 'migrate-root');
 const UNREADABLE = '@@unreadable@@';

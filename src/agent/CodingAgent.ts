@@ -1,4 +1,4 @@
-import type { TaskState } from './TaskState.js';
+import type { TaskState } from '../state/TaskState.js';
 
 export interface TokenUsage {
   readonly input: number;

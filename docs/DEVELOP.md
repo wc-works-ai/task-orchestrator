@@ -34,7 +34,7 @@ Pre-commit runs `c` + `test:unit` (fast); pre-push runs the full gate. See `TEST
 
 ## Environment variables
 
-See `README.md` for configuration tables. CLI flags override env vars. Settings defined once in `src/config.ts` (`CONFIG_SPEC`).
+See `README.md` for configuration tables. CLI flags override env vars. Settings defined once in `src/shared/config.ts` (`CONFIG_SPEC`).
 
 Use `orchestrator --config` to inspect effective values and their sources.
 
@@ -74,7 +74,7 @@ Both interact with orchestrator ONLY through `CodingAgent` interface (`checkPrer
 
 1. Write `tests/unit/<Name>Agent.test.ts` first (prerequisites + spawn behavior, mocked) — RED
 2. Create `src/<Name>Agent.ts` implementing `CodingAgent` interface — GREEN
-3. Register in `src/agents.ts` `REGISTRY`
+3. Register in `src/agent/agents.ts` `REGISTRY`
 4. Run `npm run all`
 
 ---

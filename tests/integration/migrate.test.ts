@@ -2,9 +2,9 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { openDb } from '../../src/sqlite.js';
-import { TaskDb, type TaskRow } from '../../src/TaskDb.js';
-import { migrateShards } from '../../src/migrate.js';
+import { openDb } from '../../src/state/sqlite.js';
+import { TaskDb, type TaskRow } from '../../src/state/TaskDb.js';
+import { migrateShards } from '../../src/state/migrate.js';
 
 const dirs: string[] = [];
 const dbs: Array<{ close(): void }> = [];

@@ -3,9 +3,9 @@ import { rm } from 'node:fs/promises';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
-import { Engine } from '../../src/Engine.js';
-import { Worktree } from '../../src/Worktree.js';
-import { TaskState, type TaskInfo } from '../../src/TaskState.js';
+import { Engine } from '../../src/engine/Engine.js';
+import { Worktree } from '../../src/engine/Worktree.js';
+import { TaskState, type TaskInfo } from '../../src/state/TaskState.js';
 import { memStateDb, seed, type StateDb } from '../shared/helpers.js';
 
 const LOCK = '.orchestrator-merge-lock';
@@ -140,7 +140,7 @@ describe('Engine merge robustness', () => {
         };
       });
 
-      const { Engine: MockedEngine } = await import('../../src/Engine.js');
+      const { Engine: MockedEngine } = await import('../../src/engine/Engine.js');
       const benchmark = vi.fn().mockResolvedValueOnce(1).mockResolvedValue(0);
       const engine = new MockedEngine(tasksDir, { benchmark, spawn, repoDir, worktreesDir, taskDb: s.tdb });
 
@@ -183,7 +183,7 @@ describe('Engine merge robustness', () => {
           }),
         };
       });
-      const { Engine: MockedEngine } = await import('../../src/Engine.js');
+      const { Engine: MockedEngine } = await import('../../src/engine/Engine.js');
       const engine = new MockedEngine(tasksDir, { benchmark, spawn, repoDir, worktreesDir, taskDb: s.tdb });
 
       await engine.tick();
@@ -221,7 +221,7 @@ describe('Engine merge robustness', () => {
           }),
         };
       });
-      const { Engine: MockedEngine } = await import('../../src/Engine.js');
+      const { Engine: MockedEngine } = await import('../../src/engine/Engine.js');
       const engine = new MockedEngine(tasksDir, { benchmark, spawn, repoDir, worktreesDir, taskDb: s.tdb });
 
       await engine.tick();

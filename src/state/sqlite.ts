@@ -8,7 +8,7 @@
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { DbInitError } from './errors.js';
+import { DbInitError } from '../shared/errors.js';
 
 export type SqlValue = null | number | bigint | string | NodeJS.ArrayBufferView;
 export type SqlParams = readonly SqlValue[] | Record<string, SqlValue>;

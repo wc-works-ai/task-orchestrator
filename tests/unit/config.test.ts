@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CONFIG_SPEC, formatEffectiveConfig, formatSettingsHelp } from '../../src/config.js';
+import { CONFIG_SPEC, formatEffectiveConfig, formatSettingsHelp } from '../../src/shared/config.js';
 
 describe('config', () => {
   const expectedEnvNames = [

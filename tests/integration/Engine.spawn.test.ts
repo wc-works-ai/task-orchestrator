@@ -2,8 +2,8 @@ import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { rm } from 'node:fs/promises';
 import { existsSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { Engine, MergeRecoveryAction } from '../../src/Engine.js';
-import { TaskState, Status, type TaskInfo } from '../../src/TaskState.js';
+import { Engine, MergeRecoveryAction } from '../../src/engine/Engine.js';
+import { TaskState, Status, type TaskInfo } from '../../src/state/TaskState.js';
 import { memStateDb, seed, statusOf, setupTestDir, type StateDb, type SeedOpts } from '../shared/helpers.js';
 
 let s: StateDb;
@@ -553,7 +553,7 @@ describe('Engine agent spawning', () => {
   it('syncs existing worktree with base before spawn; resets on conflict', async () => {
     const { execSync } = await import('node:child_process');
     const { mkdirSync: mk } = await import('node:fs');
-    const { Worktree } = await import('../../src/Worktree.js');
+    const { Worktree } = await import('../../src/engine/Worktree.js');
 
     const repoDir = resolve(dir, 'repo');
     const tasksDir = resolve(repoDir, 'tasks');

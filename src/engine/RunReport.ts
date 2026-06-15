@@ -1,6 +1,6 @@
 import { join } from 'node:path';
-import { TaskState } from './TaskState.js';
-import { TaskDb } from './TaskDb.js';
+import { TaskState } from '../state/TaskState.js';
+import { TaskDb } from '../state/TaskDb.js';
 
 type Counts = {
   failed: number;

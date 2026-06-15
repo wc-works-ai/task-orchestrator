@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { env } from '../../src/env.js';
+import { env } from '../../src/shared/env.js';
 
 describe('env', () => {
   const originalMaxFailures = process.env.ORCH_MAX_FAILURES;

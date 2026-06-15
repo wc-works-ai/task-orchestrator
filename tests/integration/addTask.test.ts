@@ -2,8 +2,8 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { addTask } from '../../src/addTask.js';
-import { TaskDb } from '../../src/TaskDb.js';
+import { addTask } from '../../src/state/addTask.js';
+import { TaskDb } from '../../src/state/TaskDb.js';
 
 const dirs: string[] = [];
 
