@@ -283,11 +283,10 @@ function replaceSection(content: string, heading: string, bodyLines: readonly st
   if (!range) return content;
 
   const [start, end] = range;
-  const headingLine = lines[start]!;
   const trailingBlankLines = countTrailingBlankLines(lines, start, end);
   return [
     ...lines.slice(0, start),
-    headingLine,
+    `## ${heading}`,
     ...bodyLines,
     ...Array.from({ length: trailingBlankLines }, () => ''),
     ...lines.slice(end),
