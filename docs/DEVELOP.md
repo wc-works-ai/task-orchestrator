@@ -5,12 +5,14 @@
 ## Core workflow — Red → Green → Refactor
 
 ```
-1. RED   — Write the test first. Run it and watch it FAIL:   npm run t
-2. GREEN — Write the minimum code to make it pass:           npm run t
+1. RED   — Write the test first. Run it and watch it FAIL:   npm run test:unit
+2. GREEN — Write the minimum code to make it pass:           npm run test:unit
 3. REFAC — Clean up with the tests green:                    npm run all
 ```
 
 **Rule: never write production code before there is a failing test that demands it.** The only exceptions (no RED needed): pure interfaces/types, constants/enums, and type-only fixes already caught by `tsc`.
+
+Tests are tiered (unit / integration / e2e) — see `TESTING.md`. Use the fast `test:unit` loop while iterating; the full gate runs at pre-push.
 
 **Setup:** `git config core.hooksPath .githooks` (enables pre-commit + pre-push hooks)
 Maintenance: When adding new docs relevant to coding agent behavior, update `docs/INDEX.md`; avoid adding direct links to `AGENTS.md` unless absolutely required.
@@ -24,9 +26,11 @@ Maintenance: When adding new docs relevant to coding agent behavior, update `doc
 ## Before committing
 
 1. `npm run c` — zero type errors
-2. `npm run t` — all tests pass
-3. `npm run tc` — 100% coverage (mandatory; blocks merge)
-4. `npm run all` — full pipeline
+2. `npm run test:unit` — fast unit tier (what pre-commit runs)
+3. `npm run tc` — 100% coverage on unit+integration (mandatory; blocks merge)
+4. `npm run test:e2e` + `npm run b` — full pre-push gate
+
+Pre-commit runs `c` + `test:unit` (fast); pre-push runs the full gate. See `TESTING.md` for tiers.
 
 ## Environment variables
 
@@ -68,7 +72,7 @@ Both interact with orchestrator ONLY through `CodingAgent` interface (`checkPrer
 
 ### Adding a new coding agent
 
-1. Write `tests/<Name>Agent.test.ts` first (prerequisites + spawn behavior) — RED
+1. Write `tests/unit/<Name>Agent.test.ts` first (prerequisites + spawn behavior, mocked) — RED
 2. Create `src/<Name>Agent.ts` implementing `CodingAgent` interface — GREEN
 3. Register in `src/agents.ts` `REGISTRY`
 4. Run `npm run all`
@@ -137,6 +141,6 @@ describe('TaskState.pick', () => {
 
 ## Adding a new file (test-first)
 
-`tests/X.test.ts` (write failing tests first) → `src/X.ts` (implement to green) → export from `src/index.ts` → `npm run all`
+`tests/{unit|integration}/X.test.ts` (write failing tests first — pick the tier by what it touches) → `src/X.ts` (implement to green) → export from `src/index.ts` → `npm run all`
 
-For test patterns (mocks, branch coverage, isolated filesystem), see `TESTING.md`.
+For tiers, mocks, branch coverage, and the E2E harness, see `TESTING.md`.
