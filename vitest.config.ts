@@ -25,6 +25,11 @@ export default defineConfig({
           name: 'e2e',
           include: ['tests/e2e/**/*.test.ts'],
           env: GIT_ENV,
+          // E2E spawns real CLI processes + git, so each test is seconds-slow and
+          // must not contend for CPU. Generous timeout + sequential execution.
+          testTimeout: 30000,
+          hookTimeout: 30000,
+          fileParallelism: false,
         },
       },
     ],
