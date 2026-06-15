@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { TaskState } from '../state/TaskState.js';
 import { env } from '../shared/env.js';
 import { resolveCliCommand } from './cliCommand.js';
+import { consumeLines, formatRawLine } from './agentActivity.js';
 import { appendAgentLog, openAgentLog, runLogName, type AgentLog } from './AgentLog.js';
 import {
   countOccurrences,
@@ -36,6 +37,7 @@ export class CopilotAgent implements CodingAgent {
   readonly #envReasoning: string | undefined;
   readonly #workDir: string;
   readonly #agentLogMaxBytes: number;
+  readonly #agentLogRaw: boolean;
 
   constructor(opts: CopilotAgentOptions = {}) {
     this.#model = opts.model;
@@ -47,6 +49,7 @@ export class CopilotAgent implements CodingAgent {
       opts.agentLogMaxBytes ?? env.agentLogMaxBytes,
       DEFAULT_AGENT_LOG_MAX_BYTES,
     );
+    this.#agentLogRaw = opts.agentLogRaw ?? env.agentLogRaw;
   }
 
   resolveModel(task: TaskState): string | undefined {
@@ -130,9 +133,23 @@ export class CopilotAgent implements CodingAgent {
       let authTail = '';
       let authFailure = false;
       let logWriteFailed = false;
+      let lineBuffer = '';
 
       const handleData = (txt: string) => {
-        logWriteFailed = CopilotAgent.#appendAgentLog(agentLog, txt, 'write agent output', logWriteFailed);
+        if (this.#agentLogRaw) {
+          logWriteFailed = CopilotAgent.#appendAgentLog(agentLog, txt, 'write agent output', logWriteFailed);
+        } else {
+          const consumed = consumeLines(lineBuffer, txt);
+          lineBuffer = consumed.rest;
+          if (consumed.lines.length > 0) {
+            logWriteFailed = CopilotAgent.#appendAgentLog(
+              agentLog,
+              `${consumed.lines.map(line => formatRawLine(line)).join('\n')}\n`,
+              'write agent output',
+              logWriteFailed,
+            );
+          }
+        }
 
         const metricScan = `${metricTail}${txt}`;
         iterations += countOccurrences(metricScan, METRIC_MARKER);
@@ -147,6 +164,14 @@ export class CopilotAgent implements CodingAgent {
       child.stderr?.on('data', (d: Buffer) => handleData(d.toString()));
 
       child.on('close', (code: number | null) => {
+        if (!this.#agentLogRaw && lineBuffer.length > 0) {
+          logWriteFailed = CopilotAgent.#appendAgentLog(
+            agentLog,
+            `${formatRawLine(lineBuffer)}\n`,
+            'write final agent output',
+            logWriteFailed,
+          );
+        }
         const abortedError = 'copilot spawn aborted';
         const authError = 'Copilot CLI authentication failed; sign in or set COPILOT_GITHUB_TOKEN/GITHUB_TOKEN.';
         const exitError = `copilot exited with code ${code ?? 'unknown'}`;

@@ -39,12 +39,14 @@ describe('ExecAgent', () => {
     vi.clearAllMocks();
     delete process.env.ORCH_AGENT_CMD;
     delete process.env.ORCH_AGENT_LOG_MAX_BYTES;
+    delete process.env.ORCH_AGENT_LOG_RAW;
   });
 
   afterEach(async () => {
     s.db.close();
     delete process.env.ORCH_AGENT_CMD;
     delete process.env.ORCH_AGENT_LOG_MAX_BYTES;
+    delete process.env.ORCH_AGENT_LOG_RAW;
     await rm(dir, { recursive: true, force: true });
   });
 
@@ -188,7 +190,7 @@ describe('ExecAgent', () => {
     expect(result.error).toBe('boom');
   });
 
-  it('writes the session header and child output to the agent log', async () => {
+  it('writes the session header and timestamped child output to the agent log', async () => {
     process.env.ORCH_AGENT_CMD = 'run-agent';
     const task = make(dir);
     const child = mockChild();
@@ -196,8 +198,8 @@ describe('ExecAgent', () => {
 
     const promise = new ExecAgent().spawn(task, dir);
     setTimeout(() => {
-      child.stdout!.emit('data', Buffer.from('hello stdout\n'));
-      child.stderr!.emit('data', Buffer.from('oops stderr\n'));
+      child.stdout!.emit('data', Buffer.from('hello stdout\npartial'));
+      child.stderr!.emit('data', Buffer.from(' oops stderr'));
       child.emit('close', 0);
     }, 5);
     const result = await promise;
@@ -207,9 +209,31 @@ describe('ExecAgent', () => {
     const log = readFileSync(join(task.directory, logName), 'utf-8');
     expect(log).toContain('=== exec agent started');
     expect(log).toContain('=== command: run-agent ===');
-    expect(log).toContain('hello stdout');
-    expect(log).toContain('oops stderr');
+    expect(log).toMatch(/^\[\d\d:\d\d:\d\d\.\d\d\d\] hello stdout$/m);
+    expect(log).toMatch(/^\[\d\d:\d\d:\d\d\.\d\d\d\] partial oops stderr$/m);
     expect(log).toContain('=== exec agent ended (exit 0) ===');
+  });
+
+  it('writes raw verbatim output when ORCH_AGENT_LOG_RAW is set', async () => {
+    process.env.ORCH_AGENT_CMD = 'run-agent';
+    process.env.ORCH_AGENT_LOG_RAW = '1';
+    const task = make(dir);
+    const child = mockChild();
+    vi.mocked(spawn).mockReturnValue(child);
+
+    const promise = new ExecAgent().spawn(task, dir);
+    setTimeout(() => {
+      child.stdout!.emit('data', Buffer.from('raw stdout'));
+      child.stderr!.emit('data', Buffer.from(' + stderr\n'));
+      child.emit('close', 0);
+    }, 5);
+    const result = await promise;
+
+    expect(result.success).toBe(true);
+    const logName = readdirSync(task.directory).find(f => /^agent-.*\.log$/.test(f))!;
+    const log = readFileSync(join(task.directory, logName), 'utf-8');
+    expect(log).toContain('raw stdout + stderr\n');
+    expect(log).not.toMatch(/^\[\d\d:\d\d:\d\d\.\d\d\d\] raw stdout/m);
   });
 
   it('falls back to the default agent log size when configured bytes are invalid', async () => {

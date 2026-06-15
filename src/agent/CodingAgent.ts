@@ -32,6 +32,8 @@ export interface CodingAgentOptions {
   readonly reasoning?: string;
   readonly workDir?: string;
   readonly agentLogMaxBytes?: number;
+  /** Write agent logs as raw child output instead of timestamped lines. */
+  readonly agentLogRaw?: boolean;
 }
 
 export function positiveInt(value: unknown, fallback: number): number {

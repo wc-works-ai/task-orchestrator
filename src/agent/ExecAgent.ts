@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { join } from 'node:path';
 import { env } from '../shared/env.js';
 import { appendAgentLog, openAgentLog, runLogName, type AgentLog } from './AgentLog.js';
+import { consumeLines, formatRawLine } from './agentActivity.js';
 import { positiveInt } from './CodingAgent.js';
 import type { TaskState } from '../state/TaskState.js';
 import type { SpawnResult, PrerequisiteResult, CodingAgentOptions, CodingAgent } from './CodingAgent.js';
@@ -21,12 +22,14 @@ export interface ExecAgentOptions extends CodingAgentOptions {
 export class ExecAgent implements CodingAgent {
   readonly name = 'exec';
   readonly #agentLogMaxBytes: number;
+  readonly #agentLogRaw: boolean;
 
   constructor(opts: ExecAgentOptions = {}) {
     this.#agentLogMaxBytes = positiveInt(
       opts.agentLogMaxBytes ?? env.agentLogMaxBytes,
       DEFAULT_AGENT_LOG_MAX_BYTES,
     );
+    this.#agentLogRaw = opts.agentLogRaw ?? env.agentLogRaw;
   }
 
   checkPrerequisites(): PrerequisiteResult[] {
@@ -79,11 +82,27 @@ export class ExecAgent implements CodingAgent {
 
       let aborted = false;
       signal?.addEventListener('abort', () => { aborted = true; child.kill(); }, { once: true });
+      let lineBuffer = '';
+      const handleData = (txt: string) => {
+        if (this.#agentLogRaw) {
+          ExecAgent.#append(agentLog, txt);
+          return;
+        }
 
-      child.stdout?.on('data', (d: Buffer) => ExecAgent.#append(agentLog, d.toString()));
-      child.stderr?.on('data', (d: Buffer) => ExecAgent.#append(agentLog, d.toString()));
+        const consumed = consumeLines(lineBuffer, txt);
+        lineBuffer = consumed.rest;
+        if (consumed.lines.length > 0) {
+          ExecAgent.#append(agentLog, `${consumed.lines.map(line => formatRawLine(line)).join('\n')}\n`);
+        }
+      };
+
+      child.stdout?.on('data', (d: Buffer) => handleData(d.toString()));
+      child.stderr?.on('data', (d: Buffer) => handleData(d.toString()));
 
       child.on('close', (code: number | null) => {
+        if (!this.#agentLogRaw && lineBuffer.length > 0) {
+          ExecAgent.#append(agentLog, `${formatRawLine(lineBuffer)}\n`);
+        }
         const abortedError = 'exec agent aborted';
         const exitError = `agent command exited with code ${code ?? 'unknown'}`;
         const error = aborted ? abortedError : code === 0 ? '' : exitError;

@@ -12,6 +12,7 @@ import {
   resolveReasoning as resolveAgentReasoning,
   tail,
 } from './CodingAgent.js';
+import { consumeLines, formatPiEvent, formatRawLine } from './agentActivity.js';
 import type { SpawnResult, TokenUsage, PrerequisiteResult, CodingAgentOptions } from './CodingAgent.js';
 import type { CodingAgent } from './CodingAgent.js';
 
@@ -28,6 +29,7 @@ const MAX_JSON_LINE_BUFFER = 1_000_000;
 const AUTH_SCAN_TAIL = 512;
 const ITERATION_MARKER = 'log_experiment';
 type MutableTokenUsage = { -readonly [K in keyof TokenUsage]: TokenUsage[K] };
+type NowSource = () => Date;
 
 function errorMessage(error: unknown): string {
   /* v8 ignore next -- non-Error throws are incidental formatting cases */
@@ -282,7 +284,9 @@ export class PiAgent implements CodingAgent {
       const agentLog = openAgentLog(logPath, this.#agentLogMaxBytes);
       PiAgent.#appendAgentLog(agentLog, [
         `=== agent session started at ${new Date().toISOString()} ===`,
-        `=== agent log mode: ${this.#agentLogRaw ? 'raw' : 'summary'}${this.#agentLogRaw ? '' : ' (set ORCH_AGENT_LOG_RAW=1 for raw pi stream)'} ===`,
+        this.#agentLogRaw
+          ? '=== agent log: raw pi JSON stream ==='
+          : '=== agent log: structured activity (set ORCH_AGENT_LOG_RAW=1 for the raw pi JSON stream) ===',
         '',
       ].join('\n'), state, `initialize ${F_AGENT_LOG}`);
 
@@ -298,6 +302,9 @@ export class PiAgent implements CodingAgent {
 
       child.on('close', (code: number | null) => {
         cleanup();
+        if (!this.#agentLogRaw) {
+          PiAgent.#flushLineRemainder(state, agentLog);
+        }
         const authError = PiAgent.#authError(state.authProviders);
         const failure = state.progressStale
           ? terminationError
@@ -309,7 +316,7 @@ export class PiAgent implements CodingAgent {
         // Append footer and close — previous chunks already streamed
         PiAgent.#appendAgentLog(agentLog, [
           `=== agent session ended (exit ${code}) ===`,
-          `=== raw output bytes=${state.rawBytes} ${this.#agentLogRaw ? 'logged' : 'omitted'} ===`,
+          `=== raw bytes=${state.rawBytes} ${this.#agentLogRaw ? 'logged' : '(structured activity logged)'} ===`,
           `=== iterations=${state.iterations} ===`,
           authError ? `=== auth failure ${authError} ===` : '',
           failure ? `=== failure ${failure} ===` : '',
@@ -352,7 +359,7 @@ export class PiAgent implements CodingAgent {
       PiAgent.#collectAuthProviders(authScan, state.authProviders);
       state.authTail = tail(authScan, AUTH_SCAN_TAIL);
     }
-    state.lineBuf = PiAgent.#processJsonLines(txt, state.lineBuf, state.tokenUsage);
+    PiAgent.#processPiLines(txt, state, agentLog, !this.#agentLogRaw, () => new Date());
   }
 
   #checkProgress(state: RunState, logPath: string, escalateTermination: (error: string) => void): void {
@@ -420,21 +427,22 @@ export class PiAgent implements CodingAgent {
     return ms < 1000 ? `${ms}ms` : `${Math.round(ms / 1000)}s`;
   }
 
-  static #processJsonLines(txt: string, lineBuf: string, tokenUsage: MutableTokenUsage): string {
-    let start = 0;
-    while (true) {
-      const newline = txt.indexOf('\n', start);
-      if (newline === -1) break;
-      const segment = txt.slice(start, newline);
-      if (lineBuf.length + segment.length <= MAX_JSON_LINE_BUFFER) {
-        PiAgent.#parseJsonLine(`${lineBuf}${segment}`, tokenUsage);
+  static #processPiLines(txt: string, state: RunState, agentLog: AgentLog, structured: boolean, nowSource: NowSource): void {
+    const { lines, rest } = consumeLines(state.lineBuf, txt);
+    for (const line of lines) {
+      if (line.length <= MAX_JSON_LINE_BUFFER) {
+        PiAgent.#processPiLine(line, state, agentLog, structured, nowSource);
       }
-      lineBuf = '';
-      start = newline + 1;
     }
+    state.lineBuf = PiAgent.#appendBounded('', rest, MAX_JSON_LINE_BUFFER);
+  }
 
-    const remainder = txt.slice(start);
-    return remainder ? PiAgent.#appendBounded(lineBuf, remainder, MAX_JSON_LINE_BUFFER) : lineBuf;
+  static #flushLineRemainder(state: RunState, agentLog: AgentLog): void {
+    const line = state.lineBuf;
+    if (line.length === 0) return;
+    state.lineBuf = '';
+    // lineBuf is always within MAX_JSON_LINE_BUFFER (bounded by #appendBounded).
+    PiAgent.#processPiLine(line, state, agentLog, true, () => new Date());
   }
 
   static #appendBounded(current: string, next: string, maxLength: number): string {
@@ -444,12 +452,22 @@ export class PiAgent implements CodingAgent {
     return overflow > 0 ? `${current.slice(overflow)}${next}` : `${current}${next}`;
   }
 
-  static #parseJsonLine(raw: string, tokenUsage: MutableTokenUsage): void {
-    if (!raw.trim()) return;
+  static #processPiLine(raw: string, state: RunState, agentLog: AgentLog, structured: boolean, nowSource: NowSource): void {
     const obj = PiAgent.#parseJsonRecord(raw);
-    if (!obj) return;
-    const usage = PiAgent.#usageFromEvent(obj);
-    if (usage) PiAgent.#addTokenUsage(tokenUsage, usage);
+    if (obj) {
+      const usage = PiAgent.#usageFromEvent(obj);
+      if (usage) PiAgent.#addTokenUsage(state.tokenUsage, usage);
+      if (structured) PiAgent.#appendStructuredLines(formatPiEvent(obj, nowSource()), state, agentLog);
+      return;
+    }
+    if (structured) {
+      PiAgent.#appendStructuredLines([formatRawLine(raw, nowSource())], state, agentLog);
+    }
+  }
+
+  static #appendStructuredLines(lines: string[], state: RunState, agentLog: AgentLog): void {
+    if (lines.length === 0) return;
+    PiAgent.#appendAgentLog(agentLog, `${lines.join('\n')}\n`, state, `write structured ${F_AGENT_LOG}`);
   }
 
   static #emptyTokenUsage(): MutableTokenUsage {

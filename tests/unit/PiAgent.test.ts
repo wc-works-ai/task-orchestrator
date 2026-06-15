@@ -354,7 +354,7 @@ describe('PiAgent', () => {
     }
   });
 
-  it('omits raw stderr output from agent log by default', async () => {
+  it('writes timestamped structured plain-text stderr output by default', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
@@ -367,9 +367,9 @@ describe('PiAgent', () => {
     const r = await p;
     expect(r.success).toBe(true);
     const log = readRunLog(t.directory);
-    expect(log).toContain('agent log mode: summary');
-    expect(log).toContain('raw output bytes=23 omitted');
-    expect(log).not.toContain('warning: something bad');
+    expect(log).toContain('agent log: structured activity');
+    expect(log).toContain('raw bytes=23 (structured activity logged)');
+    expect(log).toMatch(/\[\d{2}:\d{2}:\d{2}\.\d{3}\] warning: something bad/);
   });
 
   it('captures raw stderr output when raw agent logging is enabled', async () => {
@@ -385,9 +385,10 @@ describe('PiAgent', () => {
     const r = await p;
     expect(r.success).toBe(true);
     const log = readRunLog(t.directory);
-    expect(log).toContain('agent log mode: raw');
+    expect(log).toContain('agent log: raw pi JSON stream');
     expect(log).toContain('warning: something bad');
-    expect(log).toContain('raw output bytes=23 logged');
+    expect(log).not.toMatch(/\[\d{2}:\d{2}:\d{2}\.\d{3}\] warning: something bad/);
+    expect(log).toContain('raw bytes=23 logged');
   });
 
   it('returns no token usage when assistant usage is missing', async () => {
@@ -496,7 +497,115 @@ describe('PiAgent', () => {
       totalTokens: 130,
     });
     const log = readRunLog(t.directory);
+    expect(log).toMatch(/LLM assistant turn — 112 tokens \(in=10 out=2 cache=100\)/);
+    expect(log).toMatch(/LLM assistant turn — 18 tokens \(in=3 out=4 cache=11\)/);
     expect(log).toContain('=== token usage total=130 input=13 output=6 cacheRead=105 cacheWrite=6 ===');
+  });
+
+  it('writes structured assistant tool use and non-JSON stream lines by default', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiAgent().spawn(t, dir);
+    setTimeout(() => {
+      mock.stdout!.emit('data', Buffer.from(JSON.stringify({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          usage: { input: 7, output: 8, cacheRead: 0, cacheWrite: 0, totalTokens: 15 },
+          content: [
+            { type: 'tool_use', name: 'read', input: { path: 'src/agent/PiAgent.ts' } },
+            { type: 'text', text: 'I inspected the file.' },
+          ],
+        },
+      }) + '\nplain status line\n'));
+      mock.emit('close', 0);
+    }, 5);
+
+    const r = await p;
+    expect(r.success).toBe(true);
+    expect(r.tokenUsage).toEqual({
+      input: 7,
+      output: 8,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 15,
+    });
+    const log = readRunLog(t.directory);
+    expect(log).toMatch(/\[\d{2}:\d{2}:\d{2}\.\d{3}\] LLM assistant turn — 15 tokens \(in=7 out=8 cache=0\)/);
+    expect(log).toContain('TOOL read({"path":"src/agent/PiAgent.ts"})');
+    expect(log).toContain('text: I inspected the file.');
+    expect(log).toMatch(/\[\d{2}:\d{2}:\d{2}\.\d{3}\] plain status line/);
+    expect(log).toContain('=== token usage total=15 input=7 output=8 cacheRead=0 cacheWrite=0 ===');
+  });
+
+  it('raw agent logging keeps pi stream verbatim without structured activity', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+    const event = JSON.stringify({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        usage: { input: 2, output: 3, cacheRead: 4, cacheWrite: 0, totalTokens: 9 },
+        content: [{ type: 'tool_use', name: 'read', input: { path: 'package.json' } }],
+      },
+    });
+
+    const p = new PiAgent({ agentLogRaw: true }).spawn(t, dir);
+    setTimeout(() => {
+      mock.stdout!.emit('data', Buffer.from(`${event}\nlog_experiment\n`));
+      mock.emit('close', 0);
+    }, 5);
+
+    const r = await p;
+    expect(r.success).toBe(true);
+    expect(r.iterations).toBe(1);
+    expect(r.tokenUsage).toEqual({
+      input: 2,
+      output: 3,
+      cacheRead: 4,
+      cacheWrite: 0,
+      totalTokens: 9,
+    });
+    const log = readRunLog(t.directory);
+    expect(log).toContain(`${event}\nlog_experiment\n`);
+    expect(log).not.toContain('LLM assistant turn');
+    expect(log).not.toContain('TOOL read({"path":"package.json"})');
+    expect(log).toContain('=== iterations=1 ===');
+    expect(log).toContain('=== token usage total=9 input=2 output=3 cacheRead=4 cacheWrite=0 ===');
+  });
+
+  it('flushes a final unterminated structured pi line on close', async () => {
+    const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
+    const mock = mockChild();
+    vi.mocked(spawn).mockReturnValue(mock);
+
+    const p = new PiAgent().spawn(t, dir);
+    setTimeout(() => {
+      mock.stdout!.emit('data', Buffer.from(JSON.stringify({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2 },
+        },
+      })));
+      mock.emit('close', 0);
+    }, 5);
+
+    const r = await p;
+    expect(r.success).toBe(true);
+    expect(r.tokenUsage).toEqual({
+      input: 1,
+      output: 1,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 2,
+    });
+    const log = readRunLog(t.directory);
+    expect(log).toContain('LLM assistant turn — 2 tokens (in=1 out=1 cache=0)');
+    expect(log).toContain('=== token usage total=2 input=1 output=1 cacheRead=0 cacheWrite=0 ===');
   });
 
   it('caps large agent output in the log without breaking scanners', async () => {

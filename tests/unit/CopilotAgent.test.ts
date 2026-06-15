@@ -45,6 +45,7 @@ describe('CopilotAgent', () => {
     delete process.env.ORCH_MODEL;
     delete process.env.ORCH_REASONING;
     delete process.env.ORCH_AGENT_LOG_MAX_BYTES;
+    delete process.env.ORCH_AGENT_LOG_RAW;
   });
 
   afterEach(async () => {
@@ -52,6 +53,7 @@ describe('CopilotAgent', () => {
     delete process.env.ORCH_MODEL;
     delete process.env.ORCH_REASONING;
     delete process.env.ORCH_AGENT_LOG_MAX_BYTES;
+    delete process.env.ORCH_AGENT_LOG_RAW;
     await rm(dir, { recursive: true, force: true });
   });
 
@@ -162,15 +164,16 @@ describe('CopilotAgent', () => {
     expect(result.error).toContain('Copilot CLI authentication failed');
   });
 
-  it('writes agent.log and counts metric iterations', async () => {
+  it('writes timestamped agent.log lines, flushes final partial output, and counts metric iterations', async () => {
     const task = make(dir);
     const child = mockChild();
     vi.mocked(spawn).mockReturnValue(child);
 
     const promise = new CopilotAgent().spawn(task, dir);
     setTimeout(() => {
-      child.stdout!.emit('data', Buffer.from('METRIC failures=1\n'));
-      child.stderr!.emit('data', Buffer.from('METRIC failures=0\n'));
+      child.stdout!.emit('data', Buffer.from('METRIC failures=1\npartial '));
+      child.stdout!.emit('data', Buffer.from('line'));
+      child.stderr!.emit('data', Buffer.from('METRIC failures=0'));
       child.emit('close', 0);
     }, 5);
     const result = await promise;
@@ -181,8 +184,29 @@ describe('CopilotAgent', () => {
     const logName = readdirSync(task.directory).find(f => /^agent-.*\.log$/.test(f))!;
     const log = readFileSync(join(task.directory, logName), 'utf-8');
     expect(log).toContain('token usage unavailable');
-    expect(log).toContain('METRIC failures=1');
-    expect(log).toContain('METRIC failures=0');
+    expect(log).toMatch(/^\[\d\d:\d\d:\d\d\.\d\d\d\] METRIC failures=1$/m);
+    expect(log).toMatch(/^\[\d\d:\d\d:\d\d\.\d\d\d\] partial lineMETRIC failures=0$/m);
+    expect(log).not.toContain('partial line\nMETRIC failures=0');
+  });
+
+  it('writes raw verbatim agent output when agentLogRaw is true', async () => {
+    const task = make(dir);
+    const child = mockChild();
+    vi.mocked(spawn).mockReturnValue(child);
+
+    const promise = new CopilotAgent({ agentLogRaw: true }).spawn(task, dir);
+    setTimeout(() => {
+      child.stdout!.emit('data', Buffer.from('raw stdout'));
+      child.stderr!.emit('data', Buffer.from(' + stderr\n'));
+      child.emit('close', 0);
+    }, 5);
+    const result = await promise;
+
+    expect(result.success).toBe(true);
+    const logName = readdirSync(task.directory).find(f => /^agent-.*\.log$/.test(f))!;
+    const log = readFileSync(join(task.directory, logName), 'utf-8');
+    expect(log).toContain('raw stdout + stderr\n');
+    expect(log).not.toMatch(/^\[\d\d:\d\d:\d\d\.\d\d\d\] raw stdout/m);
   });
 
   it('honors abort signals', async () => {

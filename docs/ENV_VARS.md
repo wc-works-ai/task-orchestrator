@@ -56,7 +56,7 @@ Run `orchestrator --config` to inspect effective values.
 | Variable | Flag | Default | Purpose |
 |---|---|---|---|
 | `ORCH_LOG_LEVEL` | — | `normal` | `quiet`, `normal`, or `verbose` |
-| `ORCH_AGENT_LOG_RAW` | — | off | Write raw agent output to per-run log |
+| `ORCH_AGENT_LOG_RAW` | — | off | Raw verbatim agent stream instead of the default structured, timestamped activity log |
 | `ORCH_AGENT_LOG_MAX_BYTES` | — | `10485760` | Max per-run log size (bytes) |
 
 ## Notes
@@ -67,3 +67,4 @@ Run `orchestrator --config` to inspect effective values.
 - Paths: `ORCH_TASKS`/`ORCH_WORKTREES` auto-derived from `ORCH_STATE_ROOT` if not set.
 - Pruning: content dirs of converged tasks exceeding `ORCH_KEEP_CONVERGED` are deleted; the DB rows remain (the converged count is preserved).
 - CLI flags override env vars. Set permanent config in `~/.bashrc`; use flags for one-off overrides.
+- Agent logs: each run writes a timestamped `agent-<time>.log` with one line per activity — for `pi`, LLM turns (with token usage), tool calls, and text parsed from its JSON stream; for `copilot`/`exec`, timestamped output lines. `ORCH_AGENT_LOG_RAW=1` switches to the unprocessed stream for debugging.

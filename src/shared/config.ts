@@ -31,7 +31,7 @@ export const CONFIG_SPEC: readonly ConfigItem[] = [
   { group: 'Concurrency & timeouts', env: 'ORCH_PROGRESS_TIMEOUT', kind: 'number', def: '120000', desc: 'Kill agent after no output for this long (ms)' },
   { group: 'Concurrency & timeouts', env: 'ORCH_BENCHMARK_TIMEOUT', kind: 'number', def: '120000', desc: 'Kill a task benchmark.js run after this long (ms); raise it for benchmarks that run the full test suite' },
   { group: 'Logging', env: 'ORCH_LOG_LEVEL', kind: 'string', def: 'normal', desc: 'Console verbosity: quiet | normal | verbose' },
-  { group: 'Logging', env: 'ORCH_AGENT_LOG_RAW', kind: 'boolean', def: 'off', desc: 'Write raw spawned-agent output to agent.log' },
+  { group: 'Logging', env: 'ORCH_AGENT_LOG_RAW', kind: 'boolean', def: 'off', desc: 'Write the raw verbatim agent stream instead of the default structured, timestamped activity log' },
   { group: 'Logging', env: 'ORCH_AGENT_LOG_MAX_BYTES', kind: 'number', def: '10485760', desc: 'Max agent.log size before truncation (bytes)' },
 ] as const;
 
