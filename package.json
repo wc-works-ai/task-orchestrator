@@ -52,7 +52,8 @@
     "help": "tsx src/cli.ts --help",
     "check": "tsx src/cli.ts --check",
     "stop": "tsx src/cli.ts --stop",
-    "add": "tsx src/cli.ts add"
+    "add": "tsx src/cli.ts add",
+    "smoke:live": "node scripts/smoke-live.mjs"
   },
   "keywords": [
     "orchestrator",
