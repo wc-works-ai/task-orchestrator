@@ -390,12 +390,12 @@ describe('Engine', () => {
     expect(row.failures).toBe(0);
   });
 
-  it('benchmark that throws is caught and counted as non-zero', async () => {
+  it('BLOCKS the task when the benchmark throws (a crash is not a normal failure)', async () => {
     make(1, 'a');
     const r = await engine({ benchmark: () => { throw new Error('boom'); } }).tick();
-    expect(r.metric).toBe(1);
     expect(r.converged).toBe(false);
-    expect(statusOf(s.db, 1)).toBe(Status.FAILED);
+    expect(statusOf(s.db, 1)).toBe(Status.BLOCKED);
+    expect(rowOf(s.db, 1)!.failures).toBe(0);
   });
 
   it('returns null when stop file exists', async () => {

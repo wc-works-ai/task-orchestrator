@@ -6,6 +6,7 @@ import {
 } from './Status.js';
 import { TaskDb, type TaskRow } from './TaskDb.js';
 import { sha256 } from '../shared/BenchmarkMeta.js';
+import type { BenchmarkOutcome } from '../shared/metrics.js';
 
 export { Status, inProgress, isInProgress, CONVERGENCE_THRESHOLD, MAX_FAILURES };
 
@@ -24,7 +25,10 @@ export interface TaskInfo {
   readonly metrics: readonly string[];
 }
 
-export type BenchmarkFn = (task: TaskInfo) => Promise<number> | number;
+/** A benchmark may return a bare metric total (shorthand for a clean `ok` run)
+ *  or a full {@link BenchmarkOutcome} so the Engine can distinguish a crashed or
+ *  no-op benchmark from genuine "work remaining". `#run` normalizes the number. */
+export type BenchmarkFn = (task: TaskInfo) => Promise<number | BenchmarkOutcome> | number | BenchmarkOutcome;
 
 // ── Result types ────────────────────────────────────────────────────────────
 export interface TickResult {

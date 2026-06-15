@@ -296,11 +296,42 @@ describe('Engine.tick (mocked TaskDb, no worktree)', () => {
     expect(fake.getByNumber(1)!.status).toBe(Status.BLOCKED);
   });
 
-  it('treats a throwing benchmark as metric 1 (failed attempt)', async () => {
+  it('BLOCKS the task (no retry consumed) when the benchmark throws — a crash is not "needs work"', async () => {
     fake.seed({ task_number: 1, name: 'a', max_failures: 5 });
     const r = await makeEngine(fake, { benchmark: () => { throw new Error('boom'); } }).tick();
-    expect(r.metric).toBe(1);
-    expect(fake.getByNumber(1)!.status).toBe(Status.FAILED);
+    expect(r.converged).toBe(false);
+    expect(r.stopped).not.toBe(true); // per-task block; the fleet keeps going
+    expect(fake.getByNumber(1)!.status).toBe(Status.BLOCKED);
+    expect(fake.getByNumber(1)!.failures).toBe(0);
+  });
+
+  it('BLOCKS on a crash outcome at the initial check without spawning the agent', async () => {
+    fake.seed({ task_number: 1, name: 'a', max_failures: 5 });
+    const spawn = vi.fn(async () => ({ success: true, iterations: 1 }));
+    const r = await makeEngine(fake, { benchmark: () => ({ kind: 'crash', total: 1, criteria: [] }), spawn }).tick();
+    expect(spawn).not.toHaveBeenCalled();
+    expect(r.converged).toBe(false);
+    expect(fake.getByNumber(1)!.status).toBe(Status.BLOCKED);
+    expect(fake.getByNumber(1)!.failures).toBe(0);
+  });
+
+  it('BLOCKS on a no_metrics outcome (a benchmark that measures nothing)', async () => {
+    fake.seed({ task_number: 1, name: 'a', max_failures: 5 });
+    const spawn = vi.fn(async () => ({ success: true, iterations: 1 }));
+    await makeEngine(fake, { benchmark: () => ({ kind: 'no_metrics', total: 1, criteria: [] }), spawn }).tick();
+    expect(spawn).not.toHaveBeenCalled();
+    expect(fake.getByNumber(1)!.status).toBe(Status.BLOCKED);
+  });
+
+  it('BLOCKS when the post-agent re-check is a crash (after a single spawn, no retry)', async () => {
+    fake.seed({ task_number: 1, name: 'a', max_failures: 5 });
+    let calls = 0;
+    const benchmark = () => (calls++ === 0 ? 1 : { kind: 'crash', total: 1, criteria: [] });
+    const spawn = vi.fn(async () => ({ success: true, iterations: 1 }));
+    await makeEngine(fake, { benchmark, spawn }).tick();
+    expect(spawn).toHaveBeenCalledOnce();
+    expect(fake.getByNumber(1)!.status).toBe(Status.BLOCKED);
+    expect(fake.getByNumber(1)!.failures).toBe(0);
   });
 
   it('runs the spawn cycle when the metric is non-zero and re-checks after the agent', async () => {

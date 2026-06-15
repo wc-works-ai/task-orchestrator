@@ -44,6 +44,7 @@ branched from the task's target branch. Task state lives in SQLite
 | Counter corruption | N/A — counts are integer columns in `state.db` |
 | Scope | Advisory (prompt-based); conflicts caught by git |
 | `node_modules` copy failure | Best-effort; benchmark fails → natural retry |
+| Broken benchmark | Crash / no METRIC → task BLOCKED with a structured reason; no spawn, no retry |
 | Dependencies | Wait for CONVERGED status, not count |
 | Non-git repo / `--no-worktree` | Degrades to benchmark loop; warned in log; no cleanup of main folder |
 | Auto-commit | After agent exits; merge captures validated code |
@@ -61,7 +62,7 @@ branched from the task's target branch. Task state lives in SQLite
 |---|----------|--------|
 | 1 | metric > 0 → create worktree, spawn agent | ✅ |
 | 2 | metric = 0 → convergence starts (no worktree) | ✅ |
-| 3 | Benchmark crashes | ⚠️ Agent spawned against broken benchmark |
+| 3 | Benchmark crashes or emits no METRIC | ✅ Classified as a defect → task BLOCKED (no spawn, no retry) |
 
 ### Agent work
 
@@ -73,7 +74,7 @@ branched from the task's target branch. Task state lives in SQLite
 | 7 | Agent crashes → auto-commit captures whatever was written | ✅ |
 | 8 | Main repo advances → synced at next `#prepareWorktree` or merge | ✅ |
 | 9 | `syncWithBase()` fails → hard reset to base | ⚠️ Agent commits lost |
-| 10 | `cleanWorktree()` fails silently → agent may start on dirty worktree | ⚠️ No logging; self-corrects via benchmark |
+| 10 | `cleanWorktree()` fails → agent may start on dirty worktree | ⚠️ Logged; self-corrects via benchmark |
 | 11 | Agent edits outside scope | ⚠️ Prompt-based scope only |
 
 ### Convergence (metric = 0, re-checking)
@@ -141,16 +142,15 @@ branched from the task's target branch. Task state lives in SQLite
 
 ### 🔴 Stale benchmark
 
-Benchmark is a static artifact. By pickup time, codebase may have changed.
+Benchmark is a static artifact. By pickup time, the codebase may have changed.
 
-| Mode | Effect |
-|------|--------|
-| False negative | Criteria unreachable → agent burns retries |
-| False positive | No-op check → false convergence |
-| Crash | Missing imports → broken benchmark |
-| Infra regression | Another merge broke build/test |
+| Mode | Effect | Status |
+|------|--------|--------|
+| Crash / no METRIC | Result unreliable | ✅ Defect → task BLOCKED |
+| False negative | Criteria unreachable → agent burns retries | 🔴 no-progress detection |
+| False positive | Benchmark trivially emits 0 → false convergence | 🔴 baseline regression |
 
-**Planned fix:** crash detection, no-progress detection, baseline regression.
+**Planned fix:** no-progress detection, baseline regression.
 
 ## Fixed issues
 
@@ -164,6 +164,7 @@ Benchmark is a static artifact. By pickup time, codebase may have changed.
 | P1 | Repo left on target branch | `checkout prevBranch` after merge |
 | P2 | Stash never restored | `stash pop` in finally block |
 | P4 | Staged changes leak | `git reset HEAD` in `cleanWorktree()` |
+| B7 | Crash/no-METRIC benchmark spawned the agent & burned retries | Structured `BenchmarkOutcome` → `#handleBenchmarkDefect()` BLOCKs the task |
 
 ## Appendix: --unblock
 
