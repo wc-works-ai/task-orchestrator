@@ -53,18 +53,39 @@ const CLI_PARSE_CONFIG = {
   options: CLI_OPTIONS,
 } as const satisfies ParseArgsConfig;
 
-const TASK_LABELS = {
-  converged: 'CONVERGED',
-  failed: 'FAILED',
-  blocked: 'BLOCKED',
-  pending: 'PENDING',
-  running: 'RUNNING',
-  unknown: 'UNKNOWN',
-} as const;
+type CliOptionValues = Readonly<{
+  repo: string;
+  'state-root': string;
+  tasks: string;
+  loop: boolean;
+  status: boolean;
+  graph: boolean;
+  check: boolean;
+  agent: string;
+  model: string;
+  reasoning: string;
+  stop: boolean;
+  task: string;
+  unblock: string;
+  goal: string;
+  metric: string;
+  scope: string;
+  once: boolean;
+  config: boolean;
+  'keep-alive': boolean;
+  'keep-converged': string;
+  infinite: boolean;
+  'auto-stash': boolean;
+  'no-worktree': boolean;
+  parallel: string;
+  worktrees: string;
+  help: boolean;
+}>;
 
-const parseCliArgsInternal = () => parseArgs(CLI_PARSE_CONFIG);
-
-type CliArgs = ReturnType<typeof parseCliArgsInternal>;
+type CliArgs = {
+  values: CliOptionValues;
+  positionals: string[];
+};
 type CliValues = CliArgs['values'];
 type CliPositionals = CliArgs['positionals'];
 type ResolvedPaths = ReturnType<typeof resolveCliPaths>;
@@ -79,6 +100,63 @@ type RuntimeOptions = {
   parallel: number;
   keepConverged: number | undefined;
 };
+type TaskLabel = 'CONVERGED' | 'FAILED' | 'BLOCKED' | 'PENDING' | 'RUNNING' | 'UNKNOWN';
+
+type TaskLabelMatcher = {
+  readonly label: TaskLabel;
+  readonly matches: (task: TaskState) => boolean;
+};
+
+const TASK_LABELS: readonly TaskLabelMatcher[] = [
+  { label: 'CONVERGED', matches: task => task.isConverged },
+  { label: 'FAILED', matches: task => task.isFailed },
+  { label: 'BLOCKED', matches: task => task.isBlocked },
+  { label: 'PENDING', matches: task => task.isPending },
+  { label: 'RUNNING', matches: task => task.isInProgress },
+] as const;
+
+function readStringOption(value: string | boolean | undefined): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function readBooleanOption(value: string | boolean | undefined): boolean {
+  return value === true;
+}
+
+function parseCliArgsInternal(): CliArgs {
+  const parsed = parseArgs(CLI_PARSE_CONFIG);
+  return {
+    positionals: [...parsed.positionals],
+    values: {
+      repo: readStringOption(parsed.values.repo),
+      'state-root': readStringOption(parsed.values['state-root']),
+      tasks: readStringOption(parsed.values.tasks),
+      loop: readBooleanOption(parsed.values.loop),
+      status: readBooleanOption(parsed.values.status),
+      graph: readBooleanOption(parsed.values.graph),
+      check: readBooleanOption(parsed.values.check),
+      agent: readStringOption(parsed.values.agent),
+      model: readStringOption(parsed.values.model),
+      reasoning: readStringOption(parsed.values.reasoning),
+      stop: readBooleanOption(parsed.values.stop),
+      task: readStringOption(parsed.values.task),
+      unblock: readStringOption(parsed.values.unblock),
+      goal: readStringOption(parsed.values.goal),
+      metric: readStringOption(parsed.values.metric),
+      scope: readStringOption(parsed.values.scope),
+      once: readBooleanOption(parsed.values.once),
+      config: readBooleanOption(parsed.values.config),
+      'keep-alive': readBooleanOption(parsed.values['keep-alive']),
+      'keep-converged': readStringOption(parsed.values['keep-converged']),
+      infinite: readBooleanOption(parsed.values.infinite),
+      'auto-stash': readBooleanOption(parsed.values['auto-stash']),
+      'no-worktree': readBooleanOption(parsed.values['no-worktree']),
+      parallel: readStringOption(parsed.values.parallel),
+      worktrees: readStringOption(parsed.values.worktrees),
+      help: readBooleanOption(parsed.values.help),
+    },
+  };
+}
 
 async function promptMergeRecovery(failure: MergeRecoveryFailure): Promise<MergeRecoveryAction> {
   console.error('');
@@ -159,10 +237,7 @@ function parseOptionalInteger(flag: string, value: string): number | undefined {
 }
 
 function normalizeRuntimeOptions(values: CliValues, paths: ResolvedPaths): RuntimeOptions {
-  let parallel = env.parallelTasks;
-  if (values.parallel) {
-    parallel = parseParallel(values.parallel, parallel);
-  }
+  const parallel = values.parallel ? parseParallel(values.parallel, env.parallelTasks) : env.parallelTasks;
 
   return {
     repo: paths.repo,
@@ -195,18 +270,28 @@ function findSectionRange(lines: readonly string[], heading: string): readonly [
   return [start, end];
 }
 
+function countTrailingBlankLines(lines: readonly string[], start: number, end: number): number {
+  let count = 0;
+  for (let index = end - 1; index > start && lines[index] === ''; index--) count++;
+  return count;
+}
+
 function replaceSection(content: string, heading: string, bodyLines: readonly string[]): string {
+  const lineBreak = detectLineBreak(content);
   const lines = content.split(/\r?\n/);
   const range = findSectionRange(lines, heading);
   if (!range) return content;
 
   const [start, end] = range;
+  const headingLine = lines[start]!;
+  const trailingBlankLines = countTrailingBlankLines(lines, start, end);
   return [
     ...lines.slice(0, start),
-    `## ${heading}`,
+    headingLine,
     ...bodyLines,
+    ...Array.from({ length: trailingBlankLines }, () => ''),
     ...lines.slice(end),
-  ].join(detectLineBreak(content));
+  ].join(lineBreak);
 }
 
 function normalizeScope(scope: string): string[] {
@@ -227,13 +312,8 @@ function updateAutoresearch(content: string, values: CliValues): string {
   return updated;
 }
 
-function taskLabel(task: TaskState): string {
-  if (task.isConverged) return TASK_LABELS.converged;
-  if (task.isFailed) return TASK_LABELS.failed;
-  if (task.isBlocked) return TASK_LABELS.blocked;
-  if (task.isPending) return TASK_LABELS.pending;
-  if (task.isInProgress) return TASK_LABELS.running;
-  return TASK_LABELS.unknown;
+function taskLabel(task: TaskState): TaskLabel {
+  return TASK_LABELS.find(entry => entry.matches(task))?.label ?? 'UNKNOWN';
 }
 
 function parseTaskNumber(value: string | undefined, usage: string): number {
@@ -261,13 +341,33 @@ function printPathsAndAgent(paths: ResolvedPaths, agent: CodingAgent): void {
   console.log(`agent: ${agent.name}`);
 }
 
+function taskAutoresearchPath(task: Pick<TaskInfo, 'directory'>): string {
+  return join(task.directory, 'autoresearch.md');
+}
+
+function taskBenchmarkPath(task: Pick<TaskInfo, 'directory'>): string {
+  return resolve(task.directory, 'benchmark.js');
+}
+
+function taskBenchmarkLogPath(task: Pick<TaskInfo, 'directory'>): string {
+  return resolve(task.directory, 'benchmark.log');
+}
+
+function buildAddTaskOptions(values: CliValues): Record<string, string | string[]> {
+  const options: Record<string, string | string[]> = {};
+  if (values.goal) options.goal = values.goal;
+  if (values.metric) options.metric = values.metric;
+  if (values.scope) options.scope = values.scope.split(/\s+/).filter(Boolean);
+  return options;
+}
+
 function handleEditCommand(positionals: CliPositionals, values: CliValues, tasksDir: string, repo: string): void {
   if (positionals[0] !== 'edit') return;
 
   const taskNumber = parseTaskNumber(positionals[1], 'Usage: orchestrator edit <n> [--goal ...] [--metric ...] [--scope ...]');
   const engine = new Engine(tasksDir, { repoDir: repo });
   const task = pickTaskOrExit(engine, taskNumber);
-  const autoresearchPath = join(task.directory, 'autoresearch.md');
+  const autoresearchPath = taskAutoresearchPath(task);
   const updated = updateAutoresearch(readFileSync(autoresearchPath, 'utf-8'), values);
   writeFileSync(autoresearchPath, updated);
   console.log(`✅ T${taskNumber} updated`);
@@ -283,11 +383,7 @@ function handleAddCommand(positionals: CliPositionals, values: CliValues, tasksD
     process.exit(1);
   }
 
-  const opts: Record<string, string | string[]> = {};
-  if (values.goal) opts.goal = values.goal;
-  if (values.metric) opts.metric = values.metric;
-  if (values.scope) opts.scope = values.scope.split(/\s+/).filter(Boolean);
-  const result = addTask(tasksDir, name, opts);
+  const result = addTask(tasksDir, name, buildAddTaskOptions(values));
   console.log(`✅ T${result.number} added: ${name}`);
   console.log(`   ${result.directory}`);
   console.log('   Next: edit autoresearch.md + benchmark.js, then npm run tick');
@@ -390,7 +486,7 @@ function handleTaskCommand(engine: Engine, taskValue: string, repo: string): voi
   const taskNumber = parseTaskNumber(taskValue, 'Invalid task number');
   const task = pickTaskOrExit(engine, taskNumber);
   try {
-    const out = execFileSync(process.execPath, [resolve(task.directory, 'benchmark.js')], {
+    const out = execFileSync(process.execPath, [taskBenchmarkPath(task)], {
       timeout: env.benchmarkTimeoutMs,
       encoding: 'utf-8',
       cwd: repo,
@@ -402,6 +498,151 @@ function handleTaskCommand(engine: Engine, taskValue: string, repo: string): voi
     console.log(`❌ T${taskNumber}: benchmark failed (${reason})`);
   }
   process.exit(0);
+}
+
+function createAgent(values: CliValues, runtime: RuntimeOptions): CodingAgent {
+  try {
+    return createCodingAgent(values.agent || env.agent, {
+      ...(values.reasoning ? { reasoning: values.reasoning } : {}),
+      ...(values.model ? { model: values.model } : {}),
+      workDir: runtime.repo,
+    });
+  } catch (e: unknown) {
+    console.error(`\n  error: ${e instanceof Error ? e.message : String(e)}\n`);
+    process.exit(1);
+  }
+}
+
+function handleConfigCommand(enabled: boolean, values: CliValues, paths: ResolvedPaths): void {
+  if (!enabled) return;
+
+  console.log(formatEffectiveConfig({ ...values }, process.env));
+  console.log('\nResolved paths');
+  console.log(`  repo:       ${paths.repo}`);
+  console.log(`  state root: ${paths.stateRoot}`);
+  console.log(`  tasks:      ${paths.tasks}`);
+  console.log(`  worktrees:  ${paths.worktrees}`);
+  console.log('\n--check validates prerequisites and reports auth hints; runtime still validates agent auth.');
+  process.exit(0);
+}
+
+async function handleCheckCommand(enabled: boolean, agent: CodingAgent): Promise<void> {
+  if (!enabled) return;
+
+  const results = await Prerequisites.check(agent);
+  console.log(Prerequisites.format(results));
+  process.exit(results.every(result => result.ok) ? 0 : 1);
+}
+
+async function ensureAgentPrerequisites(agent: CodingAgent): Promise<void> {
+  const prereqs = await Prerequisites.check(agent);
+  const failed = prereqs.filter(result => !result.ok);
+  if (failed.length === 0) return;
+  console.error(Prerequisites.format(prereqs));
+  process.exit(1);
+}
+
+function createEngine(runtime: RuntimeOptions, agent: CodingAgent): Engine {
+  return new Engine(runtime.tasksDir, {
+    repoDir: runtime.repo,
+    worktreesDir: runtime.worktreesDir,
+    noWorktree: runtime.noWorktree,
+    autoStashBeforeMerge: runtime.autoStash,
+    mergeRecovery: runtime.autoStash ? () => MergeRecoveryAction.StashAndRetry : promptMergeRecovery,
+    verifyCmd: 'npm run tc',
+    parallel: runtime.parallel,
+    ...(runtime.keepConverged !== undefined ? { keepConverged: runtime.keepConverged } : {}),
+    infinite: runtime.infinite,
+    spawn: (task, worktreePath, signal) => agent.spawn(task, worktreePath, signal),
+    benchmark: async (task: TaskInfo) => {
+      const reasonPath = taskBenchmarkLogPath(task);
+      let out: string;
+      let crashed = false;
+      try {
+        out = execFileSync(process.execPath, [taskBenchmarkPath(task)], {
+          timeout: env.benchmarkTimeoutMs,
+          encoding: 'utf-8',
+          cwd: task.cwd,
+        });
+      } catch (e: unknown) {
+        crashed = true;
+        const err = e as { stdout?: string; stderr?: string; message?: string };
+        out = `${err.stdout ?? ''}${err.stderr ?? ''}`.trim() || (err.message ?? 'benchmark execution failed');
+      }
+      try {
+        writeFileSync(reasonPath, out);
+      } catch (e: unknown) {
+        console.warn(`⚠️  Could not write benchmark log ${reasonPath}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      const outcome = classifyBenchmark(out, crashed, task.metrics);
+      if (outcome.kind !== 'ok' || outcome.total > 0) {
+        const summary = outcome.kind === 'crash'
+          ? 'benchmark crashed (see log)'
+          : outcome.kind === 'no_metrics'
+            ? `no METRIC lines emitted (treated as ${outcome.total})`
+            : unmetSummary(outcome);
+        console.log(`T${task.number} unmet: ${summary}`);
+        console.log(`  why: ${reasonPath}`);
+      }
+      return outcome;
+    },
+  });
+}
+
+async function runOnce(engine: Engine): Promise<void> {
+  const result = await engine.tick();
+  if (engine.environmentError) {
+    console.error(`\n  ❌ Environment issue: ${engine.environmentError}`);
+    console.error('  Stopped without consuming any task retries. Fix the environment (e.g. set the API key) and rerun.\n');
+    process.exit(1);
+  }
+  if (result.task) {
+    const icon = result.converged ? '✅' : result.metric === 0 ? '⏳' : '❌';
+    console.log(`${icon} T${result.task.number}: metric=${result.metric}`);
+    return;
+  }
+  console.log('Nothing actionable.');
+}
+
+async function runLoop(engine: Engine, runtime: RuntimeOptions): Promise<void> {
+  console.log(runtime.infinite ? 'Running in infinite mode; stop with --stop' : 'Running until tasks complete');
+  const tickCount = await engine.loop({
+    onTick: async (result, total) => {
+      printTickOutcome(result);
+      await printOverview(runtime.tasksDir, total);
+    },
+    keepAlive: runtime.keepAlive,
+    infinite: runtime.infinite,
+  });
+  if (engine.environmentError) {
+    await printRunSummary(runtime.tasksDir, tickCount);
+    console.error(`\n  ❌ Fatal: ${engine.environmentError}`);
+    console.error('  The loop stopped because this affects every task (not a single-task failure).');
+    console.error('  No task retries were consumed — fix the cause and rerun.\n');
+    process.exit(1);
+  }
+  await printRunSummary(runtime.tasksDir, tickCount);
+  if (engine.stopReason === 'signal') {
+    console.log(`\n🛑 Stopped by stop signal (--stop / .stop) after ${tickCount} ticks.\n`);
+  } else if (runtime.infinite) {
+    console.log(`\n🛑 stopped after ${tickCount} ticks\n`);
+  } else {
+    console.log(`\n🎉 ${tickCount} ticks — all done\n`);
+  }
+}
+
+async function runEngine(engine: Engine, runtime: RuntimeOptions, once: boolean): Promise<void> {
+  try {
+    if (once) {
+      await runOnce(engine);
+      return;
+    }
+    await runLoop(engine, runtime);
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.error(`\n  ❌ ${message}\n`);
+    process.exit(1);
+  }
 }
 
 const { values, positionals } = parseCliArgs();
@@ -424,30 +665,10 @@ if (values.help) {
 const paths = resolveCliPaths(values);
 const runtime = normalizeRuntimeOptions(values, paths);
 
-let agent: CodingAgent;
-try {
-  agent = createCodingAgent(values.agent || env.agent, {
-    ...(values.reasoning ? { reasoning: values.reasoning } : {}),
-    ...(values.model ? { model: values.model } : {}),
-    workDir: runtime.repo,
-  });
-} catch (e: unknown) {
-  console.error(`\n  error: ${e instanceof Error ? e.message : String(e)}\n`);
-  process.exit(1);
-}
+const agent = createAgent(values, runtime);
 
 printPathsAndAgent(paths, agent);
-
-if (values.config) {
-  console.log(formatEffectiveConfig({ ...values }, process.env));
-  console.log('\nResolved paths');
-  console.log(`  repo:       ${paths.repo}`);
-  console.log(`  state root: ${paths.stateRoot}`);
-  console.log(`  tasks:      ${paths.tasks}`);
-  console.log(`  worktrees:  ${paths.worktrees}`);
-  console.log('\n--check validates prerequisites and reports auth hints; runtime still validates agent auth.');
-  process.exit(0);
-}
+handleConfigCommand(values.config, values, paths);
 
 ensureRepoExists(runtime.repo);
 mkdirSync(paths.stateRoot, { recursive: true });
@@ -456,21 +677,12 @@ mkdirSync(runtime.worktreesDir, { recursive: true });
 handleEditCommand(positionals, values, runtime.tasksDir, runtime.repo);
 handleAddCommand(positionals, values, runtime.tasksDir);
 
-if (values.check) {
-  const results = await Prerequisites.check(agent);
-  console.log(Prerequisites.format(results));
-  process.exit(results.every(result => result.ok) ? 0 : 1);
-}
+await handleCheckCommand(values.check, agent);
 
 handleStatusCommand(values.status, runtime.tasksDir);
 handleGraphCommand(values.graph, runtime.tasksDir);
 
-const prereqs = await Prerequisites.check(agent);
-const failed = prereqs.filter(result => !result.ok);
-if (failed.length > 0) {
-  console.error(Prerequisites.format(prereqs));
-  process.exit(1);
-}
+await ensureAgentPrerequisites(agent);
 
 if (values.stop) {
   writeFileSync(resolve(runtime.tasksDir, '.stop'), '');
@@ -480,96 +692,9 @@ if (values.stop) {
 
 ensureTasksDirExists(runtime.tasksDir);
 
-const engine = new Engine(runtime.tasksDir, {
-  repoDir: runtime.repo,
-  worktreesDir: runtime.worktreesDir,
-  noWorktree: runtime.noWorktree,
-  autoStashBeforeMerge: runtime.autoStash,
-  mergeRecovery: runtime.autoStash ? () => MergeRecoveryAction.StashAndRetry : promptMergeRecovery,
-  verifyCmd: 'npm run tc',
-  parallel: runtime.parallel,
-  ...(runtime.keepConverged !== undefined ? { keepConverged: runtime.keepConverged } : {}),
-  infinite: runtime.infinite,
-  spawn: (task, worktreePath, signal) => agent.spawn(task, worktreePath, signal),
-  benchmark: async (task: TaskInfo) => {
-    const reasonPath = resolve(task.directory, 'benchmark.log');
-    let out: string;
-    let crashed = false;
-    try {
-      out = execFileSync(process.execPath, [resolve(task.directory, 'benchmark.js')], {
-        timeout: env.benchmarkTimeoutMs,
-        encoding: 'utf-8',
-        cwd: task.cwd,
-      });
-    } catch (e: unknown) {
-      crashed = true;
-      const err = e as { stdout?: string; stderr?: string; message?: string };
-      out = `${err.stdout ?? ''}${err.stderr ?? ''}`.trim() || (err.message ?? 'benchmark execution failed');
-    }
-    try {
-      writeFileSync(reasonPath, out);
-    } catch (e: unknown) {
-      console.warn(`⚠️  Could not write benchmark log ${reasonPath}: ${e instanceof Error ? e.message : String(e)}`);
-    }
-    const outcome = classifyBenchmark(out, crashed, task.metrics);
-    if (outcome.kind !== 'ok' || outcome.total > 0) {
-      const summary = outcome.kind === 'crash'
-        ? 'benchmark crashed (see log)'
-        : outcome.kind === 'no_metrics'
-          ? `no METRIC lines emitted (treated as ${outcome.total})`
-          : unmetSummary(outcome);
-      console.log(`T${task.number} unmet: ${summary}`);
-      console.log(`  why: ${reasonPath}`);
-    }
-    return outcome;
-  },
-});
+const engine = createEngine(runtime, agent);
 
 handleUnblockCommand(engine, runtime.tasksDir, values.unblock);
 handleTaskCommand(engine, values.task, runtime.repo);
 
-try {
-  if (values.once) {
-    const result = await engine.tick();
-    if (engine.environmentError) {
-      console.error(`\n  ❌ Environment issue: ${engine.environmentError}`);
-      console.error('  Stopped without consuming any task retries. Fix the environment (e.g. set the API key) and rerun.\n');
-      process.exit(1);
-    }
-    if (result.task) {
-      const icon = result.converged ? '✅' : result.metric === 0 ? '⏳' : '❌';
-      console.log(`${icon} T${result.task.number}: metric=${result.metric}`);
-    } else {
-      console.log('Nothing actionable.');
-    }
-  } else {
-    console.log(runtime.infinite ? 'Running in infinite mode; stop with --stop' : 'Running until tasks complete');
-    const tickCount = await engine.loop({
-      onTick: async (result, total) => {
-        printTickOutcome(result);
-        await printOverview(runtime.tasksDir, total);
-      },
-      keepAlive: runtime.keepAlive,
-      infinite: runtime.infinite,
-    });
-    if (engine.environmentError) {
-      await printRunSummary(runtime.tasksDir, tickCount);
-      console.error(`\n  ❌ Fatal: ${engine.environmentError}`);
-      console.error('  The loop stopped because this affects every task (not a single-task failure).');
-      console.error('  No task retries were consumed — fix the cause and rerun.\n');
-      process.exit(1);
-    }
-    await printRunSummary(runtime.tasksDir, tickCount);
-    if (engine.stopReason === 'signal') {
-      console.log(`\n🛑 Stopped by stop signal (--stop / .stop) after ${tickCount} ticks.\n`);
-    } else if (runtime.infinite) {
-      console.log(`\n🛑 stopped after ${tickCount} ticks\n`);
-    } else {
-      console.log(`\n🎉 ${tickCount} ticks — all done\n`);
-    }
-  }
-} catch (e: unknown) {
-  const message = e instanceof Error ? e.message : String(e);
-  console.error(`\n  ❌ ${message}\n`);
-  process.exit(1);
-}
+await runEngine(engine, runtime, values.once);
