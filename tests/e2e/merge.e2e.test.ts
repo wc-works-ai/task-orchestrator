@@ -122,14 +122,14 @@ describe('e2e: merge / base-sync', () => {
     expect(addTask('verifyx', opts).status).toBe(0);
     writeBenchmark(stateRoot, repo, 1, 'verifyx', markerBench('landed.txt'));
 
-    // Agent lands its file but breaks the worktree's `npm run tc` (the hardcoded
-    // pre-merge verify gate) → engine sends the task back to rework, no merge.
+    // Agent lands its file but breaks the worktree's `npm run tc`; with
+    // ORCH_VERIFY_CMD=npm run tc the engine runs the gate, it fails → rework, no merge.
     const agent = agentScript([
       "writeWt('landed.txt', 'agent\\n');",
       "const pkg = { name: 'e2e-target', version: '1.0.0', private: true, scripts: { tc: 'node -e \"process.exit(1)\"' } };",
       "writeWt('package.json', JSON.stringify(pkg, null, 2));",
     ].join('\n'));
-    const r = tick({ ...opts, env: { ...makeExecAgent(agent), ORCH_CONVERGE: '1' } });
+    const r = tick({ ...opts, env: { ...makeExecAgent(agent), ORCH_CONVERGE: '1', ORCH_VERIFY_CMD: 'npm run tc' } });
     expect(r.status).toBe(0);
 
     expect(r.stdout).toContain('verify command failed; sending back to agent');

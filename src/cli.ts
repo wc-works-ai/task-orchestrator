@@ -633,7 +633,6 @@ function createEngine(runtime: RuntimeOptions, agent: CodingAgent): Engine {
     noWorktree: runtime.noWorktree,
     autoStashBeforeMerge: runtime.autoStash,
     mergeRecovery: runtime.autoStash ? () => MergeRecoveryAction.StashAndRetry : promptMergeRecovery,
-    verifyCmd: 'npm run tc',
     parallel: runtime.parallel,
     ...(runtime.keepConverged !== undefined ? { keepConverged: runtime.keepConverged } : {}),
     infinite: runtime.infinite,
