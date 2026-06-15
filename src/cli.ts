@@ -101,6 +101,24 @@ type RuntimeOptions = {
   keepConverged: number | undefined;
 };
 type TaskLabel = 'CONVERGED' | 'FAILED' | 'BLOCKED' | 'PENDING' | 'RUNNING' | 'UNKNOWN';
+type CliOptionName = keyof CliOptionValues;
+type StringOptionName =
+  | 'repo'
+  | 'state-root'
+  | 'tasks'
+  | 'agent'
+  | 'model'
+  | 'reasoning'
+  | 'task'
+  | 'unblock'
+  | 'goal'
+  | 'metric'
+  | 'scope'
+  | 'keep-converged'
+  | 'parallel'
+  | 'worktrees';
+type BooleanOptionName = Exclude<CliOptionName, StringOptionName>;
+type ParsedCliOptionValues = Record<CliOptionName, string | boolean | undefined>;
 
 type TaskLabelMatcher = {
   readonly label: TaskLabel;
@@ -115,6 +133,38 @@ const TASK_LABELS: readonly TaskLabelMatcher[] = [
   { label: 'RUNNING', matches: task => task.isInProgress },
 ] as const;
 
+const STRING_OPTION_NAMES = [
+  'repo',
+  'state-root',
+  'tasks',
+  'agent',
+  'model',
+  'reasoning',
+  'task',
+  'unblock',
+  'goal',
+  'metric',
+  'scope',
+  'keep-converged',
+  'parallel',
+  'worktrees',
+] as const satisfies readonly StringOptionName[];
+
+const BOOLEAN_OPTION_NAMES = [
+  'loop',
+  'status',
+  'graph',
+  'check',
+  'stop',
+  'once',
+  'config',
+  'keep-alive',
+  'infinite',
+  'auto-stash',
+  'no-worktree',
+  'help',
+] as const satisfies readonly BooleanOptionName[];
+
 function readStringOption(value: string | boolean | undefined): string {
   return typeof value === 'string' ? value : '';
 }
@@ -123,38 +173,18 @@ function readBooleanOption(value: string | boolean | undefined): boolean {
   return value === true;
 }
 
+function normalizeCliOptionValues(parsedValues: ParsedCliOptionValues): CliOptionValues {
+  const values: Partial<Record<CliOptionName, string | boolean>> = {};
+  for (const name of STRING_OPTION_NAMES) values[name] = readStringOption(parsedValues[name]);
+  for (const name of BOOLEAN_OPTION_NAMES) values[name] = readBooleanOption(parsedValues[name]);
+  return values as CliOptionValues;
+}
+
 function parseCliArgsInternal(): CliArgs {
   const parsed = parseArgs(CLI_PARSE_CONFIG);
   return {
     positionals: [...parsed.positionals],
-    values: {
-      repo: readStringOption(parsed.values.repo),
-      'state-root': readStringOption(parsed.values['state-root']),
-      tasks: readStringOption(parsed.values.tasks),
-      loop: readBooleanOption(parsed.values.loop),
-      status: readBooleanOption(parsed.values.status),
-      graph: readBooleanOption(parsed.values.graph),
-      check: readBooleanOption(parsed.values.check),
-      agent: readStringOption(parsed.values.agent),
-      model: readStringOption(parsed.values.model),
-      reasoning: readStringOption(parsed.values.reasoning),
-      stop: readBooleanOption(parsed.values.stop),
-      task: readStringOption(parsed.values.task),
-      unblock: readStringOption(parsed.values.unblock),
-      goal: readStringOption(parsed.values.goal),
-      metric: readStringOption(parsed.values.metric),
-      scope: readStringOption(parsed.values.scope),
-      once: readBooleanOption(parsed.values.once),
-      config: readBooleanOption(parsed.values.config),
-      'keep-alive': readBooleanOption(parsed.values['keep-alive']),
-      'keep-converged': readStringOption(parsed.values['keep-converged']),
-      infinite: readBooleanOption(parsed.values.infinite),
-      'auto-stash': readBooleanOption(parsed.values['auto-stash']),
-      'no-worktree': readBooleanOption(parsed.values['no-worktree']),
-      parallel: readStringOption(parsed.values.parallel),
-      worktrees: readStringOption(parsed.values.worktrees),
-      help: readBooleanOption(parsed.values.help),
-    },
+    values: normalizeCliOptionValues(parsed.values as ParsedCliOptionValues),
   };
 }
 
@@ -293,6 +323,23 @@ function replaceSection(content: string, heading: string, bodyLines: readonly st
   ].join(lineBreak);
 }
 
+function replaceAcceptanceMetric(content: string, metric: string): string {
+  const lineBreak = detectLineBreak(content);
+  const lines = content.split(/\r?\n/);
+  const range = findSectionRange(lines, 'Acceptance criteria');
+  if (!range) return content;
+
+  const [start, end] = range;
+  const metricLineIndex = lines.findIndex((line, index) => index > start && index < end && line.includes('— task-specific deliverable'));
+  if (metricLineIndex === -1) return content;
+
+  const updatedLines = [...lines];
+  updatedLines[metricLineIndex] = updatedLines[metricLineIndex]!
+    .replace(/`[^`]+`/, `\`${metric}\``)
+    .replace(/METRIC\s+\w+=0/, `METRIC ${metric}=0`);
+  return updatedLines.join(lineBreak);
+}
+
 function normalizeScope(scope: string): string[] {
   return scope.split(/\s+/).filter(Boolean).map(file => `- ${file}`);
 }
@@ -303,7 +350,7 @@ function updateAutoresearch(content: string, values: CliValues): string {
     updated = replaceSection(updated, 'Goal', splitSectionBody(values.goal));
   }
   if (values.metric) {
-    updated = updated.replace(/\`[^`]+\` — task-specific deliverable/, `\`${values.metric}\` — task-specific deliverable`);
+    updated = replaceAcceptanceMetric(updated, values.metric);
   }
   if (values.scope) {
     updated = replaceSection(updated, 'Scope', normalizeScope(values.scope));
@@ -479,17 +526,21 @@ function handleUnblockCommand(engine: Engine, tasksDir: string, unblock: string)
   process.exit(0);
 }
 
+function runBenchmarkScript(task: Pick<TaskInfo, 'directory'>, cwd: string): string {
+  return execFileSync(process.execPath, [taskBenchmarkPath(task)], {
+    timeout: env.benchmarkTimeoutMs,
+    encoding: 'utf-8',
+    cwd,
+  });
+}
+
 function handleTaskCommand(engine: Engine, taskValue: string, repo: string): void {
   if (!taskValue) return;
 
   const taskNumber = parseTaskNumber(taskValue, 'Invalid task number');
   const task = pickTaskOrExit(engine, taskNumber);
   try {
-    const out = execFileSync(process.execPath, [taskBenchmarkPath(task)], {
-      timeout: env.benchmarkTimeoutMs,
-      encoding: 'utf-8',
-      cwd: repo,
-    });
+    const out = runBenchmarkScript(task, repo);
     const metric = parseMetrics(out, 1, task.metricNames).total;
     console.log(`${metric === 0 ? '⏳' : '❌'} T${taskNumber}: ${task.goal.slice(0, 60)} (metric=${metric})`);
   } catch (e: unknown) {
@@ -558,11 +609,7 @@ function createEngine(runtime: RuntimeOptions, agent: CodingAgent): Engine {
       let out: string;
       let crashed = false;
       try {
-        out = execFileSync(process.execPath, [taskBenchmarkPath(task)], {
-          timeout: env.benchmarkTimeoutMs,
-          encoding: 'utf-8',
-          cwd: task.cwd,
-        });
+        out = runBenchmarkScript(task, task.cwd);
       } catch (e: unknown) {
         crashed = true;
         const err = e as { stdout?: string; stderr?: string; message?: string };
@@ -644,6 +691,26 @@ async function runEngine(engine: Engine, runtime: RuntimeOptions, once: boolean)
   }
 }
 
+async function handlePreflightCommands(
+  positionals: CliPositionals,
+  values: CliValues,
+  runtime: RuntimeOptions,
+  paths: ResolvedPaths,
+  agent: CodingAgent,
+): Promise<void> {
+  handleConfigCommand(values.config, values, paths);
+  handleEditCommand(positionals, values, runtime.tasksDir, runtime.repo);
+  handleAddCommand(positionals, values, runtime.tasksDir);
+  await handleCheckCommand(values.check, agent);
+  handleStatusCommand(values.status, runtime.tasksDir);
+  handleGraphCommand(values.graph, runtime.tasksDir);
+}
+
+function handleEngineCommands(engine: Engine, runtime: RuntimeOptions, values: CliValues): void {
+  handleUnblockCommand(engine, runtime.tasksDir, values.unblock);
+  handleTaskCommand(engine, values.task, runtime.repo);
+}
+
 const { values, positionals } = parseCliArgs();
 
 if (values.help) {
@@ -667,19 +734,12 @@ const runtime = normalizeRuntimeOptions(values, paths);
 const agent = createAgent(values, runtime);
 
 printPathsAndAgent(paths, agent);
-handleConfigCommand(values.config, values, paths);
 
 ensureRepoExists(runtime.repo);
 mkdirSync(paths.stateRoot, { recursive: true });
 mkdirSync(runtime.worktreesDir, { recursive: true });
 
-handleEditCommand(positionals, values, runtime.tasksDir, runtime.repo);
-handleAddCommand(positionals, values, runtime.tasksDir);
-
-await handleCheckCommand(values.check, agent);
-
-handleStatusCommand(values.status, runtime.tasksDir);
-handleGraphCommand(values.graph, runtime.tasksDir);
+await handlePreflightCommands(positionals, values, runtime, paths, agent);
 
 await ensureAgentPrerequisites(agent);
 
@@ -693,7 +753,6 @@ ensureTasksDirExists(runtime.tasksDir);
 
 const engine = createEngine(runtime, agent);
 
-handleUnblockCommand(engine, runtime.tasksDir, values.unblock);
-handleTaskCommand(engine, values.task, runtime.repo);
+handleEngineCommands(engine, runtime, values);
 
 await runEngine(engine, runtime, values.once);
