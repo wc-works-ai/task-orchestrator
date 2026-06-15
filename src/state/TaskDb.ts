@@ -8,7 +8,7 @@ import { existsSync, rmSync } from 'node:fs';
 import { openDb, type Db } from './sqlite.js';
 import { SchemaMismatchError, withRetry } from '../shared/errors.js';
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 // Guard the recursive dependency walk against a malformed graph.
 const MAX_DEPENDENCY_DEPTH = 10000;
@@ -32,6 +32,7 @@ export interface TaskRow {
   readonly failures: number;
   readonly max_failures: number | null;
   readonly target_branch: string | null;
+  readonly repo: string | null;
   readonly claimed_by: string | null;
   readonly claim_token: string | null;
   readonly claimed_at: number | null;
@@ -45,6 +46,7 @@ export interface NewTask {
   readonly name: string;
   readonly maxFailures?: number | null;
   readonly targetBranch?: string | null;
+  readonly repo?: string | null;
   readonly dependsOn?: readonly number[];
 }
 
@@ -60,8 +62,11 @@ export interface ImportTask {
   readonly failures: number;
   readonly maxFailures: number | null;
   readonly targetBranch: string | null;
+  readonly repo: string | null;
   readonly dependsOn: readonly number[];
 }
+
+type LegacyImportTask = Omit<ImportTask, 'repo'> & { readonly repo?: string | null };
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS tasks (
@@ -75,6 +80,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   failures      INTEGER NOT NULL DEFAULT 0,
   max_failures  INTEGER CHECK(max_failures IS NULL OR max_failures > 0),
   target_branch TEXT,
+  repo          TEXT,
   claimed_by    TEXT,
   claim_token   TEXT,
   claimed_at    INTEGER,
@@ -161,13 +167,15 @@ export class TaskDb {
           'SELECT COALESCE(MAX(task_number),0)+1 AS n FROM tasks',
         )!.n;
         const dir = taskDirName(taskNumber, t.name);
+        const repo = t.repo ?? null;
         const row = this.#db.get<{ id: number }>(
-          `INSERT INTO tasks (task_number, name, dir, status, max_failures, target_branch, created_at, updated_at)
-           VALUES (:num, :name, :dir, 'CREATING', :max, :branch, :now, :now)
+          `INSERT INTO tasks (task_number, name, dir, status, max_failures, target_branch, repo, created_at, updated_at)
+           VALUES (:num, :name, :dir, 'CREATING', :max, :branch, :repo, :now, :now)
            RETURNING id`,
-          { num: taskNumber, name: t.name, dir, max: t.maxFailures ?? null, branch: t.targetBranch ?? null, now },
+          { num: taskNumber, name: t.name, dir, max: t.maxFailures ?? null, branch: t.targetBranch ?? null, repo, now },
         )!;
         for (const dep of t.dependsOn ?? []) {
+          this.#assertSameRepoDependency(taskNumber, repo, dep);
           this.#db.run('INSERT INTO dependencies (task_number, depends_on) VALUES (?,?)', [taskNumber, dep]);
         }
         return { id: row.id, taskNumber, dir };
@@ -179,18 +187,21 @@ export class TaskDb {
    *  row with the supplied number/dir/status/counters and its dependency rows,
    *  idempotently via ON CONFLICT(task_number) DO NOTHING. Returns whether a row
    *  was inserted (false when the number already existed). */
-  importTask(t: ImportTask): boolean {
+  importTask(t: ImportTask): boolean;
+  importTask(t: LegacyImportTask): boolean;
+  importTask(t: ImportTask | LegacyImportTask): boolean {
     return withRetry(() =>
       this.#db.transaction(() => {
         const now = this.#now();
+        const repo = t.repo ?? null;
         const r = this.#db.run(
           `INSERT INTO tasks
-             (task_number, name, dir, status, convergence, failures, max_failures, target_branch, created_at, updated_at)
-           VALUES (:num, :name, :dir, :status, :conv, :fail, :max, :branch, :now, :now)
+             (task_number, name, dir, status, convergence, failures, max_failures, target_branch, repo, created_at, updated_at)
+           VALUES (:num, :name, :dir, :status, :conv, :fail, :max, :branch, :repo, :now, :now)
            ON CONFLICT(task_number) DO NOTHING`,
           {
             num: t.taskNumber, name: t.name, dir: t.dir, status: t.status, conv: t.convergence,
-            fail: t.failures, max: t.maxFailures, branch: t.targetBranch, now,
+            fail: t.failures, max: t.maxFailures, branch: t.targetBranch, repo, now,
           },
         );
         if (r.changes === 0) return false;
@@ -374,17 +385,38 @@ export class TaskDb {
 
   #applySchema(): void {
     const version = this.#userVersion();
-    if (version !== 0 && version !== SCHEMA_VERSION) {
-      throw new SchemaMismatchError(
-        `state.db schema version ${version} is not supported (expected ${SCHEMA_VERSION})`,
-      );
+    if (version === 0) {
+      this.#db.exec(SCHEMA);
+      this.#db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+      return;
     }
-    this.#db.exec(SCHEMA);
-    if (version === 0) this.#db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+    if (version === 1) {
+      this.#migrateV1toV2();
+      return;
+    }
+    if (version === SCHEMA_VERSION) return;
+    throw new SchemaMismatchError(
+      `state.db schema version ${version} is not supported (expected ${SCHEMA_VERSION})`,
+    );
   }
 
   #userVersion(): number {
     return this.#db.get<{ user_version: number }>('PRAGMA user_version')!.user_version;
+  }
+
+  #migrateV1toV2(): void {
+    const hasRepo = this.#db.all<{ name: string }>('PRAGMA table_info(tasks)').some(c => c.name === 'repo');
+    if (!hasRepo) this.#db.exec('ALTER TABLE tasks ADD COLUMN repo TEXT');
+    this.#db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  }
+
+  #assertSameRepoDependency(taskNumber: number, repo: string | null, dep: number): void {
+    if (repo === null) return;
+    const conflict = this.#db.get<{ repo: string }>(
+      'SELECT repo FROM tasks WHERE task_number=? AND repo IS NOT NULL AND repo != ?',
+      [dep, repo],
+    );
+    if (conflict) throw new Error(`Cannot depend across repos: T${taskNumber}(${repo}) -> T${dep}(${conflict.repo})`);
   }
 
   #gatedRun(sql: string, id: number, token: string): boolean {

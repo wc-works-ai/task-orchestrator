@@ -50,6 +50,7 @@ function row(over: Partial<TaskRow> & { task_number: number }): TaskRow {
     convergence: over.convergence ?? 0,
     failures: over.failures ?? 0,
     max_failures: over.max_failures ?? null,
+    repo: over.repo ?? null,
     target_branch: over.target_branch ?? null,
     claimed_by: over.claimed_by ?? null,
     claim_token: over.claim_token ?? null,
@@ -135,11 +136,12 @@ describe('TaskState (mocked TaskDb)', () => {
   });
 
   it('info materializes a plain TaskInfo snapshot', () => {
-    const { state } = viewOf(row({ task_number: 2, name: 'speed' }), { autoresearch: FULL_AR });
+    const { state } = viewOf(row({ task_number: 2, name: 'speed', repo: resolve('repo-a') }), { autoresearch: FULL_AR });
     expect(state.info).toEqual({
       directory: resolve(ROOT, 'T02-speed'),
       number: 2,
       name: 'T02-speed',
+      repo: resolve('repo-a'),
       goal: 'Make it fast',
       model: 'task-model',
       reasoning: 'high',
@@ -160,6 +162,7 @@ describe('TaskState (mocked TaskDb)', () => {
     expect(t.maxFailures).toBe(Infinity);
     expect(t.isClaimed).toBe(false);
     expect(t.claimOwnerId).toBe('');
+    expect(t.repo).toBeUndefined();
     expect(t.targetBranch).toBeUndefined();
   });
 
@@ -324,6 +327,11 @@ describe('TaskState (mocked TaskDb)', () => {
   it('targetBranch reflects the row column', () => {
     expect(viewOf(row({ task_number: 1, target_branch: 'release/1.0' })).state.targetBranch).toBe('release/1.0');
     expect(viewOf(row({ task_number: 2, target_branch: null })).state.targetBranch).toBeUndefined();
+  });
+
+  it('repo reflects the row column', () => {
+    expect(viewOf(row({ task_number: 1, repo: resolve('repo-a') })).state.repo).toBe(resolve('repo-a'));
+    expect(viewOf(row({ task_number: 2, repo: null })).state.repo).toBeUndefined();
   });
 
   // ── Statics ───────────────────────────────────────────────────────────

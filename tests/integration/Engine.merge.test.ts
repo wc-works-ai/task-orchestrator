@@ -58,6 +58,11 @@ function readLockToken(repoDir: string): string {
   return readFileSync(join(repoDir, LOCK, 'owner'), 'utf-8').match(/token:(.+)/)?.[1] ?? '';
 }
 
+function initRepo(repoDir: string): void {
+  mkdirSync(repoDir, { recursive: true });
+  execSync('git init && git config user.email test@test && git config user.name test && git commit --allow-empty -m init', { cwd: repoDir });
+}
+
 describe('Engine merge robustness', () => {
   let dir = '';
   let s: StateDb;
@@ -105,6 +110,66 @@ describe('Engine merge robustness', () => {
     expect(existsSync(join(repoDir, 'work.txt'))).toBe(true); // merged into base
     expect(existsSync(join(repoDir, LOCK))).toBe(false);      // lock released
   });
+
+  it('runs parallel tasks against their own repos and merge locks', async () => {
+    const repoA = resolve(dir, 'repo-a');
+    const repoB = resolve(dir, 'repo-b');
+    const tasksDir = resolve(dir, 'tasks');
+    const worktreesDir = resolve(dir, 'worktrees');
+    initRepo(repoA);
+    initRepo(repoB);
+    seed(s.db, tasksDir, 1, 'a');
+    seed(s.db, tasksDir, 2, 'b');
+    s.db.run('UPDATE tasks SET repo=? WHERE task_number=?', [repoA, 1]);
+    s.db.run('UPDATE tasks SET repo=? WHERE task_number=?', [repoB, 2]);
+
+    const runs = new Map<number, number>();
+    const benchmark = vi.fn(async (task: TaskInfo) => {
+      const count = (runs.get(task.number) ?? 0) + 1;
+      runs.set(task.number, count);
+      return count === 1 ? 1 : 0;
+    });
+    const spawn = vi.fn().mockImplementation(async (task: TaskState, wtPath?: string) => {
+      if (!wtPath) throw new Error('missing worktree path');
+      writeFileSync(join(wtPath, `repo-${task.taskNumber}.txt`), `repo-${task.taskNumber}`);
+      execSync(`git add repo-${task.taskNumber}.txt && git commit -m "work-${task.taskNumber}"`, { cwd: wtPath });
+      return { success: true, iterations: 1 };
+    });
+    const originalMerge = Worktree.prototype.merge;
+    const mergeLockDirs = new Set<string>();
+    const activeMergeSpy = vi.spyOn(Worktree.prototype, 'merge').mockImplementation(function (this: Worktree) {
+      const repo = this.branch.includes('T01-') ? repoA : repoB;
+      const lockDir = join(repo, LOCK);
+      expect(existsSync(lockDir)).toBe(true);
+      mergeLockDirs.add(lockDir);
+      return Reflect.apply(originalMerge, this, []) as void;
+    });
+
+    try {
+      const engine = new Engine(tasksDir, {
+        benchmark,
+        spawn,
+        repoDir: repoA,
+        worktreesDir,
+        parallel: 2,
+        idleSleepMs: 0,
+        autoStashBeforeMerge: false,
+        taskDb: s.tdb,
+      });
+
+      const total = await engine.loop();
+
+      expect(total).toBe(6);
+      expect(existsSync(join(repoA, 'repo-1.txt'))).toBe(true);
+      expect(existsSync(join(repoB, 'repo-2.txt'))).toBe(true);
+      expect(existsSync(join(repoA, 'repo-2.txt'))).toBe(false);
+      expect(existsSync(join(repoB, 'repo-1.txt'))).toBe(false);
+      expect(mergeLockDirs).toEqual(new Set([join(repoA, LOCK), join(repoB, LOCK)]));
+      expect(join(repoA, LOCK)).not.toBe(join(repoB, LOCK));
+    } finally {
+      activeMergeSpy.mockRestore();
+    }
+  }, 20_000);
 
   it('treats a stale lock with a missing owner file as breakable', async () => {
     const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir, s);

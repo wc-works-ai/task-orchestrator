@@ -32,6 +32,7 @@ export function addTask(tasksDir: string, name: string, opts: AddTaskOptions = {
   }
 
   const branch = opts.targetBranch ?? detectBranch(opts.repoDir);
+  const repo = opts.repoDir ? resolve(opts.repoDir) : null;
   // Freeze the retry limit at creation; Infinity (unlimited) stores as NULL.
   const maxFailures = Number.isFinite(env.maxFailures) ? env.maxFailures : null;
 
@@ -39,7 +40,7 @@ export function addTask(tasksDir: string, name: string, opts: AddTaskOptions = {
   try {
     // Insert as CREATING: the task is reserved but invisible to pick() until
     // its content is written and it is promoted to PENDING.
-    const { id, taskNumber, dir } = tdb.insert({ name, maxFailures, targetBranch: branch ?? null });
+    const { id, taskNumber, dir } = tdb.insert({ name, maxFailures, repo, targetBranch: branch ?? null });
 
     const goal = opts.goal ?? `TODO: describe what T${taskNumber} should accomplish`;
     const metric = opts.metric ?? 'goal';
@@ -100,7 +101,7 @@ export function addTask(tasksDir: string, name: string, opts: AddTaskOptions = {
     // Publish the fully-written task.
     tdb.promote(id);
 
-    return { number: taskNumber, name, directory: finalDir, goal, metric, scope, targetBranch: branch };
+    return { number: taskNumber, name, directory: finalDir, goal, metric, scope, repo, targetBranch: branch };
   } finally {
     tdb.close();
   }

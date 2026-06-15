@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { parseArgs, type ParseArgsConfig } from 'node:util';
 import { createInterface } from 'node:readline/promises';
-import { join, resolve } from 'node:path';
+import { join, resolve, basename } from 'node:path';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { addTask } from './state/addTask.js';
+import { addTask, type AddTaskOptions } from './state/addTask.js';
 import { Engine, MergeRecoveryAction, type MergeRecoveryFailure } from './engine/Engine.js';
 import { TaskState, type TaskInfo } from './state/TaskState.js';
 import { TaskDb } from './state/TaskDb.js';
@@ -90,7 +90,7 @@ type CliValues = CliArgs['values'];
 type CliPositionals = CliArgs['positionals'];
 type ResolvedPaths = ReturnType<typeof resolveCliPaths>;
 type RuntimeOptions = {
-  repo: string;
+  repo: string | undefined;
   tasksDir: string;
   worktreesDir: string;
   autoStash: boolean;
@@ -231,7 +231,7 @@ function parseCliArgs(): CliArgs {
 function resolveCliPaths(values: CliValues) {
   try {
     return resolveStatePaths({
-      repo: values.repo || env.repoDir || process.cwd(),
+      repo: values.repo || env.repoDir || undefined,
       stateRoot: values['state-root'] || env.stateRoot,
       tasks: values.tasks || env.tasksDir,
       worktrees: values.worktrees || env.worktreesDir,
@@ -399,16 +399,40 @@ function taskBenchmarkLogPath(task: Pick<TaskInfo, 'directory'>): string {
   return resolve(task.directory, 'benchmark.log');
 }
 
-function buildAddTaskOptions(values: CliValues): Record<string, string | string[]> {
-  const options: Record<string, string | string[]> = {};
-  if (values.goal) options.goal = values.goal;
-  if (values.metric) options.metric = values.metric;
-  if (values.scope) options.scope = values.scope.split(/\s+/).filter(Boolean);
-  return options;
+function gitTopLevel(repo: string): string | undefined {
+  try {
+    const topLevel = execFileSync('git', ['-C', repo, 'rev-parse', '--show-toplevel'], { encoding: 'utf-8' }).trim();
+    return topLevel ? resolve(topLevel) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
-function handleEditCommand(positionals: CliPositionals, values: CliValues, tasksDir: string, repo: string): void {
+function resolveAddRepo(values: CliValues): string {
+  const repoInput = values.repo || env.repoDir || process.cwd();
+  const repoPath = resolve(repoInput);
+  if (!existsSync(repoPath)) {
+    console.error(`\n  ❌ Repo path for add does not exist: ${repoPath}\n`);
+    process.exit(1);
+  }
+  return gitTopLevel(repoPath) ?? repoPath;
+}
+
+function buildAddTaskOptions(values: CliValues, repoDir: string): AddTaskOptions {
+  return {
+    repoDir,
+    ...(values.goal ? { goal: values.goal } : {}),
+    ...(values.metric ? { metric: values.metric } : {}),
+    ...(values.scope ? { scope: values.scope.split(/\s+/).filter(Boolean) } : {}),
+  };
+}
+
+function handleEditCommand(positionals: CliPositionals, values: CliValues, tasksDir: string, repo: string | undefined): void {
   if (positionals[0] !== 'edit') return;
+  if (!repo) {
+    console.error('Usage: orchestrator edit <n> --repo <path> [--goal ...] [--metric ...] [--scope ...]');
+    process.exit(1);
+  }
 
   const taskNumber = parseTaskNumber(positionals[1], 'Usage: orchestrator edit <n> [--goal ...] [--metric ...] [--scope ...]');
   const engine = new Engine(tasksDir, { repoDir: repo });
@@ -429,9 +453,11 @@ function handleAddCommand(positionals: CliPositionals, values: CliValues, tasksD
     process.exit(1);
   }
 
-  const result = addTask(tasksDir, name, buildAddTaskOptions(values));
+  const repoDir = resolveAddRepo(values);
+  const result = addTask(tasksDir, name, buildAddTaskOptions(values, repoDir));
   console.log(`✅ T${result.number} added: ${name}`);
   console.log(`   ${result.directory}`);
+  console.log(`   repo: ${result.repo}`);
   console.log('   Next: edit autoresearch.md + benchmark.js, then npm run tick');
   process.exit(0);
 }
@@ -449,7 +475,8 @@ function handleStatusCommand(enabled: boolean, tasksDir: string): void {
       if (!task) continue;
       const deps = task.dependencies.length > 0 ? `  <- depends: ${task.dependencies.join(', ')}` : '';
       const goal = task.goal.length > 55 ? `${task.goal.slice(0, 52)}...` : task.goal;
-      console.log(`  ${taskLabel(task).padEnd(9)} T${key}  ${goal}${deps}`);
+      const repoTag = task.repo ? `  [${basename(task.repo)}]` : '';
+      console.log(`  ${taskLabel(task).padEnd(9)} T${key}${repoTag}  ${goal}${deps}`);
       if (task.isBlocked) {
         console.log(`       blocked after ${task.failureCount} failures`);
       }
@@ -534,15 +561,22 @@ function runBenchmarkScript(task: Pick<TaskInfo, 'directory'>, cwd: string): str
   });
 }
 
-function handleTaskCommand(engine: Engine, taskValue: string, repo: string): void {
+function handleTaskCommand(engine: Engine, taskValue: string, repo: string | undefined): void {
   if (!taskValue) return;
 
   const taskNumber = parseTaskNumber(taskValue, 'Invalid task number');
   const task = pickTaskOrExit(engine, taskNumber);
+  // Run the benchmark in the task's OWN repo (fall back to the CLI repo for
+  // legacy/repo-less tasks) — this is what makes --task work in a mixed-repo queue.
+  const taskRepo = task.repo ?? repo;
+  if (!taskRepo) {
+    console.error(`Invalid task command: T${taskNumber} has no repo; pass --repo (or set ORCH_REPO)`);
+    process.exit(1);
+  }
   try {
-    const out = runBenchmarkScript(task, repo);
+    const out = runBenchmarkScript(task, taskRepo);
     const metric = parseMetrics(out, 1, task.metricNames).total;
-    console.log(`${metric === 0 ? '⏳' : '❌'} T${taskNumber}: ${task.goal.slice(0, 60)} (metric=${metric})`);
+    console.log(`${metric === 0 ? '⏳' : '❌'} T${taskNumber} [${basename(taskRepo)}]: ${task.goal.slice(0, 60)} (metric=${metric})`);
   } catch (e: unknown) {
     const reason = e instanceof Error ? e.message : String(e);
     console.log(`❌ T${taskNumber}: benchmark failed (${reason})`);
@@ -555,7 +589,7 @@ function createAgent(values: CliValues, runtime: RuntimeOptions): CodingAgent {
     return createCodingAgent(values.agent || env.agent, {
       ...(values.reasoning ? { reasoning: values.reasoning } : {}),
       ...(values.model ? { model: values.model } : {}),
-      workDir: runtime.repo,
+      ...(runtime.repo ? { workDir: runtime.repo } : {}),
     });
   } catch (e: unknown) {
     console.error(`\n  error: ${e instanceof Error ? e.message : String(e)}\n`);
@@ -594,7 +628,7 @@ async function ensureAgentPrerequisites(agent: CodingAgent): Promise<void> {
 
 function createEngine(runtime: RuntimeOptions, agent: CodingAgent): Engine {
   return new Engine(runtime.tasksDir, {
-    repoDir: runtime.repo,
+    ...(runtime.repo ? { repoDir: runtime.repo } : {}),
     worktreesDir: runtime.worktreesDir,
     noWorktree: runtime.noWorktree,
     autoStashBeforeMerge: runtime.autoStash,
@@ -735,7 +769,7 @@ const agent = createAgent(values, runtime);
 
 printPathsAndAgent(paths, agent);
 
-ensureRepoExists(runtime.repo);
+if (runtime.repo) ensureRepoExists(runtime.repo);
 mkdirSync(paths.stateRoot, { recursive: true });
 mkdirSync(runtime.worktreesDir, { recursive: true });
 

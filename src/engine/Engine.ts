@@ -31,6 +31,7 @@ export type StopReason = 'signal' | 'environment' | 'complete';
  *  'blocked' = the post-sync benchmark was a defect (crash/no_metrics); the task
  *  is BLOCKED rather than merged on an unreliable result. */
 type MergeOutcome = 'merged' | 'locked' | 'rework' | 'blocked';
+type MergeLockHandle = { readonly dir: string; readonly token: string };
 
 const sleep: SleepFn = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -106,7 +107,6 @@ export class Engine {
    *  Ensures one process never runs the same task's lifecycle twice at once.
    *  Not a lock — a busy task is simply skipped this cycle. */
   readonly #owned = new Set<number>();
-  #currentLockToken: string | null = null;
 
   constructor(tasksDir: string, opts: EngineOptions = {}) {
     this.#dir = tasksDir;
@@ -141,6 +141,8 @@ export class Engine {
   get baseBranch(): string { return this.#baseBranch; }
   get taskDb(): TaskDb { return this.#tdb; }
 
+  #repoFor(task: TaskState): string { return task.info.repo ?? this.#repo; }
+
   /** Release the owned state DB handle (no-op when the DB was injected). */
   dispose(): void {
     if (this.#disposed) return;
@@ -150,7 +152,7 @@ export class Engine {
 
   #detectBaseBranch(): string {
     try {
-      const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: this.#repo, encoding: 'utf-8' }).trim();
+      const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: this.#repo, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
       if (!branch || branch === 'HEAD') return 'master';
       return branch;
     } catch {
@@ -210,6 +212,9 @@ export class Engine {
     this.#owned.add(task.taskNumber);
     try {
       this.#log(`T${task.taskNumber} | picked up | ${this.#singleLine(task.goal)}`, 'transition');
+      if (!this.#validatePickedRepo(task)) {
+        return { task: task.info, metric: 0, converged: false };
+      }
 
       // Check retry cooldown — if this task failed recently, skip it
       const lastFail = this.#retryCooldowns.get(task.taskNumber);
@@ -235,7 +240,7 @@ export class Engine {
         // in a prior tick, so a worktree was created. Without this gate,
         // fresh tasks would prematurely create worktrees via #tryReconnectWorktree.
         if (!this.#noWorktree && !this.#worktrees.has(task.taskNumber) && this.#spawn
-            && existsSync(resolve(this.#repo, '.git'))
+            && existsSync(resolve(this.#repoFor(task), '.git'))
             && task.convergenceCount > 0) {
           const reconnected = this.#tryReconnectWorktree(task);
           if (reconnected) {
@@ -249,7 +254,7 @@ export class Engine {
         // Use the existing worktree (from this tick or reconnected) so
         // convergence checks measure the agent's work — not the main repo.
         const existingWt = this.#worktrees.get(task.taskNumber);
-        const checkCwd = existingWt?.path ?? this.#repo;
+        const checkCwd = existingWt?.path ?? this.#repoFor(task);
         this.#log(`T${task.taskNumber} | checking | running benchmark in ${existingWt ? 'worktree' : 'repo'}`);
         const checkOutcome = await this.#run(task, checkCwd);
         if (checkOutcome.kind !== 'ok') {
@@ -391,7 +396,7 @@ export class Engine {
       // If worktree not in memory (process restart) and repo has .git, try to reconnect.
       // Normally B2 reconnect at pickup handles this; this is defense-in-depth.
       /* v8 ignore next 3 -- safety net; B2 reconnect at pickup prevents this path */
-      if (!tree && this.#spawn && existsSync(resolve(this.#repo, '.git'))) {
+      if (!tree && this.#spawn && existsSync(resolve(this.#repoFor(task), '.git'))) {
         tree = this.#tryReconnectWorktree(task);
       }
       if (tree) {
@@ -422,7 +427,7 @@ export class Engine {
         }
       }
       /* v8 ignore start -- safety net; B2 reconnect at pickup prevents this path */
-      else if (this.#spawn && existsSync(resolve(this.#repo, '.git'))) {
+      else if (this.#spawn && existsSync(resolve(this.#repoFor(task), '.git'))) {
         task.resetConvergence();
         this.#log(`T${task.taskNumber} convergence reached but worktree not found — resetting (process restart?)`, 'transition');
         return { task: task.info, metric, converged: false };
@@ -440,7 +445,9 @@ export class Engine {
   async #mergeAndRemove(task: TaskState, wt: Worktree): Promise<MergeOutcome> {
     // Serialize merges across orchestrators sharing this repo: a merge mutates
     // the shared base checkout, so concurrent merges would corrupt it.
-    if (!this.#acquireMergeLock()) return 'locked';
+    const repo = this.#repoFor(task);
+    const lock = this.#acquireMergeLock(repo);
+    if (!lock) return 'locked';
     let stashed = false;
     try {
       if (this.#autoStashBeforeMerge) {
@@ -475,12 +482,12 @@ export class Engine {
     } finally {
       if (stashed) {
         try {
-          execFileSync('git', ['stash', 'pop'], { cwd: this.#repo, encoding: 'utf-8' });
+          execFileSync('git', ['stash', 'pop'], { cwd: repo, encoding: 'utf-8' });
         } catch {
           this.#log(`T${task.taskNumber} WARNING: stash pop failed — user changes may be stuck in stash. Recover with 'git stash pop'`, 'always');
         }
       }
-      this.#releaseMergeLock();
+      this.#releaseMergeLock(lock);
     }
   }
 
@@ -548,17 +555,41 @@ export class Engine {
     return { task: task.info, metric, converged: false };
   }
 
+  #validatePickedRepo(task: TaskState): boolean {
+    const repo = task.info.repo;
+    if (repo === undefined) return true;
+    if (!existsSync(repo)) {
+      this.#blockInvalidRepo(task, `repo path does not exist: ${repo}`);
+      return false;
+    }
+    if (!this.#noWorktree && !existsSync(resolve(repo, '.git'))) {
+      this.#blockInvalidRepo(task, `repo path is not a git checkout: ${repo}`);
+      return false;
+    }
+    return true;
+  }
+
+  #blockInvalidRepo(task: TaskState, reason: string): void {
+    task.markBlocked();
+    this.#log(
+      `T${task.taskNumber} repo invalid: ${this.#singleLine(reason)}; task BLOCKED ` +
+      `(not the agent's fault, no retry consumed) — restore the repo path then --unblock`,
+      'transition',
+    );
+  }
+
   async #prepareWorktree(task: TaskState): Promise<Worktree | null> {
     if (this.#noWorktree) return null;
     let wt = this.#worktrees.get(task.taskNumber) ?? null;
-    if (!wt && existsSync(resolve(this.#repo, '.git'))) {
+    const repo = this.#repoFor(task);
+    if (!wt && existsSync(resolve(repo, '.git'))) {
       const base = task.targetBranch ?? this.#baseBranch;
-      wt = new Worktree(this.#repo, { name: task.taskName, baseBranch: base, ...(this.#worktreesDir ? { worktreesDir: this.#worktreesDir } : {}) });
+      wt = new Worktree(repo, { name: task.taskName, baseBranch: base, ...(this.#worktreesDir ? { worktreesDir: this.#worktreesDir } : {}) });
       await wt.create();
       this.#worktrees.set(task.taskNumber, wt);
     }
     if (!wt) {
-      this.#log(`T${task.taskNumber} WARNING: no .git found — agent will work directly in ${this.#repo} (no isolation, no cleanup, no merge)`, 'always');
+      this.#log(`T${task.taskNumber} WARNING: no .git found — agent will work directly in ${repo} (no isolation, no cleanup, no merge)`, 'always');
     }
     if (wt) {
       const base = task.targetBranch ?? this.#baseBranch;
@@ -575,7 +606,7 @@ export class Engine {
       // Copy node_modules for isolated npm commands (no symlink — avoids circular chain risk)
       const wtNm = join(wt.path, 'node_modules');
       try {
-        cpSync(join(this.#repo, 'node_modules'), wtNm, { recursive: true });
+        cpSync(join(repo, 'node_modules'), wtNm, { recursive: true });
       } catch (e: unknown) {
         this.#bestEffortFailure(`failed to copy node_modules into worktree ${wt.path}`, e);
       }
@@ -587,7 +618,7 @@ export class Engine {
    *  Worktree if found/recreated, null otherwise. */
   #tryReconnectWorktree(task: TaskState): Worktree | null {
     const base = task.targetBranch ?? this.#baseBranch;
-    const wt = new Worktree(this.#repo, {
+    const wt = new Worktree(this.#repoFor(task), {
       name: task.taskName,
       baseBranch: base,
       /* v8 ignore next -- same pattern as #prepareWorktree; worktreesDir tested there */
@@ -631,7 +662,7 @@ export class Engine {
     if (wt?.autoCommit('agent work (auto-committed by orchestrator)')) {
       this.#log(`T${task.taskNumber} auto-committed uncommitted agent work`);
     }
-    const outcome = await this.#run(task, wt?.path ?? this.#repo);
+    const outcome = await this.#run(task, wt?.path ?? this.#repoFor(task));
     const note = outcome.kind !== 'ok' ? ' (benchmark unreliable)'
       : outcome.total === 0 ? ' (done)' : ' (still needs work)';
     this.#log(`T${task.taskNumber} check after agent (${wt ? 'worktree' : 'repo'}): metric=${outcome.total}${note}`);
@@ -722,81 +753,78 @@ export class Engine {
 
   // ── Merge lock (cross-orchestrator) ─────────────────────────────────
 
-  get #mergeLockDir(): string { return resolve(this.#repo, '.orchestrator-merge-lock'); }
+  #mergeLockDirFor(repo: string): string { return resolve(repo, '.orchestrator-merge-lock'); }
 
   /** Atomic mkdir lock so only one orchestrator merges into the shared base at
    *  a time. A stale lock (older than ORCH_MERGE_LOCK_MS — a crashed merger) is
    *  broken and re-acquired; the atomic mkdir still arbitrates the retry. */
-  #acquireMergeLock(): boolean {
-    if (this.#tryMakeMergeLock()) return true;
-    if (this.#mergeLockAgeMs() < env.mergeLockMs) return false;
+  #acquireMergeLock(repo: string): MergeLockHandle | null {
+    const dir = this.#mergeLockDirFor(repo);
+    const first = this.#tryMakeMergeLock(dir);
+    if (first) return first;
+    if (this.#mergeLockAgeMs(dir) < env.mergeLockMs) return null;
     try {
-      rmSync(this.#mergeLockDir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true });
     }
     /* v8 ignore start -- stale-lock cleanup failures are best-effort */
     catch (e: unknown) {
-      this.#bestEffortFailure(`failed to clear stale merge lock ${this.#mergeLockDir}`, e);
-      return false;
+      this.#bestEffortFailure(`failed to clear stale merge lock ${dir}`, e);
+      return null;
     }
     /* v8 ignore stop */
-    if (!this.#tryMakeMergeLock()) return false;
-    if (this.#mergeLockToken() === this.#currentLockToken) return true;
-    this.#currentLockToken = null;
-    return false;
+    const reacquired = this.#tryMakeMergeLock(dir);
+    if (!reacquired) return null;
+    if (this.#mergeLockToken(dir) === reacquired.token) return reacquired;
+    return null;
   }
 
-  #tryMakeMergeLock(): boolean {
-    try { mkdirSync(this.#mergeLockDir); } catch { return false; }
+  #tryMakeMergeLock(dir: string): MergeLockHandle | null {
+    try { mkdirSync(dir); } catch { return null; }
     const token = `${process.pid}-${Date.now()}-${randomUUID().slice(0, 8)}`;
-    this.#currentLockToken = token;
     try {
-      writeFileSync(join(this.#mergeLockDir, 'owner'), `pid:${process.pid}\nhost:${hostname()}\nstarted:${Date.now()}\ntoken:${token}\n`);
+      writeFileSync(join(dir, 'owner'), `pid:${process.pid}\nhost:${hostname()}\nstarted:${Date.now()}\ntoken:${token}\n`);
     }
     /* v8 ignore start -- owner-file failures depend on filesystem faults */
     catch (e: unknown) {
-      this.#bestEffortFailure(`failed to write merge lock owner file in ${this.#mergeLockDir}`, e);
-      this.#currentLockToken = null;
+      this.#bestEffortFailure(`failed to write merge lock owner file in ${dir}`, e);
       try {
-        rmSync(this.#mergeLockDir, { recursive: true, force: true });
+        rmSync(dir, { recursive: true, force: true });
       } catch (cleanupError: unknown) {
-        this.#bestEffortFailure(`failed to clean up incomplete merge lock ${this.#mergeLockDir}`, cleanupError);
+        this.#bestEffortFailure(`failed to clean up incomplete merge lock ${dir}`, cleanupError);
       }
-      return false;
+      return null;
     }
     /* v8 ignore stop */
-    return true;
+    return { dir, token };
   }
 
-  #mergeLockAgeMs(): number {
+  #mergeLockAgeMs(dir: string): number {
     try {
-      const started = parseInt(readFileSync(join(this.#mergeLockDir, 'owner'), 'utf-8').match(/started:(\d+)/)?.[1] ?? '0', 10);
+      const started = parseInt(readFileSync(join(dir, 'owner'), 'utf-8').match(/started:(\d+)/)?.[1] ?? '0', 10);
       if (started > 0) return Date.now() - started;
     } catch { /* missing/unreadable owner → treat as stale */ }
     return Infinity;
   }
 
-  #mergeLockToken(): string | null {
+  #mergeLockToken(dir: string): string | null {
     try {
-      return readFileSync(join(this.#mergeLockDir, 'owner'), 'utf-8').match(/token:(.+)/)?.[1] ?? null;
+      return readFileSync(join(dir, 'owner'), 'utf-8').match(/token:(.+)/)?.[1] ?? null;
     } catch {
       return null;
     }
   }
 
-  #releaseMergeLock(): void {
+  #releaseMergeLock(handle: MergeLockHandle): void {
     try {
-      if (this.#currentLockToken !== null && this.#mergeLockToken() === this.#currentLockToken) {
-        rmSync(this.#mergeLockDir, { recursive: true, force: true });
+      if (this.#mergeLockToken(handle.dir) === handle.token) {
+        rmSync(handle.dir, { recursive: true, force: true });
       }
     }
     /* v8 ignore start -- release failures depend on filesystem faults */
     catch (e: unknown) {
-      this.#bestEffortFailure(`failed to release merge lock ${this.#mergeLockDir}`, e);
+      this.#bestEffortFailure(`failed to release merge lock ${handle.dir}`, e);
     }
     /* v8 ignore stop */
-    finally {
-      this.#currentLockToken = null;
-    }
   }
 
   // ── State reconciliation (DB-backed) ────────────────────────────────

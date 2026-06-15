@@ -61,6 +61,7 @@ class FakeTaskDb {
       failures: o.failures ?? 0,
       max_failures: o.max_failures ?? null,
       target_branch: o.target_branch ?? null,
+      repo: o.repo ?? null,
       claimed_by: o.claimed_by ?? null,
       claim_token: o.claim_token ?? null,
       claimed_at: o.claimed_at ?? null,
@@ -248,6 +249,20 @@ describe('Engine.tick (mocked TaskDb, no worktree)', () => {
     const r = await makeEngine(fake).tick();
     expect(r.task).toBeNull();
     expect(r.converged).toBe(false);
+  });
+
+  it('allows a task repo without .git when worktrees are disabled', async () => {
+    fake.seed({ task_number: 1, repo: join('virtual', 'repo-without-git') });
+    fsh.existsImpl = (p) => !p.endsWith('.stop') && !p.endsWith('.git');
+    const benchmark = vi.fn(() => 0);
+
+    const r = await makeEngine(fake, { benchmark }).tick();
+
+    expect(r.task?.repo).toBe(join('virtual', 'repo-without-git'));
+    expect(benchmark).toHaveBeenCalledWith(expect.objectContaining({
+      cwd: join('virtual', 'repo-without-git'),
+      repo: join('virtual', 'repo-without-git'),
+    }));
   });
 
   it('invokes recoverStale and cascadeBlock every tick', async () => {

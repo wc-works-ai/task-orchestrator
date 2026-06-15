@@ -8,7 +8,7 @@ export interface ConfigItem {
 }
 
 export const CONFIG_SPEC: readonly ConfigItem[] = [
-  { group: 'Paths', env: 'ORCH_REPO', flag: 'repo', kind: 'string', def: 'current directory', desc: 'Target repo/folder' },
+  { group: 'Paths', env: 'ORCH_REPO', flag: 'repo', kind: 'string', def: 'current directory', desc: 'Default repo bound to new tasks by add' },
   { group: 'Paths', env: 'ORCH_STATE_ROOT', flag: 'state-root', kind: 'string', def: '<home>/task-orchestrator', desc: 'Orchestrator state root' },
   { group: 'Paths', env: 'ORCH_TASKS', flag: 'tasks', kind: 'string', def: '<state-root>/<repo-slug>/tasks', desc: 'Task directory' },
   { group: 'Paths', env: 'ORCH_WORKTREES', flag: 'worktrees', kind: 'string', def: '<state-root>/<repo-slug>/worktrees', desc: 'Worktree directory' },

@@ -4,13 +4,15 @@ Each scenario: ✅ safe, ⚠️ risk, 🔴 problem.
 
 ## Architecture
 
-Each task gets a git worktree on branch `orchestrator/<taskName>`,
-branched from the task's target branch. Task state lives in SQLite
-(`tasks/state.db`); the worktree and task content live on disk.
+Each task gets a git worktree in its bound repo on branch
+`orchestrator/<taskName>`, branched from the task's target branch. Task state
+lives in the global SQLite DB (`<state-root>/tasks/state.db`); the worktree and
+task content live on disk.
 
 | Component | Persistence |
 |-----------|-------------|
-| Worktree (`<worktreesDir>/<taskName>`) | On disk; deleted on convergence |
+| Worktree (`<worktreesDir>/<taskName>`) | On disk; per task repo; deleted on convergence |
+| Repo | In `state.db`; set at task creation |
 | Target branch | In `state.db`; set at task creation |
 | Convergence count | In `state.db`; preserved across restarts and recovery |
 | Claim (owner + heartbeat token) | In `state.db`; cleared on release/recovery |
@@ -36,7 +38,7 @@ branched from the task's target branch. Task state lives in SQLite
 | Area | Mechanism |
 |------|-----------|
 | Parallel ticks (same process) | `#owned` Set |
-| Parallel workers (same host) | DB claim token + merge lock |
+| Parallel workers (same host) | DB claim token + per-repo merge lock |
 | Cross-task isolation | Separate worktree + branch per task |
 | Branch reuse on restart | `#add()` reuses branch; cleanup only removes uncommitted |
 | Recovery preserves convergence | `recoverStale()` releases the claim, keeps the convergence count |
@@ -49,6 +51,7 @@ branched from the task's target branch. Task state lives in SQLite
 | Non-git repo / `--no-worktree` | Degrades to benchmark loop; warned in log; no cleanup of main folder |
 | Auto-commit | After agent exits; merge captures validated code |
 | Target branch | Per-task, from `state.db`; merge goes to correct branch |
+| Task repo | Per-task, from `state.db`; diverse repos can share one queue |
 | Auto-stash | Stash before merge, pop after (all paths) |
 | Branch restore | After merge, restored to user's branch |
 | Staged cleanup | `cleanWorktree()` runs `git reset HEAD` + `checkout -- .` + `clean -fd` |
@@ -127,8 +130,9 @@ branched from the task's target branch. Task state lives in SQLite
 |---|----------|--------|
 | 36 | Both pick same task → claim is an atomic DB update | ✅ |
 | 37 | Worker A dies, B reclaims via stale heartbeat → committed work survives | ✅ |
-| 38 | Concurrent merges → merge lock serializes | ✅ |
-| 39 | Convergence increments → atomic DB update, no lost counts | ✅ |
+| 38 | Concurrent merges in the same repo → merge lock serializes | ✅ |
+| 39 | Concurrent tasks from different repos → independent merge locks | ✅ |
+| 40 | Convergence increments → atomic DB update, no lost counts | ✅ |
 
 ### No-worktree mode
 

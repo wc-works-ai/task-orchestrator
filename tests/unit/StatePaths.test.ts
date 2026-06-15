@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { defaultStateRoot, repoSlug, resolveStatePaths } from '../../src/state/StatePaths.js';
 
 describe('StatePaths', () => {
-  it('derives tasks and worktrees from provided state root and repo slug', () => {
+  it('derives global tasks and worktrees from provided state root', () => {
     const paths = resolveStatePaths({
       repo: 'Q:\\Repos\\FabricSparkCST',
       stateRoot: 'Q:\\Orchestrator',
@@ -13,8 +13,8 @@ describe('StatePaths', () => {
     expect(paths.repo).toBe(resolve('Q:\\Repos\\FabricSparkCST'));
     expect(paths.stateRoot).toBe(resolve('Q:\\Orchestrator'));
     expect(paths.repoSlug).toBe('FabricSparkCST');
-    expect(paths.tasks).toBe(resolve('Q:\\Orchestrator\\FabricSparkCST\\tasks'));
-    expect(paths.worktrees).toBe(resolve('Q:\\Orchestrator\\FabricSparkCST\\worktrees'));
+    expect(paths.tasks).toBe(resolve('Q:\\Orchestrator\\tasks'));
+    expect(paths.worktrees).toBe(resolve('Q:\\Orchestrator\\worktrees'));
   });
 
   it('lets explicit tasks and worktrees override derived paths', () => {
@@ -29,9 +29,14 @@ describe('StatePaths', () => {
     expect(paths.worktrees).toBe(resolve('E:\\Worktrees\\FabricSparkCST'));
   });
 
-  it('requires repo', () => {
-    expect(() => resolveStatePaths({ stateRoot: 'Q:\\Orchestrator' }))
-      .toThrow('--repo is required');
+  it('resolves global paths without repo', () => {
+    const paths = resolveStatePaths({ stateRoot: 'Q:\\Orchestrator' });
+
+    expect(paths.repo).toBeUndefined();
+    expect(paths.repoSlug).toBeUndefined();
+    expect(paths.stateRoot).toBe(resolve('Q:\\Orchestrator'));
+    expect(paths.tasks).toBe(resolve('Q:\\Orchestrator\\tasks'));
+    expect(paths.worktrees).toBe(resolve('Q:\\Orchestrator\\worktrees'));
   });
 
   it('defaults state root to home task-orchestrator folder', () => {
@@ -39,8 +44,8 @@ describe('StatePaths', () => {
 
     expect(defaultStateRoot()).toBe(join(homedir(), 'task-orchestrator'));
     expect(paths.stateRoot).toBe(resolve(join(homedir(), 'task-orchestrator')));
-    expect(paths.tasks).toBe(resolve(join(homedir(), 'task-orchestrator', 'FabricSparkCST', 'tasks')));
-    expect(paths.worktrees).toBe(resolve(join(homedir(), 'task-orchestrator', 'FabricSparkCST', 'worktrees')));
+    expect(paths.tasks).toBe(resolve(join(homedir(), 'task-orchestrator', 'tasks')));
+    expect(paths.worktrees).toBe(resolve(join(homedir(), 'task-orchestrator', 'worktrees')));
   });
 
   it('sanitizes repo slug for folder names', () => {

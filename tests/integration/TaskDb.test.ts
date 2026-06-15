@@ -32,7 +32,11 @@ function clockTaskDb(now: () => number): { tdb: TaskDb; db: Db } {
 }
 
 /** Insert a task and promote it to PENDING (ready to pick). */
-function ready(tdb: TaskDb, name: string, opts: { maxFailures?: number | null; dependsOn?: number[] } = {}): number {
+function ready(
+  tdb: TaskDb,
+  name: string,
+  opts: { maxFailures?: number | null; repo?: string | null; dependsOn?: number[] } = {},
+): number {
   const { id, taskNumber } = tdb.insert({ name, ...opts });
   tdb.promote(id);
   return taskNumber;
@@ -45,6 +49,35 @@ function taskNumberToId(tdb: TaskDb, taskNumber: number): number {
 const INSERT =
   'INSERT INTO tasks(task_number,name,dir,status,max_failures,created_at,updated_at) ' +
   'VALUES (:n,:name,:dir,:status,:max,0,0)';
+
+const V1_SCHEMA = `
+CREATE TABLE tasks (
+  id            INTEGER PRIMARY KEY,
+  task_number   INTEGER NOT NULL UNIQUE,
+  name          TEXT NOT NULL,
+  dir           TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  status        TEXT NOT NULL DEFAULT 'PENDING'
+    CHECK(status IN ('CREATING','PENDING','IN_PROGRESS','FAILED','BLOCKED','CONVERGED')),
+  convergence   INTEGER NOT NULL DEFAULT 0,
+  failures      INTEGER NOT NULL DEFAULT 0,
+  max_failures  INTEGER CHECK(max_failures IS NULL OR max_failures > 0),
+  target_branch TEXT,
+  claimed_by    TEXT,
+  claim_token   TEXT,
+  claimed_at    INTEGER,
+  heartbeat     INTEGER,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL
+);
+CREATE INDEX idx_status ON tasks(status);
+CREATE TABLE dependencies (
+  task_number INTEGER NOT NULL,
+  depends_on  INTEGER NOT NULL,
+  PRIMARY KEY (task_number, depends_on),
+  CHECK(task_number != depends_on)
+);
+CREATE INDEX idx_dep_on ON dependencies(depends_on);
+`;
 
 function addRow(
   db: Db,
@@ -78,6 +111,12 @@ describe('TaskDb schema', () => {
     expect(db.get<{ user_version: number }>('PRAGMA user_version')).toEqual({
       user_version: SCHEMA_VERSION,
     });
+  });
+
+  it('creates the nullable repo column', () => {
+    const { db } = memTaskDb();
+    const columns = db.all<{ name: string }>('PRAGMA table_info(tasks)').map(c => c.name);
+    expect(columns).toContain('repo');
   });
 
   it('allows the CREATING status (regression: must be in the CHECK list)', () => {
@@ -127,6 +166,44 @@ describe('TaskDb lifecycle', () => {
     raw.exec(`PRAGMA user_version = ${SCHEMA_VERSION + 1}`);
     raw.close();
     expect(() => TaskDb.open(path)).toThrowError(SchemaMismatchError);
+  });
+
+  it('migrates a v1 database by adding repo as NULL and bumping user_version', () => {
+    const path = join(tmp(), 'state.db');
+    const raw = openDb(path);
+    raw.exec(V1_SCHEMA);
+    raw.run(
+      `INSERT INTO tasks
+         (task_number, name, dir, status, max_failures, target_branch, created_at, updated_at)
+       VALUES (1, 'old', 'T01-old', 'PENDING', NULL, NULL, 10, 20)`,
+    );
+    raw.exec('PRAGMA user_version = 1');
+    raw.close();
+
+    const migrated = TaskDb.open(path);
+    dbs.push(migrated);
+
+    const columns = openDb(path);
+    dbs.push(columns);
+    expect(columns.all<{ name: string }>('PRAGMA table_info(tasks)').map(c => c.name)).toContain('repo');
+    expect(columns.get<{ user_version: number }>('PRAGMA user_version')).toEqual({ user_version: 2 });
+    expect(migrated.getByNumber(1)!.repo).toBeNull();
+  });
+
+  it('bumps v1 to v2 without failing if repo already exists', () => {
+    const path = join(tmp(), 'state.db');
+    const raw = openDb(path);
+    raw.exec(V1_SCHEMA);
+    raw.exec('ALTER TABLE tasks ADD COLUMN repo TEXT');
+    raw.exec('PRAGMA user_version = 1');
+    raw.close();
+
+    const migrated = TaskDb.open(path);
+    dbs.push(migrated);
+    expect(migrated.getByNumber(1)).toBeUndefined();
+    const check = openDb(path);
+    dbs.push(check);
+    expect(check.get<{ user_version: number }>('PRAGMA user_version')).toEqual({ user_version: 2 });
   });
 
   it('reports a healthy integrity check', () => {
@@ -180,6 +257,39 @@ describe('TaskDb.insert / promote', () => {
     expect(tdb.dependencyNumbers(b.taskNumber)).toEqual([1]);
   });
 
+  it('round-trips an explicit repo and defaults omitted repo to NULL', () => {
+    const { tdb } = memTaskDb();
+    const withRepo = tdb.insert({ name: 'with-repo', repo: 'Q:\\Repos\\one' });
+    const withoutRepo = tdb.insert({ name: 'without-repo' });
+    expect(tdb.get(withRepo.id)!.repo).toBe('Q:\\Repos\\one');
+    expect(tdb.get(withoutRepo.id)!.repo).toBeNull();
+  });
+
+  it('rejects dependencies across different non-NULL repos', () => {
+    const { tdb } = memTaskDb();
+    const dep = tdb.insert({ name: 'dep', repo: 'Q:\\Repos\\a' });
+    expect(() =>
+      tdb.insert({ name: 'main', repo: 'Q:\\Repos\\b', dependsOn: [dep.taskNumber] }),
+    ).toThrow('Cannot depend across repos: T2(Q:\\Repos\\b) -> T1(Q:\\Repos\\a)');
+  });
+
+  it('allows dependencies in the same repo', () => {
+    const { tdb } = memTaskDb();
+    const dep = tdb.insert({ name: 'dep', repo: 'Q:\\Repos\\a' });
+    const main = tdb.insert({ name: 'main', repo: 'Q:\\Repos\\a', dependsOn: [dep.taskNumber] });
+    expect(tdb.dependencyNumbers(main.taskNumber)).toEqual([dep.taskNumber]);
+  });
+
+  it('allows dependencies when either side has a NULL repo', () => {
+    const { tdb } = memTaskDb();
+    const nullDep = tdb.insert({ name: 'null-dep' });
+    const repoDep = tdb.insert({ name: 'repo-dep', repo: 'Q:\\Repos\\a' });
+    const repoMain = tdb.insert({ name: 'repo-main', repo: 'Q:\\Repos\\a', dependsOn: [nullDep.taskNumber] });
+    const nullMain = tdb.insert({ name: 'null-main', dependsOn: [repoDep.taskNumber] });
+    expect(tdb.dependencyNumbers(repoMain.taskNumber)).toEqual([nullDep.taskNumber]);
+    expect(tdb.dependencyNumbers(nullMain.taskNumber)).toEqual([repoDep.taskNumber]);
+  });
+
   it('promote moves CREATING to PENDING and is a no-op otherwise', () => {
     const { tdb } = memTaskDb();
     const { id } = tdb.insert({ name: 'a' });
@@ -195,7 +305,8 @@ describe('TaskDb.importTask', () => {
     expect(
       tdb.importTask({
         taskNumber: 7, name: 'foo', dir: 'failed/T07-foo', status: 'FAILED',
-        convergence: 2, failures: 3, maxFailures: 9, targetBranch: 'dev', dependsOn: [1, 2],
+        convergence: 2, failures: 3, maxFailures: 9, targetBranch: 'dev',
+        repo: 'Q:\\Repos\\imported', dependsOn: [1, 2],
       }),
     ).toBe(true);
 
@@ -208,6 +319,7 @@ describe('TaskDb.importTask', () => {
     expect(row.failures).toBe(3);
     expect(row.max_failures).toBe(9);
     expect(row.target_branch).toBe('dev');
+    expect(row.repo).toBe('Q:\\Repos\\imported');
     expect(tdb.dependencyNumbers(7)).toEqual([1, 2]);
   });
 
@@ -216,27 +328,40 @@ describe('TaskDb.importTask', () => {
     expect(
       tdb.importTask({
         taskNumber: 4, name: 'bare', dir: 'pending/T04-bare', status: 'PENDING',
-        convergence: 0, failures: 0, maxFailures: null, targetBranch: null, dependsOn: [],
+        convergence: 0, failures: 0, maxFailures: null, targetBranch: null, repo: null, dependsOn: [],
       }),
     ).toBe(true);
 
     const row = tdb.getByNumber(4)!;
     expect(row.max_failures).toBeNull();
     expect(row.target_branch).toBeNull();
+    expect(row.repo).toBeNull();
     expect(tdb.dependencyNumbers(4)).toEqual([]);
+  });
+
+  it('keeps legacy import callers working by defaulting omitted repo to NULL', () => {
+    const { tdb } = memTaskDb();
+    expect(
+      tdb.importTask({
+        taskNumber: 5, name: 'legacy', dir: 'pending/T05-legacy', status: 'PENDING',
+        convergence: 0, failures: 0, maxFailures: null, targetBranch: null, dependsOn: [],
+      }),
+    ).toBe(true);
+
+    expect(tdb.getByNumber(5)!.repo).toBeNull();
   });
 
   it('is idempotent: ON CONFLICT(task_number) leaves the existing row and deps intact', () => {
     const { tdb } = memTaskDb();
     tdb.importTask({
       taskNumber: 1, name: 'first', dir: 'pending/T01-first', status: 'PENDING',
-      convergence: 0, failures: 0, maxFailures: 5, targetBranch: null, dependsOn: [],
+      convergence: 0, failures: 0, maxFailures: 5, targetBranch: null, repo: null, dependsOn: [],
     });
 
     expect(
       tdb.importTask({
         taskNumber: 1, name: 'second', dir: 'failed/T01-second', status: 'FAILED',
-        convergence: 9, failures: 9, maxFailures: 1, targetBranch: 'other', dependsOn: [2],
+        convergence: 9, failures: 9, maxFailures: 1, targetBranch: 'other', repo: 'Q:\\Repos\\other', dependsOn: [2],
       }),
     ).toBe(false);
 

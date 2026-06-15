@@ -11,9 +11,9 @@ export interface StatePathInputs {
 }
 
 export interface StatePaths {
-  readonly repo: string;
+  readonly repo: string | undefined;
   readonly stateRoot: string;
-  readonly repoSlug: string;
+  readonly repoSlug: string | undefined;
   readonly tasks: string;
   readonly worktrees: string;
 }
@@ -30,17 +30,15 @@ export function defaultStateRoot(): string {
 }
 
 export function resolveStatePaths(inputs: StatePathInputs): StatePaths {
-  if (!inputs.repo) throw new Error('--repo is required (or set ORCH_REPO)');
-
-  const repo = resolve(inputs.repo);
+  const repo = inputs.repo ? resolve(inputs.repo) : undefined;
   const stateRoot = resolve(inputs.stateRoot || defaultStateRoot());
-  const slug = repoSlug(repo);
+  const slug = repo ? repoSlug(repo) : undefined;
 
   return {
     repo,
     stateRoot,
     repoSlug: slug,
-    tasks: resolve(inputs.tasks || join(stateRoot, slug, 'tasks')),
-    worktrees: resolve(inputs.worktrees || join(stateRoot, slug, 'worktrees')),
+    tasks: resolve(inputs.tasks || join(stateRoot, 'tasks')),
+    worktrees: resolve(inputs.worktrees || join(stateRoot, 'worktrees')),
   };
 }

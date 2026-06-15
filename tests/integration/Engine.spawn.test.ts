@@ -4,7 +4,7 @@ import { existsSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { Engine, MergeRecoveryAction } from '../../src/engine/Engine.js';
 import { TaskState, Status, type TaskInfo } from '../../src/state/TaskState.js';
-import { memStateDb, seed, statusOf, setupTestDir, type StateDb, type SeedOpts } from '../shared/helpers.js';
+import { memStateDb, rowOf, seed, statusOf, setupTestDir, type StateDb, type SeedOpts } from '../shared/helpers.js';
 
 let s: StateDb;
 
@@ -71,6 +71,55 @@ describe('Engine agent spawning', () => {
     expect(r.metric).toBe(0);
     expect(spawn).toHaveBeenCalledTimes(1);
     expect(benchmark).toHaveBeenCalledTimes(2); // pre + post
+  });
+
+  it('blocks a task with a deleted repo without spawning or consuming a retry', async () => {
+    const tasksDir = resolve(dir, 'tasks');
+    const missingRepo = resolve(dir, 'missing-repo');
+    seed(s.db, tasksDir, 1, 'missing-repo-task');
+    s.db.run('UPDATE tasks SET repo=? WHERE task_number=?', [missingRepo, 1]);
+    const benchmark = vi.fn().mockResolvedValue(1);
+    const spawn = vi.fn().mockResolvedValue({ success: true, iterations: 1 });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      const r = await new Engine(tasksDir, { taskDb: s.tdb, benchmark, spawn, repoDir: dir }).tick();
+
+      expect(r.converged).toBe(false);
+      expect(statusOf(s.db, 1)).toBe(Status.BLOCKED);
+      expect(rowOf(s.db, 1)?.failures).toBe(0);
+      expect(benchmark).not.toHaveBeenCalled();
+      expect(spawn).not.toHaveBeenCalled();
+      expect(joinedCalls(logSpy)).toContain('repo invalid: repo path does not exist');
+      expect(joinedCalls(logSpy)).toContain('no retry consumed');
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('blocks a task whose repo exists but is not a git checkout', async () => {
+    const { mkdirSync: mk } = await import('node:fs');
+    const tasksDir = resolve(dir, 'tasks');
+    const plainRepo = resolve(dir, 'plain-repo');
+    mk(plainRepo, { recursive: true }); // exists, but has no .git
+    seed(s.db, tasksDir, 1, 'plain-repo-task');
+    s.db.run('UPDATE tasks SET repo=? WHERE task_number=?', [plainRepo, 1]);
+    const benchmark = vi.fn().mockResolvedValue(1);
+    const spawn = vi.fn().mockResolvedValue({ success: true, iterations: 1 });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      const r = await new Engine(tasksDir, { taskDb: s.tdb, benchmark, spawn, repoDir: dir }).tick();
+
+      expect(r.converged).toBe(false);
+      expect(statusOf(s.db, 1)).toBe(Status.BLOCKED);
+      expect(rowOf(s.db, 1)?.failures).toBe(0);
+      expect(benchmark).not.toHaveBeenCalled();
+      expect(spawn).not.toHaveBeenCalled();
+      expect(joinedCalls(logSpy)).toContain('repo invalid: repo path is not a git checkout');
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 
   it('fails task when spawn returns failure', async () => {

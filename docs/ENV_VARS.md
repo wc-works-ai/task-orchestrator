@@ -10,10 +10,10 @@ Run `orchestrator --config` to inspect effective values.
 
 | Variable | Flag | Default | Purpose |
 |---|---|---|---|
-| `ORCH_REPO` | `--repo` | cwd | Target repository |
-| `ORCH_STATE_ROOT` | `--state-root` | `$HOME/task-orchestrator` | Tasks and worktrees root |
-| `ORCH_TASKS` | `--tasks` | `<state-root>/<repo-slug>/tasks` | Task directory |
-| `ORCH_WORKTREES` | `--worktrees` | `<state-root>/<repo-slug>/worktrees` | Worktree directory |
+| `ORCH_REPO` | `--repo` | cwd | Default repo bound to new tasks by `add`; printed after resolution |
+| `ORCH_STATE_ROOT` | `--state-root` | `$HOME/task-orchestrator` | Global tasks and worktrees root |
+| `ORCH_TASKS` | `--tasks` | `<state-root>/tasks` | Global task directory |
+| `ORCH_WORKTREES` | `--worktrees` | `<state-root>/worktrees` | Global worktree directory |
 
 ### Agent
 
@@ -64,7 +64,8 @@ Run `orchestrator --config` to inspect effective values.
 - Booleans accept: `1`, `true`, `yes`, `on` (case-insensitive). `ORCH_AUTO_STASH` defaults to `true` — set `false` to disable.
 - Millisecond values: 1000 = 1s. Defaults are production-tested.
 - Parallel: `ORCH_PARALLEL=0` = unlimited (clamped to 100). Default 1 = serial.
-- Paths: `ORCH_TASKS`/`ORCH_WORKTREES` auto-derived from `ORCH_STATE_ROOT` if not set.
+- Paths: `ORCH_TASKS`/`ORCH_WORKTREES` auto-derived from `ORCH_STATE_ROOT` if not set. The loop drains the global queue and does not need a single repo; each task carries its repo from `add --repo` / `ORCH_REPO`.
+- Clean cutover: upgrading from the old per-repo layout starts a fresh global queue; old `<state-root>/<repo-slug>/tasks` DBs are not auto-imported.
 - Pruning: content dirs of converged tasks exceeding `ORCH_KEEP_CONVERGED` are deleted; the DB rows remain (the converged count is preserved).
 - CLI flags override env vars. Set permanent config in `~/.bashrc`; use flags for one-off overrides.
 - Agent logs: each run writes a timestamped `agent-<time>.log` with one line per activity — for `pi`, LLM turns (with token usage), tool calls, and text parsed from its JSON stream; for `copilot`/`exec`, timestamped output lines. `ORCH_AGENT_LOG_RAW=1` switches to the unprocessed stream for debugging.

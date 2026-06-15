@@ -15,6 +15,7 @@ export interface TaskInfo {
   readonly directory: string;
   readonly number: number;
   readonly name: string;
+  readonly repo?: string;
   readonly goal: string;
   readonly model: string;
   readonly reasoning: string;
@@ -109,6 +110,7 @@ export class TaskState {
       directory: this.directory,
       number: this.number,
       name: this.name,
+      ...(this.repo ? { repo: this.repo } : {}),
       goal: this.goal,
       model: this.model,
       reasoning: this.reasoning,
@@ -222,6 +224,10 @@ export class TaskState {
    *  creation; undefined means Engine uses its own baseBranch. */
   get targetBranch(): string | undefined {
     return this.#row()?.target_branch ?? undefined;
+  }
+
+  get repo(): string | undefined {
+    return this.#row()?.repo ?? undefined;
   }
 
   get goal(): string {

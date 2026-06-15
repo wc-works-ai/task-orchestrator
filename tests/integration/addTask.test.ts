@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { addTask } from '../../src/state/addTask.js';
 import { TaskDb } from '../../src/state/TaskDb.js';
@@ -9,6 +10,25 @@ const dirs: string[] = [];
 
 function tasksDir(): string {
   const dir = mkdtempSync(join(tmpdir(), 'add-task-test-'));
+  dirs.push(dir);
+  return dir;
+}
+
+function gitRepo(branch: string): string {
+  const dir = mkdtempSync(join(tmpdir(), 'add-task-repo-'));
+  dirs.push(dir);
+  execFileSync('git', ['init'], { cwd: dir, stdio: 'ignore' });
+  execFileSync('git', ['checkout', '-b', branch], { cwd: dir, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.email', 'test@example.invalid'], { cwd: dir, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.name', 'Task Orchestrator Test'], { cwd: dir, stdio: 'ignore' });
+  writeFileSync(join(dir, 'README.md'), '# test repo\n');
+  execFileSync('git', ['add', 'README.md'], { cwd: dir, stdio: 'ignore' });
+  execFileSync('git', ['commit', '-m', 'initial'], { cwd: dir, stdio: 'ignore' });
+  return dir;
+}
+
+function nonGitDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'add-task-non-git-'));
   dirs.push(dir);
   return dir;
 }
@@ -128,5 +148,29 @@ describe('addTask target branch', () => {
     const task = addTask(dir, 'no-git-task', { repoDir: dir });
     expect(task.targetBranch).toBeUndefined();
     expect(row(dir, task.number)!.target_branch).toBeNull();
+  });
+
+  it('stores repoDir as an absolute repo and detects targetBranch from that repo', () => {
+    const dir = tasksDir();
+    const repo = gitRepo('add-task-target-repo-branch');
+    const task = addTask(dir, 'repo-bound-task', { repoDir: repo });
+    const stored = row(dir, task.number)!;
+
+    expect(task.repo).toBe(resolve(repo));
+    expect(stored.repo).toBe(resolve(repo));
+    expect(task.targetBranch).toBe('add-task-target-repo-branch');
+    expect(stored.target_branch).toBe('add-task-target-repo-branch');
+  });
+
+  it('stores a non-git repoDir as an absolute repo with NULL targetBranch', () => {
+    const dir = tasksDir();
+    const repo = nonGitDir();
+    const task = addTask(dir, 'non-git-repo-task', { repoDir: repo });
+    const stored = row(dir, task.number)!;
+
+    expect(task.repo).toBe(resolve(repo));
+    expect(stored.repo).toBe(resolve(repo));
+    expect(task.targetBranch).toBeUndefined();
+    expect(stored.target_branch).toBeNull();
   });
 });

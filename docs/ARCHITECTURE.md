@@ -29,7 +29,7 @@ Lower layers never import higher ones. `shared/` is the base; `cli.ts` sits on t
 - `env` — env-var getters · `config` — `CONFIG_SPEC` for `--config`/help
 - `metrics` — parse `METRIC name=value` lines · `BenchmarkMeta` — benchmark metadata
 
-**state/** — task state, stored in SQLite (`tasks/state.db`), content on disk
+**state/** — global task state, stored in SQLite (`<state-root>/tasks/state.db`), content on disk
 - `sqlite` — thin `node:sqlite` wrapper (WAL) · `TaskDb` — schema + atomic ops
 - `TaskState` — DB-backed per-task view · `Status` — status enum
 - `addTask` — task creation · `migrate` — import legacy file-shard tasks
@@ -42,7 +42,7 @@ Lower layers never import higher ones. `shared/` is the base; `cli.ts` sits on t
 - `AgentLog` — per-run logs · `Prerequisites` — preflight checks
 
 **engine/** — orchestration
-- `Engine` — the tick loop (pick → benchmark → converge/fail → merge), recovery, reconciliation
+- `Engine` — the tick loop (pick → resolve per-task repo → benchmark → converge/fail → merge), recovery, reconciliation
 - `Worktree` — git worktree create/sync/merge · `taskGraph` — dependency DAG render
 - `runReport` — `--status` dashboard
 
