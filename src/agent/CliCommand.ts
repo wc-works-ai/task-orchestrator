@@ -4,16 +4,12 @@ import { win32 } from 'node:path';
 
 const NPM_CMD_TARGET = /"%dp0%\\([^"]+)"\s+%\*/i;
 
-export interface PiCommand {
+export interface ResolvedCommand {
   readonly command: string;
   readonly args: string[];
 }
 
-export function piCommand(args: readonly string[]): PiCommand {
-  return resolveCliCommand('pi', args);
-}
-
-export function resolveCliCommand(bin: string, args: readonly string[]): PiCommand {
+export function resolveCliCommand(bin: string, args: readonly string[]): ResolvedCommand {
   const copiedArgs = [...args];
   if (process.platform !== 'win32') return { command: bin, args: copiedArgs };
 

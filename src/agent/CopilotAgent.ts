@@ -2,7 +2,7 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { join } from 'node:path';
 import { TaskState } from '../state/TaskState.js';
 import { env } from '../shared/env.js';
-import { resolveCliCommand } from './PiCommand.js';
+import { resolveCliCommand } from './CliCommand.js';
 import { appendAgentLog, openAgentLog, runLogName, type AgentLog } from './AgentLog.js';
 import {
   countOccurrences,

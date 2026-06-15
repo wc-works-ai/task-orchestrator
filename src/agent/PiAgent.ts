@@ -3,7 +3,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { TaskState } from '../state/TaskState.js';
 import { env } from '../shared/env.js';
-import { piCommand } from './PiCommand.js';
+import { resolveCliCommand } from './CliCommand.js';
 import { appendAgentLog, openAgentLog, runLogName, type AgentLog } from './AgentLog.js';
 import {
   countOccurrences,
@@ -128,7 +128,7 @@ export class PiAgent implements CodingAgent {
   }
 
   static #checkBinary(): PrerequisiteResult {
-    const command = piCommand(['--version']);
+    const command = resolveCliCommand('pi', ['--version']);
     const r = spawnSync(command.command, command.args, { timeout: 5000, encoding: 'utf-8' });
     return {
       name: 'pi',
@@ -207,7 +207,7 @@ export class PiAgent implements CodingAgent {
       const args = ['--mode', 'json', '--no-session'];
       if (model) args.push('--model', model);
       args.push('-p', this.#prompt(task, cwd));
-      const command = piCommand(args);
+      const command = resolveCliCommand('pi', args);
       const child: ChildProcess = spawn(command.command, command.args, {
         cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
