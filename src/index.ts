@@ -1,9 +1,15 @@
 // agent
-export { appendAgentLog, openAgentLog, runLogName } from './agent/AgentLog.js';
-export type { AgentLog } from './agent/AgentLog.js';
+export {
+  appendAgentLog,
+  openAgentLog,
+  runLogName,
+  type AgentLog,
+} from './agent/AgentLog.js';
 
-export { resolveCliCommand } from './agent/CliCommand.js';
-export type { ResolvedCommand } from './agent/CliCommand.js';
+export {
+  resolveCliCommand,
+  type ResolvedCommand,
+} from './agent/CliCommand.js';
 
 export {
   countOccurrences,
@@ -11,36 +17,42 @@ export {
   resolveModel,
   resolveReasoning,
   tail,
-} from './agent/CodingAgent.js';
-export type {
-  CodingAgent,
-  CodingAgentOptions,
-  PrerequisiteResult,
-  SpawnFn,
-  SpawnResult,
-  TokenUsage,
+  type CodingAgent,
+  type CodingAgentOptions,
+  type PrerequisiteResult,
+  type SpawnFn,
+  type SpawnResult,
+  type TokenUsage,
 } from './agent/CodingAgent.js';
 
-export { CopilotAgent } from './agent/CopilotAgent.js';
-export type { CopilotAgentOptions } from './agent/CopilotAgent.js';
+export {
+  CopilotAgent,
+  type CopilotAgentOptions,
+} from './agent/CopilotAgent.js';
 
-export { ExecAgent } from './agent/ExecAgent.js';
-export type { ExecAgentOptions } from './agent/ExecAgent.js';
+export {
+  ExecAgent,
+  type ExecAgentOptions,
+} from './agent/ExecAgent.js';
 
-export { killTree, PiAgent } from './agent/PiAgent.js';
-export type { PiAgentOptions } from './agent/PiAgent.js';
+export {
+  killTree,
+  PiAgent,
+  type PiAgentOptions,
+} from './agent/PiAgent.js';
 
 export { Prerequisites } from './agent/Prerequisites.js';
 
 export { createCodingAgent, SUPPORTED_AGENTS } from './agent/agents.js';
 
 // engine
-export { Engine, MergeRecoveryAction } from './engine/Engine.js';
-export type {
-  EngineOptions,
-  MergeRecoveryFailure,
-  MergeRecoveryFn,
-  StopReason,
+export {
+  Engine,
+  MergeRecoveryAction,
+  type EngineOptions,
+  type MergeRecoveryFailure,
+  type MergeRecoveryFn,
+  type StopReason,
 } from './engine/Engine.js';
 
 export {
@@ -50,15 +62,26 @@ export {
   printRunSummary,
 } from './engine/RunReport.js';
 
-export { formatTaskGraph } from './engine/TaskGraph.js';
-export type { GraphNode } from './engine/TaskGraph.js';
+export {
+  formatTaskGraph,
+  type GraphNode,
+} from './engine/TaskGraph.js';
 
-export { MergeConflictError, Worktree } from './engine/Worktree.js';
-export type { WorktreeOptions } from './engine/Worktree.js';
+export {
+  MergeConflictError,
+  Worktree,
+  type WorktreeOptions,
+} from './engine/Worktree.js';
 
 // shared
-export { readMeta, sha256, shouldRegenerate, writeMeta } from './shared/BenchmarkMeta.js';
-export type { BenchmarkMeta, RegenInput } from './shared/BenchmarkMeta.js';
+export {
+  readMeta,
+  sha256,
+  shouldRegenerate,
+  writeMeta,
+  type BenchmarkMeta,
+  type RegenInput,
+} from './shared/BenchmarkMeta.js';
 
 export {
   COMMAND_SPEC,
@@ -68,12 +91,10 @@ export {
   formatEffectiveConfig,
   formatHelp,
   formatSettingsHelp,
-} from './shared/config.js';
-export type {
-  ConfigItem,
-  ExampleItem,
-  HelpItem,
-  HelpSettings,
+  type ConfigItem,
+  type ExampleItem,
+  type HelpItem,
+  type HelpSettings,
 } from './shared/config.js';
 
 export { env } from './shared/env.js';
@@ -87,22 +108,30 @@ export {
   Severity,
   handleOrchestratorError,
   withRetry,
+  type Logger,
+  type RetryOptions,
 } from './shared/errors.js';
-export type { Logger, RetryOptions } from './shared/errors.js';
 
-export { classifyBenchmark, parseMetrics, unmetSummary } from './shared/metrics.js';
-export type {
-  BenchmarkKind,
-  BenchmarkOutcome,
-  Criterion,
-  MetricResult,
+export {
+  classifyBenchmark,
+  parseMetrics,
+  unmetSummary,
+  type BenchmarkKind,
+  type BenchmarkOutcome,
+  type Criterion,
+  type MetricResult,
 } from './shared/metrics.js';
 
 export { appVersion } from './shared/version.js';
 
 // state
-export { defaultStateRoot, repoSlug, resolveStatePaths } from './state/StatePaths.js';
-export type { StatePathInputs, StatePaths } from './state/StatePaths.js';
+export {
+  defaultStateRoot,
+  repoSlug,
+  resolveStatePaths,
+  type StatePathInputs,
+  type StatePaths,
+} from './state/StatePaths.js';
 
 export {
   CONVERGENCE_THRESHOLD,
@@ -113,16 +142,37 @@ export {
   isInProgress,
 } from './state/Status.js';
 
-export { SCHEMA_VERSION, TaskDb, taskDirName } from './state/TaskDb.js';
-export type { ImportTask, NewTask, TaskRow, TaskStatus } from './state/TaskDb.js';
+export {
+  SCHEMA_VERSION,
+  TaskDb,
+  taskDirName,
+  type ImportTask,
+  type NewTask,
+  type TaskRow,
+  type TaskStatus,
+} from './state/TaskDb.js';
 
-export { TaskState } from './state/TaskState.js';
-export type { BenchmarkFn, TaskInfo, TickNull, TickResult } from './state/TaskState.js';
+export {
+  TaskState,
+  type BenchmarkFn,
+  type TaskInfo,
+  type TickNull,
+  type TickResult,
+} from './state/TaskState.js';
 
-export { addTask } from './state/addTask.js';
-export type { AddTaskOptions } from './state/addTask.js';
+export {
+  addTask,
+  type AddTaskOptions,
+} from './state/addTask.js';
 
 export { migrateShards } from './state/migrate.js';
 
-export { openDb, requireWal } from './state/sqlite.js';
-export type { Db, Row, RunResult, SqlParams, SqlValue } from './state/sqlite.js';
+export {
+  openDb,
+  requireWal,
+  type Db,
+  type Row,
+  type RunResult,
+  type SqlParams,
+  type SqlValue,
+} from './state/sqlite.js';
