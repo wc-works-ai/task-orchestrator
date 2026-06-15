@@ -70,6 +70,11 @@ describe('e2e: recovery / reconciliation', () => {
     expect(done?.status).toBe('CONVERGED');
     expect(done?.convergence).toBe(2);
     expect(fileExistsOnBranch(repo, 'main', 'landed.txt')).toBe(true);
+
+    // The sibling variant — worktree DIRECTORY deleted before restart, forcing a
+    // recreate-from-branch (vs. reconnect) — is not deterministic at the process
+    // level (self-heal recreates the worktree from the surviving branch on the
+    // next tick); it is covered at the integration tier.
   }, TIMEOUT);
 
   it('startup reconciliation: incomplete CREATING dropped, completed CREATING promoted, missing dir blocked', () => {
