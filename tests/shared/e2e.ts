@@ -90,6 +90,7 @@ export function runCli(args: readonly string[], opts: RunOpts): RunResult {
     env: {
       ...process.env,
       GIT_CONFIG_GLOBAL: '',
+      GIT_CONFIG_NOSYSTEM: '1',
       ORCH_REPO: opts.repo,
       ORCH_STATE_ROOT: opts.stateRoot,
       ...opts.env,
@@ -116,6 +117,7 @@ export function loopAsync(opts: RunOpts): Promise<RunResult> {
       env: {
         ...process.env,
         GIT_CONFIG_GLOBAL: '',
+        GIT_CONFIG_NOSYSTEM: '1',
         ORCH_REPO: opts.repo,
         ORCH_STATE_ROOT: opts.stateRoot,
         ...opts.env,

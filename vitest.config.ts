@@ -1,7 +1,8 @@
 import { defineConfig } from 'vitest/config';
 
-// Prevent tests from accessing user's ~/.gitconfig (avoids permission errors)
-const GIT_ENV = { GIT_CONFIG_GLOBAL: '' };
+// Prevent tests from accessing the user's global OR the machine's system gitconfig
+// (the system one sets core.autocrlf=true on Windows, which warns on LF fixtures).
+const GIT_ENV = { GIT_CONFIG_GLOBAL: '', GIT_CONFIG_NOSYSTEM: '1' };
 
 export default defineConfig({
   test: {
