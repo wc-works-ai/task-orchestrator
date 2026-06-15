@@ -8,6 +8,7 @@ import { TaskDb } from '../state/TaskDb.js';
 import { migrateShards } from '../state/migrate.js';
 import { Worktree, MergeConflictError } from './Worktree.js';
 import { env } from '../shared/env.js';
+import type { BenchmarkOutcome } from '../shared/metrics.js';
 import { handleOrchestratorError, type Logger } from '../shared/errors.js';
 import type { SpawnFn, TokenUsage } from '../agent/CodingAgent.js';
 
@@ -26,8 +27,10 @@ type SleepFn = (ms: number) => Promise<void>;
  *  tasks reached a terminal state (non-infinite/keep-alive). */
 export type StopReason = 'signal' | 'environment' | 'complete';
 
-/** Result of attempting to merge a converged task back to its base branch. */
-type MergeOutcome = 'merged' | 'locked' | 'rework';
+/** Result of attempting to merge a converged task back to its base branch.
+ *  'blocked' = the post-sync benchmark was a defect (crash/no_metrics); the task
+ *  is BLOCKED rather than merged on an unreliable result. */
+type MergeOutcome = 'merged' | 'locked' | 'rework' | 'blocked';
 
 const sleep: SleepFn = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -248,7 +251,12 @@ export class Engine {
         const existingWt = this.#worktrees.get(task.taskNumber);
         const checkCwd = existingWt?.path ?? this.#repo;
         this.#log(`T${task.taskNumber} | checking | running benchmark in ${existingWt ? 'worktree' : 'repo'}`);
-        let metric = await this.#run(task, checkCwd);
+        const checkOutcome = await this.#run(task, checkCwd);
+        if (checkOutcome.kind !== 'ok') {
+          this.#handleBenchmarkDefect(task, checkOutcome);
+          return { task: task.info, metric: checkOutcome.total, converged: false };
+        }
+        let metric = checkOutcome.total;
         this.#log(`T${task.taskNumber} check: metric=${metric}${metric === 0 ? ' (done)' : ' (needs work; target is 0)'}`);
 
         if (metric === 0) return await this.#handleZero(task, metric);
@@ -259,8 +267,13 @@ export class Engine {
         if (this.#spawn) {
           try {
             const wt = await this.#prepareWorktree(task);
-            metric = await this.#runSpawnCycle(task, wt, metric, ac.signal);
-            if (metric === -1) return { task: null, metric: 0, converged: false, stopped: true, ...(this.#environmentError !== undefined && { environmentError: this.#environmentError }) };
+            const cycle = await this.#runSpawnCycle(task, wt, metric, ac.signal);
+            if (cycle === null) return { task: null, metric: 0, converged: false, stopped: true, ...(this.#environmentError !== undefined && { environmentError: this.#environmentError }) };
+            if (cycle.kind !== 'ok') {
+              this.#handleBenchmarkDefect(task, cycle);
+              return { task: task.info, metric: cycle.total, converged: false };
+            }
+            metric = cycle.total;
             if (metric === 0) return await this.#handleZero(task, metric, wt);
           } catch (e: unknown) {
             const msg = this.#errorDetail(e);
@@ -392,6 +405,10 @@ export class Engine {
             this.#log(`T${task.taskNumber} base advanced and broke acceptance after sync; re-running agent against the updated base`, 'transition');
             return { task: task.info, metric, converged: false };
           }
+          if (outcome === 'blocked') {
+            // #mergeAndRemove already BLOCKED the task (post-sync benchmark defect).
+            return { task: task.info, metric, converged: false };
+          }
         } catch (e: unknown) {
           if (e instanceof MergeConflictError) {
             // Park the task as-is: keep its branch, do not rerun. The fleet keeps
@@ -435,7 +452,14 @@ export class Engine {
       // benchmark: if absorbing the base broke acceptance, send the task back
       // to the agent instead of merging broken work.
       await wt.syncWithBase();
-      if (await this.#run(task, wt.path) !== 0) {
+      const postSync = await this.#run(task, wt.path);
+      if (postSync.kind !== 'ok') {
+        // Absorbing the base made the benchmark unreliable (infra regression):
+        // block rather than merge or churn the agent against a broken check.
+        this.#handleBenchmarkDefect(task, postSync);
+        return 'blocked';
+      }
+      if (postSync.total !== 0) {
         task.resetConvergence();
         return 'rework';
       }
@@ -586,7 +610,9 @@ export class Engine {
     }
   }
 
-  async #runSpawnCycle(task: TaskState, wt: Worktree | null, metric: number, signal: AbortSignal): Promise<number> {
+  /** Spawn the agent, then re-check. Returns the post-agent {@link BenchmarkOutcome},
+   *  or `null` when the run was stopped (an auth failure, handled as environmental). */
+  async #runSpawnCycle(task: TaskState, wt: Worktree | null, metric: number, signal: AbortSignal): Promise<BenchmarkOutcome | null> {
     this.#log(`T${task.taskNumber} action: starting agent because metric is ${metric}`);
     const spawnResult = await this.#spawn!(task, wt?.path, signal);
     this.#log(
@@ -598,16 +624,18 @@ export class Engine {
     );
     if (spawnResult.authFailure) {
       this.#handleEnvironmentalFailure(task, metric, spawnResult.error ?? 'coding agent authentication failed');
-      return -1;
+      return null;
     }
     // Auto-commit any uncommitted agent work so merge captures everything
     // the benchmark validates (fixes B1: uncommitted changes lost at merge).
     if (wt?.autoCommit('agent work (auto-committed by orchestrator)')) {
       this.#log(`T${task.taskNumber} auto-committed uncommitted agent work`);
     }
-    const newMetric = await this.#run(task, wt?.path ?? this.#repo);
-    this.#log(`T${task.taskNumber} check after agent (${wt ? 'worktree' : 'repo'}): metric=${newMetric}${newMetric === 0 ? ' (done)' : ' (still needs work)'}`);
-    return newMetric;
+    const outcome = await this.#run(task, wt?.path ?? this.#repo);
+    const note = outcome.kind !== 'ok' ? ' (benchmark unreliable)'
+      : outcome.total === 0 ? ' (done)' : ' (still needs work)';
+    this.#log(`T${task.taskNumber} check after agent (${wt ? 'worktree' : 'repo'}): metric=${outcome.total}${note}`);
+    return outcome;
   }
 
   /**
@@ -623,6 +651,24 @@ export class Engine {
     task.release(Status.FAILED);
     this.#log(`T${task.taskNumber} environment issue: ${detail} — stopping run (fail fast); not counted against retries; fix and rerun`, 'transition');
     return { task: null, metric: 0, converged: false, stopped: true, environmentError: detail };
+  }
+
+  /**
+   * A benchmark defect (crash, timeout, or no METRIC line) makes the result
+   * unreliable. The agent cannot fix a broken benchmark, so spawning it would
+   * only burn retries. Block this one task with a structured reason and let the
+   * fleet keep running — the benchmark.js must be fixed, then `--unblock`.
+   */
+  #handleBenchmarkDefect(task: TaskState, outcome: BenchmarkOutcome): void {
+    const reason = outcome.kind === 'crash'
+      ? 'benchmark crashed or timed out — result unreliable'
+      : 'benchmark emitted no METRIC line — it measures nothing';
+    task.markBlocked();
+    this.#log(
+      `T${task.taskNumber} benchmark defect: ${reason}; task BLOCKED ` +
+      `(not the agent's fault, no retry consumed) — fix benchmark.js (see benchmark.log) then --unblock`,
+      'transition',
+    );
   }
 
   #experimentLabel(count: number): string {
@@ -645,14 +691,18 @@ export class Engine {
     this.#log(`${context}: ${this.#errorDetail(e)}`, 'always');
   }
 
-  async #run(task: TaskState, cwd: string): Promise<number> {
+  async #run(task: TaskState, cwd: string): Promise<BenchmarkOutcome> {
     try {
       const info = { ...task.info, cwd };
-      return await this.#bench(info);
+      const result = await this.#bench(info);
+      // A bare number is shorthand for a clean run; an outcome passes through.
+      return typeof result === 'number'
+        ? { kind: 'ok', total: result, criteria: [] }
+        : result;
     }
     catch (e: unknown) {
       this.#log(`T${task.taskNumber} benchmark error: ${this.#errorDetail(e)}`);
-      return 1;
+      return { kind: 'crash', total: 1, criteria: [] };
     }
   }
 

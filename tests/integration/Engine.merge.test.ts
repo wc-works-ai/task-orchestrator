@@ -441,6 +441,32 @@ describe('Engine merge robustness', () => {
     expect(execSync('git stash list', { cwd: repoDir, encoding: 'utf-8' })).toBe('');
   });
 
+  it('BLOCKS the task when the post-sync re-verify is a benchmark crash', async () => {
+    const { repoDir, tasksDir, worktreesDir, spawn } = scenario(dir, s);
+    writeFileSync(join(repoDir, 'tracked.txt'), 'base');
+    execSync('git add tracked.txt && git commit -m "tracked"', { cwd: repoDir });
+    // Same call order as the rework case, but the post-sync re-verify crashes
+    // instead of reporting a number → defect → BLOCKED (not rework, not merge).
+    const benchmark = vi.fn()
+      .mockResolvedValueOnce(1).mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(0).mockResolvedValueOnce(0)
+      .mockResolvedValueOnce({ kind: 'crash', total: 1, criteria: [] }).mockResolvedValue(0);
+    const engine = new Engine(tasksDir, { benchmark, spawn, repoDir, worktreesDir, autoStashBeforeMerge: true, taskDb: s.tdb });
+
+    await engine.tick();
+    await engine.tick();
+    writeFileSync(join(repoDir, 'tracked.txt'), 'dirty parent change'); // forces a pre-merge stash
+    const r = await engine.tick();
+
+    expect(r.converged).toBe(false);
+    const t = TaskState.scan(s.tdb, tasksDir).get('1')!;
+    expect(t.isBlocked).toBe(true);                                     // benchmark defect → BLOCKED
+    expect(t.failureCount).toBe(0);                                     // not the agent's fault
+    expect(existsSync(join(worktreesDir, 'T01-x', '.git'))).toBe(true); // worktree kept for inspection
+    expect(execSync('git stash list', { cwd: repoDir, encoding: 'utf-8' })).toBe(''); // stash popped
+    expect(existsSync(join(repoDir, LOCK))).toBe(false);                // merge lock released
+  });
+
   it('logs a warning when stash pop fails after merge cleanup', async () => {
     const repoDir = resolve(dir, 'repo');
     const tasksDir = resolve(dir, 'tasks');

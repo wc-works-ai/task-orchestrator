@@ -338,7 +338,9 @@ const engine = new Engine(dir, {
       console.log(`T${t.number} unmet: ${summary}`);
       console.log(`  why: ${reasonPath}`);
     }
-    return outcome.total;
+    // Hand the Engine the full structured outcome so a crash / no-METRIC run is
+    // never mistaken for ordinary "work remaining".
+    return outcome;
   },
 });
 
