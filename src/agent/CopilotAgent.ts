@@ -24,11 +24,11 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export interface CopilotCliAgentOptions extends CodingAgentOptions {
-  // CopilotCliAgent accepts exactly CodingAgentOptions; no extras
+export interface CopilotAgentOptions extends CodingAgentOptions {
+  // CopilotAgent accepts exactly CodingAgentOptions; no extras
 }
 
-export class CopilotCliAgent implements CodingAgent {
+export class CopilotAgent implements CodingAgent {
   readonly name = 'copilot';
   readonly #model: string | undefined;
   readonly #reasoning: string | undefined;
@@ -37,7 +37,7 @@ export class CopilotCliAgent implements CodingAgent {
   readonly #workDir: string;
   readonly #agentLogMaxBytes: number;
 
-  constructor(opts: CopilotCliAgentOptions = {}) {
+  constructor(opts: CopilotAgentOptions = {}) {
     this.#model = opts.model;
     this.#reasoning = opts.reasoning;
     this.#envModel = env.model;
@@ -58,7 +58,7 @@ export class CopilotCliAgent implements CodingAgent {
   }
 
   checkPrerequisites(): PrerequisiteResult[] {
-    return [CopilotCliAgent.#checkBinary(), CopilotCliAgent.#checkAuth()];
+    return [CopilotAgent.#checkBinary(), CopilotAgent.#checkAuth()];
   }
 
   static #checkBinary(): PrerequisiteResult {
@@ -99,7 +99,7 @@ export class CopilotCliAgent implements CodingAgent {
     if (reasoning) args.push('--reasoning-effort', reasoning);
     const command = resolveCliCommand('copilot', args);
 
-    CopilotCliAgent.#appendAgentLog(agentLog, [
+    CopilotAgent.#appendAgentLog(agentLog, [
       `=== agent session started at ${new Date().toISOString()} ===`,
       '=== token usage unavailable: copilot -p -s does not report token usage ===',
       '',
@@ -132,7 +132,7 @@ export class CopilotCliAgent implements CodingAgent {
       let logWriteFailed = false;
 
       const handleData = (txt: string) => {
-        logWriteFailed = CopilotCliAgent.#appendAgentLog(agentLog, txt, 'write agent output', logWriteFailed);
+        logWriteFailed = CopilotAgent.#appendAgentLog(agentLog, txt, 'write agent output', logWriteFailed);
 
         const metricScan = `${metricTail}${txt}`;
         iterations += countOccurrences(metricScan, METRIC_MARKER);
@@ -151,7 +151,7 @@ export class CopilotCliAgent implements CodingAgent {
         const authError = 'Copilot CLI authentication failed; sign in or set COPILOT_GITHUB_TOKEN/GITHUB_TOKEN.';
         const exitError = `copilot exited with code ${code ?? 'unknown'}`;
         const error = aborted ? abortedError : authFailure ? authError : code === 0 ? '' : exitError;
-        CopilotCliAgent.#appendAgentLog(
+        CopilotAgent.#appendAgentLog(
           agentLog,
           [
             `=== agent session ended (exit ${code}) ===`,
@@ -187,7 +187,7 @@ export class CopilotCliAgent implements CodingAgent {
       appendAgentLog(agentLog, text);
       return false;
     } catch (error: unknown) {
-      console.error(`[CopilotCliAgent] failed to ${action}: ${errorMessage(error)}`);
+      console.error(`[CopilotAgent] failed to ${action}: ${errorMessage(error)}`);
       return true;
     }
   }

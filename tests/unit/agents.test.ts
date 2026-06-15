@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createCodingAgent, SUPPORTED_AGENTS } from '../../src/agent/agents.js';
-import { PiSpawner, type PiSpawnerOptions } from '../../src/agent/PiSpawner.js';
+import { PiAgent, type PiAgentOptions } from '../../src/agent/PiAgent.js';
 import { memStateDb, seedState, type StateDb } from '../shared/helpers.js';
 
 vi.mock('node:child_process', () => ({
@@ -33,12 +33,12 @@ describe('createCodingAgent', () => {
   });
 
   it.each([undefined, '', 'pi'])('creates the pi agent for %s', (name) => {
-    const opts: PiSpawnerOptions = { model: 'default-model', workDir: dir };
+    const opts: PiAgentOptions = { model: 'default-model', workDir: dir };
     const task = makeTask(s, dir);
     const agent = createCodingAgent(name, opts);
 
     expect(agent.name).toBe('pi');
-    expect((agent as PiSpawner).resolveModel(task)).toBe(new PiSpawner(opts).modelFor(task));
+    expect((agent as PiAgent).resolveModel(task)).toBe(new PiAgent(opts).modelFor(task));
   });
 
   it('rejects unsupported agents with supported names', () => {

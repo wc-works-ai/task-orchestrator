@@ -85,7 +85,7 @@ function main() {
 // ── Credential preflight ────────────────────────────────────────────────────
 // Run the real `--check` first. For copilot this fully covers auth; for pi the
 // binary must exist but pi's own auth check is lenient, so we additionally
-// require an API key env (matching PiSpawner). Anything missing → SKIP, not fail.
+// require an API key env (matching PiAgent). Anything missing → SKIP, not fail.
 function preflight(repo, stateRoot) {
   console.log('');
   console.log(`▶ preflight: orchestrator --check`);

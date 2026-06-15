@@ -37,7 +37,7 @@ Lower layers never import higher ones. `shared/` is the base; `cli.ts` sits on t
 
 **agent/** — how work gets done in a worktree
 - `CodingAgent` — interface + shared helpers · `agents` — registry
-- `PiSpawner` + `PiCommand` — pi · `CopilotCliAgent` — copilot · `ExecAgent` — deterministic command agent
+- `PiAgent` + `PiCommand` — pi · `CopilotAgent` — copilot · `ExecAgent` — deterministic command agent
 - `AgentLog` — per-run logs · `Prerequisites` — preflight checks
 
 **engine/** — orchestration

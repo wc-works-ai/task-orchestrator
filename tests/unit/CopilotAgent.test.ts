@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
-import { CopilotCliAgent } from '../../src/agent/CopilotCliAgent.js';
+import { CopilotAgent } from '../../src/agent/CopilotAgent.js';
 import { memStateDb, seedState, type StateDb } from '../shared/helpers.js';
 
 vi.mock('node:child_process', () => ({
@@ -35,7 +35,7 @@ function make(dir: string, content = '## Goal\nTest') {
   return seedState(s, dir, 1, 'copilot', { autoresearch: content });
 }
 
-describe('CopilotCliAgent', () => {
+describe('CopilotAgent', () => {
   let dir = '';
 
   beforeEach(() => {
@@ -60,7 +60,7 @@ describe('CopilotCliAgent', () => {
     const child = mockChild();
     vi.mocked(spawn).mockReturnValue(child);
 
-    const promise = new CopilotCliAgent({ model: 'gpt-5.4', reasoning: 'high' }).spawn(task, join(dir, 'worktree'));
+    const promise = new CopilotAgent({ model: 'gpt-5.4', reasoning: 'high' }).spawn(task, join(dir, 'worktree'));
     setTimeout(() => child.emit('close', 0), 5);
     const result = await promise;
 
@@ -81,7 +81,7 @@ describe('CopilotCliAgent', () => {
     const child = mockChild();
     vi.mocked(spawn).mockReturnValue(child);
 
-    const promise = new CopilotCliAgent({ workDir: 'Q:\\work-dir' }).spawn(make(dir));
+    const promise = new CopilotAgent({ workDir: 'Q:\\work-dir' }).spawn(make(dir));
     setTimeout(() => child.emit('close', 0), 5);
     const result = await promise;
 
@@ -94,7 +94,7 @@ describe('CopilotCliAgent', () => {
     const child = mockChild();
     vi.mocked(spawn).mockReturnValue(child);
 
-    const promise = new CopilotCliAgent().spawn(task, dir);
+    const promise = new CopilotAgent().spawn(task, dir);
     setTimeout(() => child.emit('close', 0), 5);
     const result = await promise;
 
@@ -111,7 +111,7 @@ describe('CopilotCliAgent', () => {
     const child = mockChild();
     vi.mocked(spawn).mockReturnValue(child);
 
-    const promise = new CopilotCliAgent().spawn(make(dir), dir);
+    const promise = new CopilotAgent().spawn(make(dir), dir);
     setTimeout(() => child.emit('close', 0), 5);
     await promise;
 
@@ -122,7 +122,7 @@ describe('CopilotCliAgent', () => {
 
   it('uses task metadata before constructor defaults', async () => {
     const task = make(dir, '**Model:** task-model\n**Reasoning:** medium\n## Goal\nTest');
-    const agent = new CopilotCliAgent({ model: 'default-model', reasoning: 'high' });
+    const agent = new CopilotAgent({ model: 'default-model', reasoning: 'high' });
     const child = mockChild();
     vi.mocked(spawn).mockReturnValue(child);
 
@@ -138,7 +138,7 @@ describe('CopilotCliAgent', () => {
     const child = mockChild();
     vi.mocked(spawn).mockReturnValue(child);
 
-    const promise = new CopilotCliAgent().spawn(make(dir), dir);
+    const promise = new CopilotAgent().spawn(make(dir), dir);
     setTimeout(() => child.emit('close', 2), 5);
     const result = await promise;
 
@@ -150,7 +150,7 @@ describe('CopilotCliAgent', () => {
     const child = mockChild();
     vi.mocked(spawn).mockReturnValue(child);
 
-    const promise = new CopilotCliAgent().spawn(make(dir), dir);
+    const promise = new CopilotAgent().spawn(make(dir), dir);
     setTimeout(() => {
       child.stdout!.emit('data', Buffer.from('not logged in: set COPILOT_GITHUB_TOKEN\n'));
       child.emit('close', 1);
@@ -167,7 +167,7 @@ describe('CopilotCliAgent', () => {
     const child = mockChild();
     vi.mocked(spawn).mockReturnValue(child);
 
-    const promise = new CopilotCliAgent().spawn(task, dir);
+    const promise = new CopilotAgent().spawn(task, dir);
     setTimeout(() => {
       child.stdout!.emit('data', Buffer.from('METRIC failures=1\n'));
       child.stderr!.emit('data', Buffer.from('METRIC failures=0\n'));
@@ -190,7 +190,7 @@ describe('CopilotCliAgent', () => {
     vi.mocked(spawn).mockReturnValue(child);
     const ac = new AbortController();
 
-    const promise = new CopilotCliAgent().spawn(make(dir), dir, ac.signal);
+    const promise = new CopilotAgent().spawn(make(dir), dir, ac.signal);
     ac.abort();
     setTimeout(() => child.emit('close', null), 5);
     const result = await promise;
@@ -204,7 +204,7 @@ describe('CopilotCliAgent', () => {
     const child = mockChild();
     vi.mocked(spawn).mockReturnValue(child);
 
-    const promise = new CopilotCliAgent().spawn(make(dir), dir);
+    const promise = new CopilotAgent().spawn(make(dir), dir);
     setTimeout(() => child.emit('error', new Error('spawn blew up')), 5);
     const result = await promise;
 
@@ -216,7 +216,7 @@ describe('CopilotCliAgent', () => {
     const child = mockChild();
     vi.mocked(spawn).mockReturnValue(child);
 
-    const promise = new CopilotCliAgent().spawn(make(dir), dir);
+    const promise = new CopilotAgent().spawn(make(dir), dir);
     setTimeout(() => {
       child.emit('error', new Error('spawn blew up'));
       child.emit('close', 0);
@@ -231,7 +231,7 @@ describe('CopilotCliAgent', () => {
     const child = mockChild();
     vi.mocked(spawn).mockReturnValue(child);
 
-    const promise = new CopilotCliAgent({ agentLogMaxBytes: 0 }).spawn(make(dir), dir);
+    const promise = new CopilotAgent({ agentLogMaxBytes: 0 }).spawn(make(dir), dir);
     setTimeout(() => child.emit('close', 0), 5);
     const result = await promise;
 

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { PiSpawner } from '../../src/agent/PiSpawner.js';
-import { CopilotCliAgent } from '../../src/agent/CopilotCliAgent.js';
+import { PiAgent } from '../../src/agent/PiAgent.js';
+import { CopilotAgent } from '../../src/agent/CopilotAgent.js';
 import { Prerequisites } from '../../src/agent/Prerequisites.js';
 import type { CodingAgent, PrerequisiteResult } from '../../src/agent/CodingAgent.js';
 
@@ -14,7 +14,7 @@ function spawnResult(status: number | null, stdout = '', stderr = ''): ReturnTyp
   return { status, stdout, stderr } as ReturnType<typeof spawnSync>;
 }
 
-describe('PiSpawner.checkPrerequisites', () => {
+describe('PiAgent.checkPrerequisites', () => {
   beforeEach(() => {
     vi.mocked(spawnSync).mockReset();
   });
@@ -24,7 +24,7 @@ describe('PiSpawner.checkPrerequisites', () => {
     const prev = process.env.OPENROUTER_API_KEY;
     process.env.OPENROUTER_API_KEY = 'sk-test';
     try {
-      const agent = new PiSpawner();
+      const agent = new PiAgent();
       const results = agent.checkPrerequisites();
 
       expect(results).toHaveLength(2);
@@ -37,7 +37,7 @@ describe('PiSpawner.checkPrerequisites', () => {
 
   it('reports pi binary found', () => {
     vi.mocked(spawnSync).mockReturnValue(spawnResult(0, '0.80.0\n'));
-    const agent = new PiSpawner();
+    const agent = new PiAgent();
     const results = agent.checkPrerequisites();
     const pi = results.find(r => r.name === 'pi')!;
 
@@ -47,7 +47,7 @@ describe('PiSpawner.checkPrerequisites', () => {
 
   it('reports pi binary not found', () => {
     vi.mocked(spawnSync).mockReturnValue(spawnResult(1));
-    const agent = new PiSpawner();
+    const agent = new PiAgent();
     const results = agent.checkPrerequisites();
     const pi = results.find(r => r.name === 'pi')!;
 
@@ -57,7 +57,7 @@ describe('PiSpawner.checkPrerequisites', () => {
 
   it('reports pi version from stderr', () => {
     vi.mocked(spawnSync).mockReturnValue(spawnResult(0, '', '0.79.0\n'));
-    const agent = new PiSpawner();
+    const agent = new PiAgent();
     const results = agent.checkPrerequisites();
     const pi = results.find(r => r.name === 'pi')!;
 
@@ -70,7 +70,7 @@ describe('PiSpawner.checkPrerequisites', () => {
     const prev = process.env.OPENROUTER_API_KEY;
     process.env.OPENROUTER_API_KEY = 'sk-test-key';
     try {
-      const agent = new PiSpawner();
+      const agent = new PiAgent();
       const results = agent.checkPrerequisites();
       const auth = results.find(r => r.name === 'auth')!;
 
@@ -89,7 +89,7 @@ describe('PiSpawner.checkPrerequisites', () => {
     delete process.env.OPENROUTER_API_KEY;
     process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
     try {
-      const agent = new PiSpawner();
+      const agent = new PiAgent();
       const results = agent.checkPrerequisites();
       const auth = results.find(r => r.name === 'auth')!;
 
@@ -110,7 +110,7 @@ describe('PiSpawner.checkPrerequisites', () => {
     delete process.env.OPENROUTER_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
     try {
-      const agent = new PiSpawner();
+      const agent = new PiAgent();
       const results = agent.checkPrerequisites();
       const auth = results.find(r => r.name === 'auth')!;
 
@@ -123,7 +123,7 @@ describe('PiSpawner.checkPrerequisites', () => {
   });
 });
 
-describe('CopilotCliAgent.checkPrerequisites', () => {
+describe('CopilotAgent.checkPrerequisites', () => {
   beforeEach(() => {
     vi.mocked(spawnSync).mockReset();
   });
@@ -133,7 +133,7 @@ describe('CopilotCliAgent.checkPrerequisites', () => {
     const prev = process.env.COPILOT_GITHUB_TOKEN;
     process.env.COPILOT_GITHUB_TOKEN = 'ghu_test';
     try {
-      const agent = new CopilotCliAgent();
+      const agent = new CopilotAgent();
       const results = agent.checkPrerequisites();
 
       expect(results).toHaveLength(2);
@@ -146,7 +146,7 @@ describe('CopilotCliAgent.checkPrerequisites', () => {
 
   it('reports copilot binary found', () => {
     vi.mocked(spawnSync).mockReturnValue(spawnResult(0, '1.2.3\n'));
-    const agent = new CopilotCliAgent();
+    const agent = new CopilotAgent();
     const results = agent.checkPrerequisites();
     const copilot = results.find(r => r.name === 'copilot')!;
 
@@ -156,7 +156,7 @@ describe('CopilotCliAgent.checkPrerequisites', () => {
 
   it('reports copilot binary not found', () => {
     vi.mocked(spawnSync).mockReturnValue(spawnResult(1));
-    const agent = new CopilotCliAgent();
+    const agent = new CopilotAgent();
     const results = agent.checkPrerequisites();
     const copilot = results.find(r => r.name === 'copilot')!;
 
@@ -166,7 +166,7 @@ describe('CopilotCliAgent.checkPrerequisites', () => {
 
   it('reports copilot version from stderr', () => {
     vi.mocked(spawnSync).mockReturnValue(spawnResult(0, '', '1.0.0-beta\n'));
-    const agent = new CopilotCliAgent();
+    const agent = new CopilotAgent();
     const results = agent.checkPrerequisites();
     const copilot = results.find(r => r.name === 'copilot')!;
 
@@ -179,7 +179,7 @@ describe('CopilotCliAgent.checkPrerequisites', () => {
     const prev = process.env.COPILOT_GITHUB_TOKEN;
     process.env.COPILOT_GITHUB_TOKEN = 'ghu_test';
     try {
-      const agent = new CopilotCliAgent();
+      const agent = new CopilotAgent();
       const results = agent.checkPrerequisites();
       const auth = results.find(r => r.name === 'auth')!;
 
@@ -198,7 +198,7 @@ describe('CopilotCliAgent.checkPrerequisites', () => {
     delete process.env.COPILOT_GITHUB_TOKEN;
     process.env.GITHUB_TOKEN = 'ghp_test';
     try {
-      const agent = new CopilotCliAgent();
+      const agent = new CopilotAgent();
       const results = agent.checkPrerequisites();
       const auth = results.find(r => r.name === 'auth')!;
 
@@ -223,7 +223,7 @@ describe('CopilotCliAgent.checkPrerequisites', () => {
       return spawnResult(1);
     }) as typeof spawnSync);
     try {
-      const agent = new CopilotCliAgent();
+      const agent = new CopilotAgent();
       const results = agent.checkPrerequisites();
       const auth = results.find(r => r.name === 'auth')!;
 
@@ -246,7 +246,7 @@ describe('CopilotCliAgent.checkPrerequisites', () => {
       return spawnResult(1);
     }) as typeof spawnSync);
     try {
-      const agent = new CopilotCliAgent();
+      const agent = new CopilotAgent();
       const results = agent.checkPrerequisites();
       const auth = results.find(r => r.name === 'auth')!;
 
@@ -269,7 +269,7 @@ describe('Prerequisites.check with agent', () => {
     const prevO = process.env.OPENROUTER_API_KEY;
     process.env.OPENROUTER_API_KEY = 'sk-test';
     try {
-      const agent = new PiSpawner();
+      const agent = new PiAgent();
       const results = await Prerequisites.check(agent);
 
       expect(results.map(r => r.name)).toEqual(['node', 'pi', 'auth']);

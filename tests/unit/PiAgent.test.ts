@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
-import { PiSpawner, killTree } from '../../src/agent/PiSpawner.js';
+import { PiAgent, killTree } from '../../src/agent/PiAgent.js';
 import { memStateDb, seedState, type StateDb } from '../shared/helpers.js';
 
 vi.mock('node:child_process', () => ({
@@ -57,7 +57,7 @@ function joinedCalls(spy: { mock: { calls: readonly (readonly unknown[])[] } }):
   return spy.mock.calls.map((call: readonly unknown[]) => call.map(String).join(' ')).join('\n');
 }
 
-describe('PiSpawner', () => {
+describe('PiAgent', () => {
   let dir = '';
   beforeEach(() => {
     dir = setup();
@@ -79,27 +79,27 @@ describe('PiSpawner', () => {
 
   it('uses model from task metadata', () => {
     const t = make(dir, 1, 'a', '- **Model:** custom-model\n## Goal\nTest');
-    expect(new PiSpawner().modelFor(t)).toBe('custom-model');
+    expect(new PiAgent().modelFor(t)).toBe('custom-model');
   });
 
   it('falls back to constructor default', () => {
     const t = make(dir, 1, 'a');
-    expect(new PiSpawner({ model: 'fallback' }).modelFor(t)).toBe('fallback');
+    expect(new PiAgent({ model: 'fallback' }).modelFor(t)).toBe('fallback');
   });
 
   it('falls back to ORCH_MODEL env var', () => {
     process.env.ORCH_MODEL = 'env-model';
     const t = make(dir, 1, 'a');
-    expect(new PiSpawner().modelFor(t)).toBe('env-model');
+    expect(new PiAgent().modelFor(t)).toBe('env-model');
   });
 
   it('uses pi default when no model is configured', () => {
-    expect(new PiSpawner().modelFor(make(dir, 1, 'a'))).toBeUndefined();
+    expect(new PiAgent().modelFor(make(dir, 1, 'a'))).toBeUndefined();
   });
 
   it('resolves reasoning from task metadata before defaults', () => {
     const t = make(dir, 1, 'a', '- **Reasoning:** high\n## Goal\nTest');
-    expect(new PiSpawner({ reasoning: 'medium' }).resolveReasoning(t)).toBe('high');
+    expect(new PiAgent({ reasoning: 'medium' }).resolveReasoning(t)).toBe('high');
   });
 
   it('falls back to configured reasoning without changing pi args', async () => {
@@ -107,7 +107,7 @@ describe('PiSpawner', () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
-    const p = new PiSpawner({ reasoning: 'high' }).spawn(t, dir);
+    const p = new PiAgent({ reasoning: 'high' }).spawn(t, dir);
     setTimeout(() => mock.emit('close', 0), 5);
     expect((await p).success).toBe(true);
     const args = vi.mocked(spawn).mock.calls[0]?.[1];
@@ -116,7 +116,7 @@ describe('PiSpawner', () => {
   });
 
   it('returns undefined reasoning when neither task nor defaults configure it', () => {
-    expect(new PiSpawner().resolveReasoning(make(dir, 1, 'a'))).toBeUndefined();
+    expect(new PiAgent().resolveReasoning(make(dir, 1, 'a'))).toBeUndefined();
   });
 
   it('spawn calls pi with correct model', async () => {
@@ -125,7 +125,7 @@ describe('PiSpawner', () => {
     vi.mocked(spawn).mockReturnValue(mock);
     const worktree = makeWorktree(dir);
 
-    const p = new PiSpawner().spawn(t, worktree);
+    const p = new PiAgent().spawn(t, worktree);
     setTimeout(() => mock.emit('close', 0), 5);
     const r = await p;
     expect(r.success).toBe(true);
@@ -139,7 +139,7 @@ describe('PiSpawner', () => {
     vi.mocked(spawn).mockReturnValue(mock);
     const worktree = makeWorktree(dir);
 
-    const p = new PiSpawner().spawn(t, worktree);
+    const p = new PiAgent().spawn(t, worktree);
     setTimeout(() => mock.emit('close', 0), 5);
     const r = await p;
     expect(r.success).toBe(true);
@@ -154,7 +154,7 @@ describe('PiSpawner', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     try {
-      const p = new PiSpawner().spawn(t, dir);
+      const p = new PiAgent().spawn(t, dir);
       setTimeout(() => {
         mock.stdout!.emit('data', Buffer.from(JSON.stringify({ type: 'tool_execution_start', toolName: 'bash', arguments: { command: 'npm run t' } }) + '\n'));
         mock.stdout!.emit('data', Buffer.from(JSON.stringify({ type: 'tool_execution_end', toolName: 'bash', result: { content: [{ type: 'text', text: 'METRIC branch_gap=42.5\nnested test output' }] } }) + '\n'));
@@ -182,7 +182,7 @@ describe('PiSpawner', () => {
     const fallback = mockChild();
     vi.mocked(spawn).mockReturnValueOnce(primary).mockReturnValueOnce(fallback);
 
-    const p = new PiSpawner({ model: 'gpt-5.5', fallbackModel: 'backup-model' }).spawn(make(dir, 1, 'a'));
+    const p = new PiAgent({ model: 'gpt-5.5', fallbackModel: 'backup-model' }).spawn(make(dir, 1, 'a'));
     setTimeout(() => {
       primary.stderr!.emit('data', Buffer.from('No API key found for azure-openai-responses.\n'));
       primary.emit('close', 1);
@@ -206,7 +206,7 @@ describe('PiSpawner', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     try {
-      const p = new PiSpawner().spawn(t, dir);
+      const p = new PiAgent().spawn(t, dir);
       setTimeout(() => mock.emit('close', 0), 5);
       const r = await p;
       expect(r.success).toBe(true);
@@ -223,7 +223,7 @@ describe('PiSpawner', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     try {
-      const p = new PiSpawner({
+      const p = new PiAgent({
         progressTimeout: 500,
         progressCheckInterval: 10,
         progressStatusInterval: 40,
@@ -248,7 +248,7 @@ describe('PiSpawner', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     try {
-      const p = new PiSpawner({
+      const p = new PiAgent({
         progressTimeout: 500,
         progressCheckInterval: 20,
         progressStatusInterval: 40,
@@ -276,7 +276,7 @@ describe('PiSpawner', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     try {
-      const p = new PiSpawner({
+      const p = new PiAgent({
         progressTimeout: 1500,
         progressCheckInterval: 20,
         progressStatusInterval: 20,
@@ -295,7 +295,7 @@ describe('PiSpawner', () => {
   it('returns failure on non-zero exit', async () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
-    const p = new PiSpawner().spawn(make(dir, 1, 'a'));
+    const p = new PiAgent().spawn(make(dir, 1, 'a'));
     setTimeout(() => mock.emit('close', 1), 5);
     expect((await p).success).toBe(false);
   });
@@ -303,7 +303,7 @@ describe('PiSpawner', () => {
   it('reports unknown when pi exits without a code', async () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
-    const p = new PiSpawner().spawn(make(dir, 1, 'a'));
+    const p = new PiAgent().spawn(make(dir, 1, 'a'));
     setTimeout(() => mock.emit('close', null), 5);
     const r = await p;
     expect(r.success).toBe(false);
@@ -316,7 +316,7 @@ describe('PiSpawner', () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     try {
-      const p = new PiSpawner({ model: 'gpt-5.5' }).spawn(make(dir, 1, 'a'));
+      const p = new PiAgent({ model: 'gpt-5.5' }).spawn(make(dir, 1, 'a'));
       setTimeout(() => {
         mock.stderr!.emit('data', Buffer.from('No API key found for azure-openai-responses.\n'));
         mock.emit('close', 1);
@@ -339,7 +339,7 @@ describe('PiSpawner', () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     try {
-      const p = new PiSpawner({ model: 'gpt-5.5', fallbackModel: 'backup-model' }).spawn(make(dir, 1, 'a'));
+      const p = new PiAgent({ model: 'gpt-5.5', fallbackModel: 'backup-model' }).spawn(make(dir, 1, 'a'));
       setTimeout(() => {
         primary.stderr!.emit('data', Buffer.from('No API key found for azure-openai-responses.\n'));
         primary.emit('close', 1);
@@ -359,7 +359,7 @@ describe('PiSpawner', () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
-    const p = new PiSpawner().spawn(t, dir);
+    const p = new PiAgent().spawn(t, dir);
     setTimeout(() => {
       mock.stderr!.emit('data', Buffer.from('warning: something bad\n'));
       mock.emit('close', 0);
@@ -377,7 +377,7 @@ describe('PiSpawner', () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
-    const p = new PiSpawner({ agentLogRaw: true }).spawn(t, dir);
+    const p = new PiAgent({ agentLogRaw: true }).spawn(t, dir);
     setTimeout(() => {
       mock.stderr!.emit('data', Buffer.from('warning: something bad\n'));
       mock.emit('close', 0);
@@ -395,7 +395,7 @@ describe('PiSpawner', () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
-    const p = new PiSpawner().spawn(t, dir);
+    const p = new PiAgent().spawn(t, dir);
     setTimeout(() => {
       mock.stdout!.emit('data', Buffer.from(JSON.stringify({
         type: 'message_end',
@@ -414,7 +414,7 @@ describe('PiSpawner', () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
-    const p = new PiSpawner().spawn(t, dir);
+    const p = new PiAgent().spawn(t, dir);
     setTimeout(() => {
       mock.stdout!.emit('data', Buffer.from(JSON.stringify({
         type: 'message_end',
@@ -434,7 +434,7 @@ describe('PiSpawner', () => {
     vi.mocked(spawn).mockReturnValue(mock);
     const worktree = makeWorktree(dir);
 
-    const p = new PiSpawner().spawn(t, worktree);
+    const p = new PiAgent().spawn(t, worktree);
     // Emit data before close — each log_experiment = 1 iteration
     setTimeout(() => {
       mock.stdout!.emit('data', Buffer.from('Running...\n'));
@@ -453,7 +453,7 @@ describe('PiSpawner', () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
-    const p = new PiSpawner().spawn(t, dir);
+    const p = new PiAgent().spawn(t, dir);
     setTimeout(() => {
       mock.stdout!.emit('data', Buffer.from(JSON.stringify({
         type: 'message_update',
@@ -506,7 +506,7 @@ describe('PiSpawner', () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     try {
-      const p = new PiSpawner({ agentLogMaxBytes: 4096, agentLogRaw: true }).spawn(t, dir);
+      const p = new PiAgent({ agentLogMaxBytes: 4096, agentLogRaw: true }).spawn(t, dir);
       setTimeout(() => {
         mock.stdout!.emit('data', Buffer.from('x'.repeat(1_100_000)));
         mock.stdout!.emit('data', Buffer.from('log_'));
@@ -549,7 +549,7 @@ describe('PiSpawner', () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
-    const p = new PiSpawner({ agentLogMaxBytes: 0 }).spawn(make(dir, 1, 'a'));
+    const p = new PiAgent({ agentLogMaxBytes: 0 }).spawn(make(dir, 1, 'a'));
     setTimeout(() => mock.emit('close', 0), 5);
 
     expect((await p).success).toBe(true);
@@ -558,7 +558,7 @@ describe('PiSpawner', () => {
   it('handles spawn error gracefully', async () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
-    const p = new PiSpawner().spawn(make(dir, 1, 'a'));
+    const p = new PiAgent().spawn(make(dir, 1, 'a'));
     setTimeout(() => mock.emit('error', new Error('spawn failed')), 5);
     expect((await p).success).toBe(false);
   });
@@ -566,7 +566,7 @@ describe('PiSpawner', () => {
   it('error handler ignores late close', async () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
-    const p = new PiSpawner().spawn(make(dir, 1, 'a'));
+    const p = new PiAgent().spawn(make(dir, 1, 'a'));
     setTimeout(() => {
       mock.emit('error', new Error('crash'));
       mock.emit('close', 0); // should be ignored — already settled
@@ -579,7 +579,7 @@ describe('PiSpawner', () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
-    const p = new PiSpawner().spawn(t, dir);
+    const p = new PiAgent().spawn(t, dir);
     // Delete task directory before close fires so appendFileSync throws
     setTimeout(() => {
       rmSync(t.directory, { recursive: true, force: true });
@@ -598,7 +598,7 @@ describe('PiSpawner', () => {
     vi.mocked(spawn).mockReturnValue(mock);
 
     // Use dir as cwd — task is at dir/pending/T01-a, so startsWith is true
-    const p = new PiSpawner().spawn(t, dir);
+    const p = new PiAgent().spawn(t, dir);
     setTimeout(() => mock.emit('close', 0), 5);
     const r = await p;
     expect(r.success).toBe(true);
@@ -610,7 +610,7 @@ describe('PiSpawner', () => {
     vi.mocked(spawn).mockReturnValue(mock);
     const worktree = makeWorktree(dir);
 
-    const p = new PiSpawner().spawn(t, worktree);
+    const p = new PiAgent().spawn(t, worktree);
     setTimeout(() => mock.emit('close', 0), 5);
 
     const r = await p;
@@ -644,7 +644,7 @@ describe('PiSpawner', () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
-    const p = new PiSpawner().spawn(t, dir);
+    const p = new PiAgent().spawn(t, dir);
     setTimeout(() => {
       var ev = JSON.stringify({ type: 'tool_execution_start', toolName: 'read', arguments: { path: '/foo.ts' } });
       mock.stdout!.emit('data', Buffer.from(ev + '\n'));
@@ -659,7 +659,7 @@ describe('PiSpawner', () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
-    const p = new PiSpawner().spawn(t, dir);
+    const p = new PiAgent().spawn(t, dir);
     setTimeout(() => {
       var ev = JSON.stringify({ type: 'tool_execution_start', toolName: 'bash', arguments: { command: 'npm test' } });
       mock.stdout!.emit('data', Buffer.from(ev + '\n'));
@@ -674,7 +674,7 @@ describe('PiSpawner', () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
-    const p = new PiSpawner().spawn(t, dir);
+    const p = new PiAgent().spawn(t, dir);
     setTimeout(() => {
       var ev = JSON.stringify({ type: 'tool_execution_start', toolName: 'init_experiment', arguments: {} });
       mock.stdout!.emit('data', Buffer.from(ev + '\n'));
@@ -689,7 +689,7 @@ describe('PiSpawner', () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
-    const p = new PiSpawner().spawn(t, dir);
+    const p = new PiAgent().spawn(t, dir);
     setTimeout(() => {
       var ev = JSON.stringify({ type: 'tool_execution_end', toolName: 'run_experiment', result: { content: [{ type: 'text', text: 'METRIC branch_gap=42.5\nsome output' }] } });
       mock.stdout!.emit('data', Buffer.from(ev + '\n'));
@@ -704,7 +704,7 @@ describe('PiSpawner', () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
-    const p = new PiSpawner().spawn(t, dir);
+    const p = new PiAgent().spawn(t, dir);
     setTimeout(() => {
       var ev = JSON.stringify({ type: 'tool_execution_end', toolName: 'log_experiment', result: { content: [{ type: 'text', text: 'Logged #1: keep — description here\nmore' }] } });
       mock.stdout!.emit('data', Buffer.from(ev + '\n'));
@@ -719,7 +719,7 @@ describe('PiSpawner', () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
-    const p = new PiSpawner().spawn(t, dir);
+    const p = new PiAgent().spawn(t, dir);
     setTimeout(() => {
       var ev = JSON.stringify({ type: 'tool_execution_end', toolName: 'log_experiment', result: { content: [{ type: 'text', text: 'crash detected\nmore' }] } });
       mock.stdout!.emit('data', Buffer.from(ev + '\n'));
@@ -734,7 +734,7 @@ describe('PiSpawner', () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
-    const p = new PiSpawner().spawn(t, dir);
+    const p = new PiAgent().spawn(t, dir);
     setTimeout(() => {
       var ev = JSON.stringify({ type: 'tool_execution_end', toolName: 'log_experiment', result: { content: [{ type: 'text', text: 'discarded run\nmore' }] } });
       mock.stdout!.emit('data', Buffer.from(ev + '\n'));
@@ -749,7 +749,7 @@ describe('PiSpawner', () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
-    const p = new PiSpawner().spawn(t, dir);
+    const p = new PiAgent().spawn(t, dir);
     setTimeout(() => {
       var ev = JSON.stringify({ type: 'tool_execution_end', toolName: 'read', isError: true, result: { content: [{ type: 'text', text: 'error output' }] } });
       mock.stdout!.emit('data', Buffer.from(ev + '\n'));
@@ -764,7 +764,7 @@ describe('PiSpawner', () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
-    const p = new PiSpawner().spawn(t, dir);
+    const p = new PiAgent().spawn(t, dir);
     setTimeout(() => {
       var ev = JSON.stringify({ type: 'tool_execution_end', toolName: 'read', result: { content: [{ type: 'image', data: 'abc' }] } });
       mock.stdout!.emit('data', Buffer.from(ev + '\n'));
@@ -779,7 +779,7 @@ describe('PiSpawner', () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
-    const p = new PiSpawner().spawn(t, dir);
+    const p = new PiAgent().spawn(t, dir);
     setTimeout(() => {
       var ev = JSON.stringify({ type: 'tool_execution_end', toolName: 'read', result: {} });
       mock.stdout!.emit('data', Buffer.from(ev + '\n'));
@@ -794,7 +794,7 @@ describe('PiSpawner', () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
-    const p = new PiSpawner().spawn(t, dir);
+    const p = new PiAgent().spawn(t, dir);
     setTimeout(() => {
       var ev = JSON.stringify({ type: 'message_start', message: { role: 'user' } });
       mock.stdout!.emit('data', Buffer.from(ev + '\n'));
@@ -809,7 +809,7 @@ describe('PiSpawner', () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
-    const p = new PiSpawner().spawn(t, dir);
+    const p = new PiAgent().spawn(t, dir);
     setTimeout(() => {
       // No toolName, only name — tests the fallback: obj.toolName ?? obj.name
       var ev = JSON.stringify({ type: 'tool_execution_start', name: 'write', arguments: { path: '/bar.ts' } });
@@ -825,7 +825,7 @@ describe('PiSpawner', () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
-    const p = new PiSpawner().spawn(t, dir);
+    const p = new PiAgent().spawn(t, dir);
     setTimeout(() => {
       // Emit a whitespace-only line to hit !raw.trim() continue
       mock.stdout!.emit('data', Buffer.from('  \n'));
@@ -840,7 +840,7 @@ describe('PiSpawner', () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
-    const p = new PiSpawner().spawn(t, dir);
+    const p = new PiAgent().spawn(t, dir);
     setTimeout(() => {
       // No type field — tests obj.type ?? '' fallback (line 124)
       var ev = JSON.stringify({ notType: 'something' });
@@ -856,7 +856,7 @@ describe('PiSpawner', () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
-    const p = new PiSpawner().spawn(t, dir);
+    const p = new PiAgent().spawn(t, dir);
     setTimeout(() => {
       // No toolName, no name, no arguments — tests all ?? fallbacks
       var ev = JSON.stringify({ type: 'tool_execution_start' });
@@ -872,7 +872,7 @@ describe('PiSpawner', () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
-    const p = new PiSpawner().spawn(t, dir);
+    const p = new PiAgent().spawn(t, dir);
     setTimeout(() => {
       // No toolName — tests obj.toolName ?? '' fallback in tool_execution_end
       var ev = JSON.stringify({ type: 'tool_execution_end', result: { content: [{ type: 'text', text: 'some output' }] } });
@@ -888,7 +888,7 @@ describe('PiSpawner', () => {
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
 
-    const p = new PiSpawner().spawn(t, dir);
+    const p = new PiAgent().spawn(t, dir);
     setTimeout(() => {
       // Empty text content — tests if (line) else branch
       var ev = JSON.stringify({ type: 'tool_execution_end', toolName: 'log_experiment', result: { content: [{ type: 'text', text: '' }] } });
@@ -908,7 +908,7 @@ describe('PiSpawner', () => {
     vi.useFakeTimers();
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      const p = new PiSpawner({ progressTimeout: 50, progressCheckInterval: 25 }).spawn(t, dir);
+      const p = new PiAgent({ progressTimeout: 50, progressCheckInterval: 25 }).spawn(t, dir);
       let resolved = false;
       void p.then(() => { resolved = true; });
 
@@ -939,7 +939,7 @@ describe('PiSpawner', () => {
     vi.useFakeTimers();
     const controller = new AbortController();
 
-    const p = new PiSpawner().spawn(t, dir, controller.signal);
+    const p = new PiAgent().spawn(t, dir, controller.signal);
     let resolved = false;
     void p.then(() => { resolved = true; });
 
@@ -964,7 +964,7 @@ describe('PiSpawner', () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     try {
-      const p = new PiSpawner({ progressTimeout: 50, progressCheckInterval: 25 }).spawn(t, dir);
+      const p = new PiAgent({ progressTimeout: 50, progressCheckInterval: 25 }).spawn(t, dir);
       await vi.advanceTimersByTimeAsync(10_050);
       const result = await p;
       expect(result.success).toBe(false);
@@ -981,7 +981,7 @@ describe('PiSpawner', () => {
     vi.mocked(spawn).mockReturnValue(mock);
 
     // Emit data before the first progress check fires to keep progress alive
-    const p = new PiSpawner({ progressTimeout: 500, progressCheckInterval: 50 }).spawn(t, dir);
+    const p = new PiAgent({ progressTimeout: 500, progressCheckInterval: 50 }).spawn(t, dir);
 
     // Emit data to keep progress alive
     await new Promise(r => setTimeout(r, 30));
@@ -1005,7 +1005,7 @@ describe('PiSpawner', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     try {
-      const p = new PiSpawner({
+      const p = new PiAgent({
         progressTimeout: 2000,
         progressCheckInterval: 15,
         progressStatusInterval: 40,
@@ -1041,7 +1041,7 @@ describe('PiSpawner', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     try {
-      const p = new PiSpawner({
+      const p = new PiAgent({
         progressTimeout: 2000,
         progressCheckInterval: 10,
         progressStatusInterval: 30,
@@ -1068,9 +1068,9 @@ describe('PiSpawner', () => {
 
   it('allows configuring progress timeout', async () => {
     // Just verify we can construct with different values without error
-    expect(() => new PiSpawner({ progressTimeout: 5000 })).not.toThrow();
-    expect(() => new PiSpawner({ progressTimeout: 0 })).not.toThrow();
-    expect(() => new PiSpawner({})).not.toThrow();
+    expect(() => new PiAgent({ progressTimeout: 5000 })).not.toThrow();
+    expect(() => new PiAgent({ progressTimeout: 0 })).not.toThrow();
+    expect(() => new PiAgent({})).not.toThrow();
   });
 
   it('killTree does not throw for a missing pid', () => {

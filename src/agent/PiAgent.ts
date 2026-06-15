@@ -50,7 +50,7 @@ interface RunState {
   logWriteFailed: boolean;
 }
 
-export interface PiSpawnerOptions extends CodingAgentOptions {
+export interface PiAgentOptions extends CodingAgentOptions {
   /** Optional fallback model if primary fails */
   readonly fallbackModel?: string;
   /** Max ms with no output before killing the agent (default: 120_000 / 2 min) */
@@ -73,11 +73,11 @@ export function killTree(pid: number): void {
     }
     execFileSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' });
   } catch (error: unknown) {
-    console.error(`[PiSpawner] failed to stop process tree ${pid}: ${errorMessage(error)}`);
+    console.error(`[PiAgent] failed to stop process tree ${pid}: ${errorMessage(error)}`);
   }
 }
 
-export class PiSpawner implements CodingAgent {
+export class PiAgent implements CodingAgent {
   readonly name = 'pi';
   readonly #model: string | undefined;
   readonly #reasoning: string | undefined;
@@ -91,7 +91,7 @@ export class PiSpawner implements CodingAgent {
   readonly #agentLogMaxBytes: number;
   readonly #agentLogRaw: boolean;
 
-  constructor(opts: PiSpawnerOptions = {}) {
+  constructor(opts: PiAgentOptions = {}) {
     this.#model = opts.model;
     this.#reasoning = opts.reasoning;
     this.#envModel = env.model;
@@ -119,7 +119,7 @@ export class PiSpawner implements CodingAgent {
   }
 
   checkPrerequisites(): PrerequisiteResult[] {
-    return [PiSpawner.#checkBinary(), PiSpawner.#checkAuth()];
+    return [PiAgent.#checkBinary(), PiAgent.#checkAuth()];
   }
 
   /** Local timestamp 'YYYY-MM-DD HH:MM:SS' (matches Engine log format). */
@@ -159,11 +159,11 @@ export class PiSpawner implements CodingAgent {
       : [primaryModel];
     const logPath = join(task.directory, runLogName());
 
-    console.log(`[${PiSpawner.#now()}] T${task.taskNumber} agent: ${models.map(PiSpawner.#modelLabel).join(', ')} | task: ${PiSpawner.#shortText(task.goal)}`);
-    console.log(`[${PiSpawner.#now()}] T${task.taskNumber} worktree: ${cwd}`);
-    console.log(`[${PiSpawner.#now()}] T${task.taskNumber} log: ${logPath}`);
+    console.log(`[${PiAgent.#now()}] T${task.taskNumber} agent: ${models.map(PiAgent.#modelLabel).join(', ')} | task: ${PiAgent.#shortText(task.goal)}`);
+    console.log(`[${PiAgent.#now()}] T${task.taskNumber} worktree: ${cwd}`);
+    console.log(`[${PiAgent.#now()}] T${task.taskNumber} log: ${logPath}`);
     const authErrors: string[] = [];
-    const tokenUsage = PiSpawner.#emptyTokenUsage();
+    const tokenUsage = PiAgent.#emptyTokenUsage();
     let lastResult: SpawnResult | undefined;
     let sawNonAuthFailure = false;
     for (const model of models) {
@@ -171,13 +171,13 @@ export class PiSpawner implements CodingAgent {
       if (signal?.aborted) return { success: false, iterations: 0 };
       const result = await this.#run(task, model, cwd, logPath, signal);
       lastResult = result;
-      if (result.tokenUsage) PiSpawner.#addTokenUsage(tokenUsage, result.tokenUsage);
-      if (result.success) return PiSpawner.#withTokenUsage(result, tokenUsage);
+      if (result.tokenUsage) PiAgent.#addTokenUsage(tokenUsage, result.tokenUsage);
+      if (result.success) return PiAgent.#withTokenUsage(result, tokenUsage);
       if (result.authFailure) {
         /* v8 ignore next -- #run always supplies an auth error string when authFailure is true */
         const error = result.error ?? 'coding agent authentication failed';
         authErrors.push(error);
-        console.error(`[${PiSpawner.#now()}] T${task.taskNumber} ERROR auth: ${error}`);
+        console.error(`[${PiAgent.#now()}] T${task.taskNumber} ERROR auth: ${error}`);
       } else {
         sawNonAuthFailure = true;
       }
@@ -189,11 +189,11 @@ export class PiSpawner implements CodingAgent {
         iterations: lastResult!.iterations,
         authFailure: true,
         error: authErrors.join('; '),
-        ...(PiSpawner.#hasTokenUsage(tokenUsage) ? { tokenUsage: { ...tokenUsage } } : {}),
+        ...(PiAgent.#hasTokenUsage(tokenUsage) ? { tokenUsage: { ...tokenUsage } } : {}),
         logPath: lastResult!.logPath!,
       };
     }
-    return PiSpawner.#withTokenUsage(lastResult!, tokenUsage);
+    return PiAgent.#withTokenUsage(lastResult!, tokenUsage);
   }
 
   #run(task: TaskState, model: string | undefined, cwd: string, logPath: string, signal?: AbortSignal): Promise<SpawnResult> {
@@ -225,7 +225,7 @@ export class PiSpawner implements CodingAgent {
         iterationTail: '',
         authTail: '',
         authProviders: new Set<string>(),
-        tokenUsage: PiSpawner.#emptyTokenUsage(),
+        tokenUsage: PiAgent.#emptyTokenUsage(),
         lineBuf: '',
         lastProgress: now,
         lastStatus: now,
@@ -239,7 +239,7 @@ export class PiSpawner implements CodingAgent {
       let forceKillTimer: NodeJS.Timeout | undefined;
       let forceResolveTimer: NodeJS.Timeout | undefined;
       const result = (r: Omit<SpawnResult, 'tokenUsage'>): SpawnResult =>
-        PiSpawner.#hasTokenUsage(state.tokenUsage)
+        PiAgent.#hasTokenUsage(state.tokenUsage)
           ? { ...r, tokenUsage: { ...state.tokenUsage } }
           : r;
       const clearKillTimers = () => {
@@ -280,7 +280,7 @@ export class PiSpawner implements CodingAgent {
       signal?.addEventListener('abort', onAbort, { once: true });
 
       const agentLog = openAgentLog(logPath, this.#agentLogMaxBytes);
-      PiSpawner.#appendAgentLog(agentLog, [
+      PiAgent.#appendAgentLog(agentLog, [
         `=== agent session started at ${new Date().toISOString()} ===`,
         `=== agent log mode: ${this.#agentLogRaw ? 'raw' : 'summary'}${this.#agentLogRaw ? '' : ' (set ORCH_AGENT_LOG_RAW=1 for raw pi stream)'} ===`,
         '',
@@ -288,7 +288,7 @@ export class PiSpawner implements CodingAgent {
 
       // Auto-generate autoresearch.sh — overwrites agent-modified versions on every spawn
       // Must NOT cd to another dir; runs from worktree root where node_modules lives
-      PiSpawner.#writeAutoresearchScript(task.directory);
+      PiAgent.#writeAutoresearchScript(task.directory);
 
       child.stdout?.on('data', (d: Buffer) => { state.lastProgress = Date.now(); this.#handleData(d.toString(), state, agentLog); });
       child.stderr?.on('data', (d: Buffer) => { state.lastProgress = Date.now(); this.#handleData(d.toString(), state, agentLog); });
@@ -298,7 +298,7 @@ export class PiSpawner implements CodingAgent {
 
       child.on('close', (code: number | null) => {
         cleanup();
-        const authError = PiSpawner.#authError(state.authProviders);
+        const authError = PiAgent.#authError(state.authProviders);
         const failure = state.progressStale
           ? terminationError
           : aborted
@@ -307,13 +307,13 @@ export class PiSpawner implements CodingAgent {
             ? `pi exited with code ${code ?? 'unknown'}`
             : '';
         // Append footer and close — previous chunks already streamed
-        PiSpawner.#appendAgentLog(agentLog, [
+        PiAgent.#appendAgentLog(agentLog, [
           `=== agent session ended (exit ${code}) ===`,
           `=== raw output bytes=${state.rawBytes} ${this.#agentLogRaw ? 'logged' : 'omitted'} ===`,
           `=== iterations=${state.iterations} ===`,
           authError ? `=== auth failure ${authError} ===` : '',
           failure ? `=== failure ${failure} ===` : '',
-          PiSpawner.#hasTokenUsage(state.tokenUsage) ? `=== token usage ${PiSpawner.#formatTokenUsage(state.tokenUsage)} ===` : '',
+          PiAgent.#hasTokenUsage(state.tokenUsage) ? `=== token usage ${PiAgent.#formatTokenUsage(state.tokenUsage)} ===` : '',
           '',
         ].filter(Boolean).join('\n'), state, `finalize ${F_AGENT_LOG}`);
         if (state.progressStale) {
@@ -339,7 +339,7 @@ export class PiSpawner implements CodingAgent {
   #handleData(txt: string, state: RunState, agentLog: AgentLog): void {
     state.rawBytes += Buffer.byteLength(txt);
     if (this.#agentLogRaw) {
-      PiSpawner.#appendAgentLog(agentLog, txt, state, `write raw ${F_AGENT_LOG}`);
+      PiAgent.#appendAgentLog(agentLog, txt, state, `write raw ${F_AGENT_LOG}`);
     }
     const iterationScan = `${state.iterationTail}${txt}`;
     state.iterations += countOccurrences(iterationScan, ITERATION_MARKER);
@@ -349,20 +349,20 @@ export class PiSpawner implements CodingAgent {
     // text in the stream is test fixture / subprocess output, not a real failure.
     if (state.iterations === 0) {
       const authScan = `${state.authTail}${txt}`;
-      PiSpawner.#collectAuthProviders(authScan, state.authProviders);
+      PiAgent.#collectAuthProviders(authScan, state.authProviders);
       state.authTail = tail(authScan, AUTH_SCAN_TAIL);
     }
-    state.lineBuf = PiSpawner.#processJsonLines(txt, state.lineBuf, state.tokenUsage);
+    state.lineBuf = PiAgent.#processJsonLines(txt, state.lineBuf, state.tokenUsage);
   }
 
   #checkProgress(state: RunState, logPath: string, escalateTermination: (error: string) => void): void {
     if (state.progressStale) return;
     const now = Date.now();
-    const ts = PiSpawner.#now();
+    const ts = PiAgent.#now();
     const quietFor = now - state.lastProgress;
     if (quietFor >= this.#progressTimeout) {
       state.progressStale = true;
-      const error = `No agent output for ${PiSpawner.#formatDuration(quietFor)}; stopped pi`;
+      const error = `No agent output for ${PiAgent.#formatDuration(quietFor)}; stopped pi`;
       console.error(`[${ts}] ERROR ${error}. See ${logPath}`);
       escalateTermination(error);
       return;
@@ -371,17 +371,17 @@ export class PiSpawner implements CodingAgent {
     if (quietFor >= this.#progressStatusInterval && now - state.lastStatus >= this.#progressStatusInterval) {
       state.lastStatus = now;
       console.log(
-        `[${ts}] WARN still running: no output for ${PiSpawner.#formatDuration(quietFor)} ` +
-        `(auto-stop at ${PiSpawner.#formatDuration(this.#progressTimeout)})`,
+        `[${ts}] WARN still running: no output for ${PiAgent.#formatDuration(quietFor)} ` +
+        `(auto-stop at ${PiAgent.#formatDuration(this.#progressTimeout)})`,
       );
       return;
     }
     // Activity heartbeat (agent IS producing output but user sees nothing)
     if (now - state.lastHeartbeat >= this.#progressStatusInterval) {
       state.lastHeartbeat = now;
-      const elapsed = PiSpawner.#formatDuration(now - state.startedAt);
+      const elapsed = PiAgent.#formatDuration(now - state.startedAt);
       const t = state.tokenUsage;
-      const tokens = PiSpawner.#hasTokenUsage(t)
+      const tokens = PiAgent.#hasTokenUsage(t)
         ? `tokens: ${t.totalTokens} (input=${t.input} output=${t.output} cached=${t.cacheRead})`
         : 'waiting for first LLM response';
       console.log(`[${ts}] agent working: ${elapsed} elapsed, ${tokens}`);
@@ -397,7 +397,7 @@ export class PiSpawner implements CodingAgent {
     for (const match of output.matchAll(AUTH_FAILURE_RE)) {
       const provider = match[1];
       // Only accept real provider names (alphanumeric + hyphens). The regex can
-      // match test fixture text echoed through vitest (e.g. the PiSpawner test
+      // match test fixture text echoed through vitest (e.g. the PiAgent test
       // contains 'No API key found for azure-openai-responses.'), producing
       // garbage provider names with JSON fragments. Reject those.
       /* v8 ignore next -- the regex always captures a provider when it matches */
@@ -427,14 +427,14 @@ export class PiSpawner implements CodingAgent {
       if (newline === -1) break;
       const segment = txt.slice(start, newline);
       if (lineBuf.length + segment.length <= MAX_JSON_LINE_BUFFER) {
-        PiSpawner.#parseJsonLine(`${lineBuf}${segment}`, tokenUsage);
+        PiAgent.#parseJsonLine(`${lineBuf}${segment}`, tokenUsage);
       }
       lineBuf = '';
       start = newline + 1;
     }
 
     const remainder = txt.slice(start);
-    return remainder ? PiSpawner.#appendBounded(lineBuf, remainder, MAX_JSON_LINE_BUFFER) : lineBuf;
+    return remainder ? PiAgent.#appendBounded(lineBuf, remainder, MAX_JSON_LINE_BUFFER) : lineBuf;
   }
 
   static #appendBounded(current: string, next: string, maxLength: number): string {
@@ -446,10 +446,10 @@ export class PiSpawner implements CodingAgent {
 
   static #parseJsonLine(raw: string, tokenUsage: MutableTokenUsage): void {
     if (!raw.trim()) return;
-    const obj = PiSpawner.#parseJsonRecord(raw);
+    const obj = PiAgent.#parseJsonRecord(raw);
     if (!obj) return;
-    const usage = PiSpawner.#usageFromEvent(obj);
-    if (usage) PiSpawner.#addTokenUsage(tokenUsage, usage);
+    const usage = PiAgent.#usageFromEvent(obj);
+    if (usage) PiAgent.#addTokenUsage(tokenUsage, usage);
   }
 
   static #emptyTokenUsage(): MutableTokenUsage {
@@ -465,7 +465,7 @@ export class PiSpawner implements CodingAgent {
   }
 
   static #withTokenUsage(result: SpawnResult, usage: TokenUsage): SpawnResult {
-    return PiSpawner.#hasTokenUsage(usage) ? { ...result, tokenUsage: { ...usage } } : result;
+    return PiAgent.#hasTokenUsage(usage) ? { ...result, tokenUsage: { ...usage } } : result;
   }
 
   static #hasTokenUsage(usage: TokenUsage): boolean {
@@ -474,20 +474,20 @@ export class PiSpawner implements CodingAgent {
 
   static #usageFromEvent(obj: Record<string, unknown>): TokenUsage | null {
     if (obj.type !== 'message_end') return null;
-    const message = PiSpawner.#record(obj.message);
+    const message = PiAgent.#record(obj.message);
     if (!message || message.role !== 'assistant') return null;
-    const usage = PiSpawner.#record(message.usage);
+    const usage = PiAgent.#record(message.usage);
     if (!usage) return null;
-    const parsed = PiSpawner.#parseUsage(usage);
-    return PiSpawner.#hasTokenUsage(parsed) ? parsed : null;
+    const parsed = PiAgent.#parseUsage(usage);
+    return PiAgent.#hasTokenUsage(parsed) ? parsed : null;
   }
 
   static #parseUsage(usage: Record<string, unknown>): TokenUsage {
-    const input = PiSpawner.#numberFrom(usage, ['input', 'input_tokens', 'prompt_tokens']);
-    const output = PiSpawner.#numberFrom(usage, ['output', 'output_tokens', 'completion_tokens']);
-    const cacheRead = PiSpawner.#numberFrom(usage, ['cacheRead', 'cache_read', 'cache_read_tokens', 'cached_tokens']);
-    const cacheWrite = PiSpawner.#numberFrom(usage, ['cacheWrite', 'cache_write', 'cache_write_tokens']);
-    const totalTokens = PiSpawner.#numberFrom(usage, ['totalTokens', 'total_tokens']) || input + output + cacheRead + cacheWrite;
+    const input = PiAgent.#numberFrom(usage, ['input', 'input_tokens', 'prompt_tokens']);
+    const output = PiAgent.#numberFrom(usage, ['output', 'output_tokens', 'completion_tokens']);
+    const cacheRead = PiAgent.#numberFrom(usage, ['cacheRead', 'cache_read', 'cache_read_tokens', 'cached_tokens']);
+    const cacheWrite = PiAgent.#numberFrom(usage, ['cacheWrite', 'cache_write', 'cache_write_tokens']);
+    const totalTokens = PiAgent.#numberFrom(usage, ['totalTokens', 'total_tokens']) || input + output + cacheRead + cacheWrite;
     return { input, output, cacheRead, cacheWrite, totalTokens };
   }
 
@@ -512,7 +512,7 @@ export class PiSpawner implements CodingAgent {
 
   static #parseJsonRecord(raw: string): Record<string, unknown> | null {
     try {
-      return PiSpawner.#record(JSON.parse(raw));
+      return PiAgent.#record(JSON.parse(raw));
     } catch {
       return null;
     }
@@ -526,7 +526,7 @@ export class PiSpawner implements CodingAgent {
     /* v8 ignore start -- appendAgentLog failures are best-effort and not exercised via public APIs */
     } catch (error: unknown) {
       state.logWriteFailed = true;
-      console.error(`[PiSpawner] failed to ${action}: ${errorMessage(error)}`);
+      console.error(`[PiAgent] failed to ${action}: ${errorMessage(error)}`);
     }
     /* v8 ignore stop */
   }
@@ -542,7 +542,7 @@ export class PiSpawner implements CodingAgent {
       ].join('\n') + '\n');
     /* v8 ignore start -- script generation failure is logged but should not block spawning */
     } catch (error: unknown) {
-      console.error(`[PiSpawner] failed to write ${path}: ${errorMessage(error)}`);
+      console.error(`[PiAgent] failed to write ${path}: ${errorMessage(error)}`);
     }
     /* v8 ignore stop */
   }
