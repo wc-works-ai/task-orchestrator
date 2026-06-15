@@ -73,7 +73,7 @@ Both interact with orchestrator ONLY through `CodingAgent` interface (`checkPrer
 ### Adding a new coding agent
 
 1. Write `tests/unit/<Name>Agent.test.ts` first (prerequisites + spawn behavior, mocked) — RED
-2. Create `src/<Name>Agent.ts` implementing `CodingAgent` interface — GREEN
+2. Create `src/agent/<Name>Agent.ts` implementing `CodingAgent` interface — GREEN
 3. Register in `src/agent/agents.ts` `REGISTRY`
 4. Run `npm run all`
 
@@ -141,6 +141,6 @@ describe('TaskState.pick', () => {
 
 ## Adding a new file (test-first)
 
-`tests/{unit|integration}/X.test.ts` (write failing tests first — pick the tier by what it touches) → `src/X.ts` (implement to green) → export from `src/index.ts` → `npm run all`
+`tests/{unit|integration}/X.test.ts` (write failing tests first — pick the tier by what it touches) → `src/<domain>/X.ts` (implement to green; see `ARCHITECTURE.md` for domains) → export from `src/index.ts` → `npm run all`
 
 For tiers, mocks, branch coverage, and the E2E harness, see `TESTING.md`.
