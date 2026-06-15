@@ -12,7 +12,7 @@ const FULL_AR = [
   '## Goal: Make it fast',
   '- **Model:** task-model',
   '- **Reasoning:** high',
-  '## Metric',
+  '## Acceptance criteria',
   'Track `latency`, `latency`, and `throughput`.',
   '## Scope',
   '- src/a.ts',
@@ -211,6 +211,23 @@ describe('TaskState (DB-backed)', () => {
     expect(t.model).toBe('task-model');
     expect(t.reasoning).toBe('high');
     expect(t.metricNames).toEqual(['latency', 'throughput']);
+  });
+
+  it('acceptanceFingerprint hashes the ## Acceptance criteria section deterministically', () => {
+    const a = seedState(s, dir, 1, 'a', { autoresearch: FULL_AR });
+    const b = seedState(s, dir, 2, 'b', { autoresearch: FULL_AR });
+    expect(a.acceptanceFingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect(b.acceptanceFingerprint).toBe(a.acceptanceFingerprint);
+
+    const changed = FULL_AR.replace('throughput', 'tput');
+    const c = seedState(s, dir, 3, 'c', { autoresearch: changed });
+    expect(c.acceptanceFingerprint).not.toBe(a.acceptanceFingerprint);
+  });
+
+  it('acceptanceFingerprint is stable when the section is absent', () => {
+    const missing = seedState(s, dir, 1, 'a', { autoresearch: 'nothing useful\n' });
+    const none = seedState(s, dir, 2, 'b'); // no autoresearch.md at all
+    expect(missing.acceptanceFingerprint).toBe(none.acceptanceFingerprint);
   });
 
   it('scope parses a leading bulleted ## Scope section', () => {

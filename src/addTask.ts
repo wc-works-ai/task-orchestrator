@@ -54,16 +54,14 @@ export function addTask(tasksDir: string, name: string, opts: AddTaskOptions = {
       writeFileSync(resolve(stagingDir, 'autoresearch.md'), [
         `# T${taskNumber} — ${goal}`,
         '## Goal', goal,
-        '## Metrics',
-        `- \`${metric}\` — task-specific deliverable; replace the placeholder check in \`benchmark.js\``,
-        '- `build` — `npm run c` must pass',
-        '- `test` — `npm run t` must pass',
+        '## Acceptance criteria',
+        `- \`${metric}\` — task-specific deliverable; benchmark.js emits METRIC ${metric}=0 only when it is done`,
+        '- Describe in prose exactly what "done" means — the durable contract the benchmark is checked against',
         '## Scope', ...scope.map(f => `- ${f}`),
-        '## Acceptance',
-        '- Task benchmark: `benchmark.js` runs task-specific checks and emits `METRIC name=value` lines.',
-        '- Global verify: `ORCH_VERIFY_CMD` runs repo-wide gates before merge (for example `npm run tc` for coverage).',
-        '- ALL emitted metrics must be 0 for convergence.',
-        '- Convergence requires 3 consecutive zero runs.',
+        '## Notes',
+        '- Task benchmark `benchmark.js` emits `METRIC name=value`; ALL metrics must be 0 to converge',
+        '- Repo-wide gates (build/test/coverage) run via `ORCH_VERIFY_CMD` (for example `npm run tc`) at merge — keep them out of benchmark.js',
+        '- Convergence requires 3 consecutive zero runs',
       ].join('\n'));
       writeFileSync(resolve(stagingDir, 'benchmark.js'), [
         '#!/usr/bin/env node',
@@ -71,6 +69,8 @@ export function addTask(tasksDir: string, name: string, opts: AddTaskOptions = {
         '',
         '// Task benchmark scaffold: emit one METRIC line per acceptance criterion.',
         '// ALL metrics must be 0 before the task can converge.',
+        '// Keep repo-wide gates (build/test/coverage) out of benchmark.js — they run',
+        '// via ORCH_VERIFY_CMD (for example: npm run tc) globally before merge.',
         'const report = (name, value) => console.log(`METRIC ${name}=${value}`);',
         '',
         'const check = (name, command) => {',
@@ -84,11 +84,6 @@ export function addTask(tasksDir: string, name: string, opts: AddTaskOptions = {
         '',
         `// TODO: replace this placeholder with a real command that exits 0 only when the ${metric} deliverable is done.`,
         `check('${metric}', 'node -e "process.exit(1)"');`,
-        '',
-        '// Keep task-specific checks here. Put repo-wide gates like coverage in ORCH_VERIFY_CMD',
-        '// so they run globally before merge (for example: npm run tc).',
-        "check('build', 'npm run c');",
-        "check('test', 'npm run t');",
       ].join('\n'));
 
       renameSync(stagingDir, finalDir);

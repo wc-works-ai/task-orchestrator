@@ -79,8 +79,9 @@ describe('addTask creation', () => {
     expect(task.metric).toBe('good_metric');
     expect(existsSync(join(task.directory, 'benchmark.js'))).toBe(true);
     expect(benchmark).toContain("check('good_metric', 'node -e \"process.exit(1)\"');");
-    expect(benchmark).toContain("check('build', 'npm run c');");
-    expect(benchmark).toContain("check('test', 'npm run t');");
+    // Gate separation: repo-wide build/test stay in ORCH_VERIFY_CMD, not the benchmark.
+    expect(benchmark).not.toContain("check('build'");
+    expect(benchmark).not.toContain("check('test'");
   });
 
   it('writes an explicit scope when provided', () => {
@@ -89,7 +90,7 @@ describe('addTask creation', () => {
     expect(readFileSync(join(task.directory, 'autoresearch.md'), 'utf-8')).toContain('- src\\a.ts\n- src\\b.ts');
   });
 
-  it('writes a multi-metric benchmark scaffold and convergence guidance', () => {
+  it('writes a benchmark scaffold and convergence guidance', () => {
     const dir = tasksDir();
     const task = addTask(dir, 'scaffolded-task');
     const benchmark = readFileSync(join(task.directory, 'benchmark.js'), 'utf-8');
@@ -98,13 +99,12 @@ describe('addTask creation', () => {
     expect(benchmark).toContain("import { execSync } from 'node:child_process';");
     expect(benchmark).toContain('const check = (name, command) => {');
     expect(benchmark).toContain("check('goal', 'node -e \"process.exit(1)\"');");
-    expect(benchmark).toContain('Put repo-wide gates like coverage in ORCH_VERIFY_CMD');
+    expect(benchmark).toContain('via ORCH_VERIFY_CMD');
 
-    expect(autoresearch).toContain('## Metrics');
-    expect(autoresearch).toContain('- Task benchmark: `benchmark.js` runs task-specific checks and emits `METRIC name=value` lines.');
-    expect(autoresearch).toContain('- Global verify: `ORCH_VERIFY_CMD` runs repo-wide gates before merge (for example `npm run tc` for coverage).');
-    expect(autoresearch).toContain('- ALL emitted metrics must be 0 for convergence.');
-    expect(autoresearch).toContain('- Convergence requires 3 consecutive zero runs.');
+    expect(autoresearch).toContain('## Acceptance criteria');
+    expect(autoresearch).toContain('- `goal` —');
+    expect(autoresearch).toContain('keep them out of benchmark.js');
+    expect(autoresearch).toContain('- Convergence requires 3 consecutive zero runs');
   });
 });
 

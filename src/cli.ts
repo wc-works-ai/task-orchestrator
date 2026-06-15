@@ -15,7 +15,7 @@ import { Prerequisites } from './Prerequisites.js';
 import { env } from './env.js';
 import { resolveStatePaths } from './StatePaths.js';
 import { printOverview, printRunSummary } from './RunReport.js';
-import { parseMetrics, unmetSummary } from './metrics.js';
+import { parseMetrics, unmetSummary, classifyBenchmark } from './metrics.js';
 import { formatTaskGraph, type GraphNode } from './TaskGraph.js';
 import { formatEffectiveConfig } from './config.js';
 
@@ -357,13 +357,15 @@ const engine = new Engine(dir, {
     // the right tree regardless of where the task directory lives.
     const reasonPath = resolve(t.directory, 'benchmark.log');
     let out: string;
+    let crashed = false;
     try {
       out = execFileSync(process.execPath, [resolve(t.directory, 'benchmark.js')], {
         timeout: env.benchmarkTimeoutMs, encoding: 'utf-8', cwd: t.cwd,
       });
     } catch (e: unknown) {
-      // Capture whatever the benchmark printed before crashing/timing out so the
-      // failure reason is never silently swallowed.
+      // A non-zero exit, timeout, or spawn error makes the result unreliable —
+      // capture whatever printed before the crash so the reason is never lost.
+      crashed = true;
       const err = e as { stdout?: string; stderr?: string; message?: string };
       out = `${err.stdout ?? ''}${err.stderr ?? ''}`.trim() || (err.message ?? 'benchmark execution failed');
     }
@@ -372,13 +374,17 @@ const engine = new Engine(dir, {
     } catch (e: unknown) {
       console.warn(`⚠️  Could not write benchmark log ${reasonPath}: ${e instanceof Error ? e.message : String(e)}`);
     }
-    const r = parseMetrics(out, 1, t.metrics);
-    if (r.total > 0) {
-      const summary = unmetSummary(r) || `no METRIC lines emitted (treated as ${r.total})`;
+    const outcome = classifyBenchmark(out, crashed, t.metrics);
+    if (outcome.kind !== 'ok' || outcome.total > 0) {
+      const summary = outcome.kind === 'crash'
+        ? 'benchmark crashed (see log)'
+        : outcome.kind === 'no_metrics'
+          ? `no METRIC lines emitted (treated as ${outcome.total})`
+          : unmetSummary(outcome);
       console.log(`T${t.number} unmet: ${summary}`);
       console.log(`  why: ${reasonPath}`);
     }
-    return r.total;
+    return outcome.total;
   },
 });
 

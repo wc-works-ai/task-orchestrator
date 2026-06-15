@@ -40,6 +40,11 @@ export class Worktree {
   get branch(): string {
     return this.#branch;
   }
+  /** Current commit SHA of the base branch — used to detect base advancement
+   *  between benchmark generation and a later agent-work cycle. */
+  baseSha(): string {
+    return this.#git('rev-parse', this.#base).trim();
+  }
   get exists(): boolean {
     return existsSync(join(this.#path, '.git'));
   }

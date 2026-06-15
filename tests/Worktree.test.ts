@@ -44,6 +44,13 @@ describe('Worktree', () => {
     expect(branches).toContain('orchestrator/T01-test');
   });
 
+  it('baseSha returns the current commit SHA of the base branch', () => {
+    const wt = new Worktree(repo, { name: 'T01-test', baseBranch: 'master' });
+    const expected = execFileSync('git', ['rev-parse', 'master'], { cwd: repo, encoding: 'utf-8' }).trim();
+    expect(wt.baseSha()).toBe(expected);
+    expect(wt.baseSha()).toMatch(/^[0-9a-f]{40}$/);
+  });
+
   it('detects existing worktree', async () => {
     const wt = new Worktree(repo, { name: 'T01-test' });
     await wt.create();

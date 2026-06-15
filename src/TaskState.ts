@@ -5,6 +5,7 @@ import {
   CONVERGENCE_THRESHOLD, MAX_FAILURES,
 } from './Status.js';
 import { TaskDb, type TaskRow } from './TaskDb.js';
+import { sha256 } from './BenchmarkMeta.js';
 
 export { Status, inProgress, isInProgress, CONVERGENCE_THRESHOLD, MAX_FAILURES };
 
@@ -19,7 +20,7 @@ export interface TaskInfo {
   readonly status: string;
   /** Working directory for benchmarks (worktree root or repo root) */
   readonly cwd: string;
-  /** Declared metric name(s) from autoresearch.md `## Metric`; empty = count all */
+  /** Declared metric name(s) from autoresearch.md `## Acceptance criteria`; empty = count all */
   readonly metrics: readonly string[];
 }
 
@@ -235,14 +236,25 @@ export class TaskState {
     return this.#readAutoresearch().match(/\*\*Reasoning:\*\*\s*(.+)/)?.[1]?.trim() ?? '';
   }
 
-  /** Declared metric name(s) from the `## Metric` section of autoresearch.md
-   *  (the backtick-quoted identifiers). Used to count only the task's own
-   *  metric and ignore foreign metric-shaped lines leaked from benchmark output.
-   *  Empty when none is declared (caller then counts all metrics). */
+  /** Body of the `## Acceptance criteria` section — the durable benchmark
+   *  contract. Empty when the section is absent. */
+  #acceptanceSection(): string {
+    return this.#readAutoresearch().match(/^## Acceptance criteria\b([\s\S]*?)(?=^## |$(?![\s\S]))/m)?.[1]?.trim() ?? '';
+  }
+
+  /** Declared metric name(s) from the `## Acceptance criteria` section (the
+   *  backtick-quoted identifiers). Used to count only the task's own metric and
+   *  ignore foreign metric-shaped lines leaked from benchmark output. Empty when
+   *  none is declared (caller then counts all metrics). */
   get metricNames(): readonly string[] {
-    const section = this.#readAutoresearch().match(/^## Metric\b([\s\S]*?)(?=^## |$(?![\s\S]))/m)?.[1] ?? '';
-    const names = [...section.matchAll(/`([A-Za-z_]\w*)`/g)].map(m => m[1]!);
+    const names = [...this.#acceptanceSection().matchAll(/`([A-Za-z_]\w*)`/g)].map(m => m[1]!);
     return [...new Set(names)];
+  }
+
+  /** Fingerprint of the acceptance criteria — changes whenever the durable
+   *  benchmark contract changes, which triggers benchmark regeneration. */
+  get acceptanceFingerprint(): string {
+    return sha256(this.#acceptanceSection());
   }
 
   // ── Static (DB-backed) ──────────────────────────────────────────────
