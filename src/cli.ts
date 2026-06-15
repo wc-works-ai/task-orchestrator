@@ -2,8 +2,8 @@
 import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
-import { resolve } from 'node:path';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { addTask } from './state/addTask.js';
 import { Engine, MergeRecoveryAction, type MergeRecoveryFailure } from './engine/Engine.js';
@@ -19,6 +19,35 @@ import { parseMetrics, unmetSummary, classifyBenchmark } from './shared/metrics.
 import { formatTaskGraph, type GraphNode } from './engine/TaskGraph.js';
 import { formatEffectiveConfig, formatHelp } from './shared/config.js';
 import { appVersion } from './shared/version.js';
+
+const CLI_OPTIONS = {
+  repo: { type: 'string', default: '' },
+  'state-root': { type: 'string', default: '' },
+  tasks: { type: 'string', default: '' },
+  loop: { type: 'boolean', default: false },
+  status: { type: 'boolean', default: false },
+  graph: { type: 'boolean', default: false },
+  check: { type: 'boolean', default: false },
+  agent: { type: 'string', default: '' },
+  model: { type: 'string', default: '' },
+  reasoning: { type: 'string', default: '' },
+  stop: { type: 'boolean', default: false },
+  task: { type: 'string', short: 't', default: '' },
+  unblock: { type: 'string', default: '' },
+  goal: { type: 'string', default: '' },
+  metric: { type: 'string', default: '' },
+  scope: { type: 'string', default: '' },
+  once: { type: 'boolean', default: false },
+  config: { type: 'boolean', default: false },
+  'keep-alive': { type: 'boolean', default: false },
+  'keep-converged': { type: 'string', default: '' },
+  infinite: { type: 'boolean', default: false },
+  'auto-stash': { type: 'boolean', default: false },
+  'no-worktree': { type: 'boolean', default: false },
+  parallel: { type: 'string', default: '' },
+  worktrees: { type: 'string', default: '' },
+  help: { type: 'boolean', short: 'h', default: false },
+} as const;
 
 async function promptMergeRecovery(failure: MergeRecoveryFailure): Promise<MergeRecoveryAction> {
   console.error('');
@@ -50,47 +79,93 @@ async function promptMergeRecovery(failure: MergeRecoveryFailure): Promise<Merge
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let parseResult: any;
-try {
-  parseResult = await parseArgs({
-    allowPositionals: true,
-    options: {
-    repo:   { type: 'string', default: '' },
-    'state-root': { type: 'string', default: '' },
-    tasks:  { type: 'string', default: '' },
-    loop:   { type: 'boolean', default: false },
-    status: { type: 'boolean', default: false },
-    graph:  { type: 'boolean', default: false },
-    check:  { type: 'boolean', default: false },
-    agent:  { type: 'string', default: '' },
-    model:  { type: 'string', default: '' },
-    reasoning: { type: 'string', default: '' },
-    stop:   { type: 'boolean', default: false },
-    task:   { type: 'string', short: 't', default: '' },
-    unblock: { type: 'string', default: '' },
-    goal:   { type: 'string', default: '' },
-    metric: { type: 'string', default: '' },
-    scope:  { type: 'string', default: '' },
-    once:   { type: 'boolean', default: false },
-    config: { type: 'boolean', default: false },
-    'keep-alive': { type: 'boolean', default: false },
-    'keep-converged': { type: 'string', default: '' },
-    infinite: { type: 'boolean', default: false },
-    'auto-stash': { type: 'boolean', default: false },
-    'no-worktree': { type: 'boolean', default: false },
-    parallel: { type: 'string', default: '' },
-    worktrees: { type: 'string', default: '' },
-    help:   { type: 'boolean', short: 'h', default: false },
-  },
-  });
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-} catch (e: unknown) {
-  console.error(`\n  error: ${e instanceof Error ? e.message : String(e)}`);
-  console.error('  Run orchestrator --help for usage.\n');
-  process.exit(1);
+function parseCliArgs() {
+  try {
+    return parseArgs({
+      allowPositionals: true,
+      options: CLI_OPTIONS,
+    });
+  } catch (e: unknown) {
+    console.error(`\n  error: ${e instanceof Error ? e.message : String(e)}`);
+    console.error('  Run orchestrator --help for usage.\n');
+    process.exit(1);
+  }
 }
-const { values, positionals } = parseResult!;
+
+function resolveCliPaths(values: ReturnType<typeof parseCliArgs>['values']) {
+  try {
+    return resolveStatePaths({
+      repo: values.repo || env.repoDir || process.cwd(),
+      stateRoot: values['state-root'] || env.stateRoot,
+      tasks: values.tasks || env.tasksDir,
+      worktrees: values.worktrees || env.worktreesDir,
+    });
+  } catch (e: unknown) {
+    console.error(`\n  ❌ ${e instanceof Error ? e.message : String(e)}`);
+    console.error('  Example: orchestrator --repo /path/to/your/repo\n');
+    process.exit(1);
+  }
+}
+
+function parseParallel(value: string, fallback: number): number {
+  const parsed = parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    console.warn(`⚠️  --parallel must be 0-100; received '${value}', using default: ${fallback}`);
+    return fallback;
+  }
+  if (parsed > 100) {
+    console.warn(`⚠️  --parallel clamped to 100 (received: ${parsed})`);
+    return 100;
+  }
+  return parsed;
+}
+
+function splitSectionBody(body: string): string[] {
+  return body.split(/\r?\n/);
+}
+
+function replaceSection(content: string, heading: string, bodyLines: readonly string[]): string {
+  const header = `## ${heading}`;
+  const lines = content.split('\n');
+  const start = lines.findIndex(line => line === header || line.startsWith(`${header}:`));
+  if (start === -1) return content;
+
+  let end = start + 1;
+  while (end < lines.length && !lines[end]!.startsWith('## ')) end++;
+
+  const updated = [
+    ...lines.slice(0, start),
+    header,
+    ...bodyLines,
+    ...lines.slice(end),
+  ].join('\n');
+  return content.endsWith('\n') && !updated.endsWith('\n') ? `${updated}\n` : updated;
+}
+
+function updateAutoresearch(content: string, values: ReturnType<typeof parseCliArgs>['values']): string {
+  let updated = content;
+  if (values.goal) {
+    updated = replaceSection(updated, 'Goal', splitSectionBody(values.goal));
+  }
+  if (values.metric) {
+    updated = updated.replace(/\`[^`]+\` — task-specific deliverable/, `\`${values.metric}\` — task-specific deliverable`);
+  }
+  if (values.scope) {
+    updated = replaceSection(updated, 'Scope', values.scope.split(/\s+/).map(file => `- ${file}`));
+  }
+  return updated;
+}
+
+function taskLabel(task: TaskState): string {
+  if (task.isConverged) return 'CONVERGED';
+  if (task.isFailed) return 'FAILED';
+  if (task.isBlocked) return 'BLOCKED';
+  if (task.isPending) return 'PENDING';
+  if (task.isInProgress) return 'RUNNING';
+  return 'UNKNOWN';
+}
+
+const { values, positionals } = parseCliArgs();
 
 if (values.help) {
   console.log(formatHelp(appVersion(), {
@@ -107,20 +182,7 @@ if (values.help) {
   process.exit(0);
 }
 
-let paths;
-try {
-  paths = resolveStatePaths({
-    repo: values.repo || env.repoDir || process.cwd(),
-    stateRoot: values['state-root'] || env.stateRoot,
-    tasks: values.tasks || env.tasksDir,
-    worktrees: values.worktrees || env.worktreesDir,
-  });
-} catch (e: unknown) {
-  console.error(`\n  ❌ ${e instanceof Error ? e.message : String(e)}`);
-  console.error('  Example: orchestrator --repo /path/to/your/repo\n');
-  process.exit(1);
-}
-
+const paths = resolveCliPaths(values);
 const repo = paths.repo;
 const dir = paths.tasks;
 const worktreesDir = paths.worktrees;
@@ -132,18 +194,10 @@ const infinite = values.infinite || values.loop || env.infinite;
 // Parse parallel value: CLI flag > env var > default
 let parallel = env.parallelTasks;
 if (values.parallel) {
-   const parsed = parseInt(values.parallel, 10);
-   if (!Number.isFinite(parsed) || parsed < 0) {
-     console.warn(`⚠️  --parallel must be 0-100; received '${values.parallel}', using default: 1`);
-   } else if (parsed > 100) {
-     console.warn(`⚠️  --parallel clamped to 100 (received: ${parsed})`);
-     parallel = 100;
-   } else {
-     parallel = parsed;
-   }
+  parallel = parseParallel(values.parallel, parallel);
 }
 
-const keepConverged = values['keep-converged'] ? parseInt(values['keep-converged'] as string, 10) : undefined;
+const keepConverged = values['keep-converged'] ? parseInt(values['keep-converged'], 10) : undefined;
 
 let agent: CodingAgent;
 try {
@@ -187,17 +241,9 @@ if (positionals[0] === 'edit') {
   const engine = new Engine(dir, { repoDir: repo });
   const task = engine.pickByNumber(tn);
   if (!task) { console.error(`T${tn} not found`); process.exit(1); }
-  const { readFileSync, writeFileSync } = await import('node:fs');
-  const { join } = await import('node:path');
-  const ar = readFileSync(join(task.directory, 'autoresearch.md'), 'utf-8');
-  let updated = ar;
-  if (values.goal) updated = updated.replace(/^## Goal.*$/m, `## Goal: ${values.goal}`);
-  if (values.metric) updated = updated.replace(/\`[^`]+\` — task-specific deliverable/, `\`${values.metric}\` — task-specific deliverable`);
-  if (values.scope) {
-    const lines = (values.scope as string).split(/\s+/).map((f: string) => `- ${f}`).join('\n');
-    updated = updated.replace(/^## Scope\n[\s\S]*?(?=^## |\Z)/m, `## Scope\n${lines}\n`);
-  }
-  writeFileSync(join(task.directory, 'autoresearch.md'), updated);
+  const autoresearchPath = join(task.directory, 'autoresearch.md');
+  const updated = updateAutoresearch(readFileSync(autoresearchPath, 'utf-8'), values);
+  writeFileSync(autoresearchPath, updated);
   console.log(`✅ T${tn} updated`);
   process.exit(0);
 }
@@ -223,7 +269,6 @@ if (values.check) {
   process.exit(results.every(r => r.ok) ? 0 : 1);
 }
 
-
 if (values.status) {
   const tdb = TaskDb.open(resolve(dir, 'state.db'));
   try {
@@ -231,19 +276,14 @@ if (values.status) {
     const nums = [...all.keys()].map(Number).sort((a, b) => a - b);
     console.log('');
     for (const k of nums) {
-      const t = all.get(String(k));
-      if (!t) continue;
-      let label = 'UNKNOWN';
-      if (t.isConverged) label = 'CONVERGED';
-      else if (t.isFailed) label = 'FAILED';
-      else if (t.isBlocked) label = 'BLOCKED';
-      else if (t.isPending) label = 'PENDING';
-      else if (t.isInProgress) label = 'RUNNING';
-      const deps = t.dependencies.length > 0 ? `  <- depends: ${t.dependencies.join(', ')}` : '';
-      const goal = t.goal.length > 55 ? t.goal.slice(0, 52) + '...' : t.goal;
+      const task = all.get(String(k));
+      if (!task) continue;
+      const label = taskLabel(task);
+      const deps = task.dependencies.length > 0 ? `  <- depends: ${task.dependencies.join(', ')}` : '';
+      const goal = task.goal.length > 55 ? `${task.goal.slice(0, 52)}...` : task.goal;
       console.log(`  ${label.padEnd(9)} T${k}  ${goal}${deps}`);
-      if (t.isBlocked) {
-        console.log(`       blocked after ${t.failureCount} failures`);
+      if (task.isBlocked) {
+        console.log(`       blocked after ${task.failureCount} failures`);
       }
     }
     console.log(`  -- ${all.size} total\n`);
@@ -259,9 +299,9 @@ if (values.graph) {
     const nodes: GraphNode[] = [];
     // Read every status (including converged) so the full DAG is shown.
     for (const row of tdb.byStatus(['PENDING', 'IN_PROGRESS', 'FAILED', 'BLOCKED', 'CONVERGED'])) {
-      const t = TaskState.fromRow(tdb, dir, row);
+      const task = TaskState.fromRow(tdb, dir, row);
       const status = row.status === 'IN_PROGRESS' ? 'running' : row.status.toLowerCase();
-      nodes.push({ number: t.taskNumber, status, goal: t.goal, deps: [...t.dependencies] });
+      nodes.push({ number: task.taskNumber, status, goal: task.goal, deps: [...task.dependencies] });
     }
     console.log('');
     for (const line of formatTaskGraph(nodes)) console.log(line);
@@ -281,7 +321,6 @@ if (failed.length > 0) {
 }
 
 if (values.stop) {
-  const { writeFileSync } = await import('node:fs');
   writeFileSync(resolve(dir, '.stop'), '');
   console.log('Stop signal sent.');
   process.exit(0);
@@ -348,10 +387,10 @@ const engine = new Engine(dir, {
 // because blocked tasks are terminal — nobody is processing them).
 if (values.unblock) {
   if (values.unblock.toLowerCase() === 'all') {
-    const blocked = [...TaskState.scan(engine.taskDb, dir).values()].filter(t => t.isBlocked);
+    const blocked = [...TaskState.scan(engine.taskDb, dir).values()].filter(task => task.isBlocked);
     if (blocked.length === 0) { console.log('No blocked tasks to unblock.'); process.exit(0); }
-    for (const t of blocked) t.unblock();
-    console.log(`Unblocked ${blocked.length} task(s) → PENDING: ${blocked.map(t => `T${t.taskNumber}`).join(', ')}. They will be picked up on the next tick.`);
+    for (const task of blocked) task.unblock();
+    console.log(`Unblocked ${blocked.length} task(s) → PENDING: ${blocked.map(task => `T${task.taskNumber}`).join(', ')}. They will be picked up on the next tick.`);
     process.exit(0);
   }
   const tn = parseInt(values.unblock, 10);
