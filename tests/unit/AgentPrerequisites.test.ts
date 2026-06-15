@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { PiSpawner } from '../src/PiSpawner.js';
-import { CopilotCliAgent } from '../src/CopilotCliAgent.js';
-import { Prerequisites } from '../src/Prerequisites.js';
-import type { CodingAgent, PrerequisiteResult } from '../src/CodingAgent.js';
+import { PiSpawner } from '../../src/PiSpawner.js';
+import { CopilotCliAgent } from '../../src/CopilotCliAgent.js';
+import { Prerequisites } from '../../src/Prerequisites.js';
+import type { CodingAgent, PrerequisiteResult } from '../../src/CodingAgent.js';
 
 vi.mock('node:child_process', () => ({
   spawn: vi.fn(),

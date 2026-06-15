@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { appendAgentLog, openAgentLog, runLogName } from '../src/AgentLog.js';
+import { appendAgentLog, openAgentLog, runLogName } from '../../src/AgentLog.js';
 
 function setup(): string {
   const root = resolve('test-artifacts');
@@ -62,7 +62,7 @@ describe('AgentLog', () => {
         };
       });
 
-      const { openAgentLog: mockedOpenAgentLog } = await import('../src/AgentLog.js');
+      const { openAgentLog: mockedOpenAgentLog } = await import('../../src/AgentLog.js');
       const path = join('missing', 'agent.log');
       const log = mockedOpenAgentLog(path, 64);
 

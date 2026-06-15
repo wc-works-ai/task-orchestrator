@@ -4,7 +4,7 @@ import { mkdtempSync, existsSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { execFileSync, execSync } from 'node:child_process';
-import { Worktree, MergeConflictError } from '../src/Worktree.js';
+import { Worktree, MergeConflictError } from '../../src/Worktree.js';
 
 function setup() {
   const dir = mkdtempSync(resolve(tmpdir(), 'wt-test-'));
@@ -391,7 +391,7 @@ describe('Worktree', () => {
     }));
 
     try {
-      const { Worktree: MockedWorktree } = await import('../src/Worktree.js');
+      const { Worktree: MockedWorktree } = await import('../../src/Worktree.js');
       const wt = new MockedWorktree('Q:\\Repos\\not-a-repo', { name: 'T01-test' });
 
       expect(() => wt.merge()).toThrow('Merge of orchestrator/T01-test failed: plain-string failure');

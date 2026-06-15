@@ -1,5 +1,7 @@
 #!/bin/sh
-# Pre-commit hook: type-check always, tests always, coverage only in worktrees
+# Pre-commit hook: fast feedback — type-check + unit tests only.
+# Coverage is enforced at pre-push (npm run tc) and, for agent work, at merge
+# via ORCH_VERIFY_CMD.
 set -e
 
 # Git hooks inherit env vars that break git tests
@@ -15,18 +17,9 @@ if ! npm run c 2>/dev/null; then
   exit 1
 fi
 
-# In worktrees (.git is a file, not a dir), also enforce coverage
-if [ -f .git ]; then
-  echo "   (worktree detected — enforcing coverage)"
-  if ! npm run tc 2>/dev/null; then
-    echo "❌ Coverage dropped below 100% — add tests for new code"
-    exit 1
-  fi
-else
-  if ! npm run t 2>/dev/null; then
-    echo "❌ Tests failed — fix failures before committing"
-    exit 1
-  fi
+if ! npm run test:unit 2>/dev/null; then
+  echo "❌ Unit tests failed — fix failures before committing"
+  exit 1
 fi
 
 echo "✅ Pre-commit checks passed"

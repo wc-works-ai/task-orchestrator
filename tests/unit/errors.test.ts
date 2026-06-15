@@ -8,7 +8,7 @@ import {
   SchemaMismatchError,
   handleOrchestratorError,
   withRetry,
-} from '../src/errors.js';
+} from '../../src/errors.js';
 
 function fakeLogger() {
   return { warn: vi.fn(), error: vi.fn() };

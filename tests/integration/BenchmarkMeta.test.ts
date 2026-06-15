@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import {
   sha256, readMeta, writeMeta, shouldRegenerate, type BenchmarkMeta,
-} from '../src/BenchmarkMeta.js';
+} from '../../src/BenchmarkMeta.js';
 
 const META = (over: Partial<BenchmarkMeta> = {}): BenchmarkMeta => ({
   fingerprint: 'fp', base: 'sha-a', hash: 'h', genAttempts: 0, ...over,

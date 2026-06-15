@@ -2,9 +2,9 @@ import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { rm } from 'node:fs/promises';
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
-import { Engine } from '../src/Engine.js';
-import { TaskState, Status, CONVERGENCE_THRESHOLD, MAX_FAILURES } from '../src/TaskState.js';
-import { memStateDb, openStateDb, seed, rowOf, statusOf, type StateDb, type SeedOpts } from './helpers.js';
+import { Engine } from '../../src/Engine.js';
+import { TaskState, Status, CONVERGENCE_THRESHOLD, MAX_FAILURES } from '../../src/TaskState.js';
+import { memStateDb, openStateDb, seed, rowOf, statusOf, type StateDb, type SeedOpts } from '../shared/helpers.js';
 
 const zero = () => 0;
 const one = () => 1;

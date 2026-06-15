@@ -1,15 +1,38 @@
 import { defineConfig } from 'vitest/config';
 
+// Prevent tests from accessing user's ~/.gitconfig (avoids permission errors)
+const GIT_ENV = { GIT_CONFIG_GLOBAL: '' };
+
 export default defineConfig({
   test: {
-    include: ['tests/**/*.test.ts'],
-    env: {
-      // Prevent tests from accessing user's ~/.gitconfig (avoids permission errors)
-      GIT_CONFIG_GLOBAL: '',
-    },
+    projects: [
+      {
+        test: {
+          name: 'unit',
+          include: ['tests/unit/**/*.test.ts'],
+          env: GIT_ENV,
+        },
+      },
+      {
+        test: {
+          name: 'integration',
+          include: ['tests/integration/**/*.test.ts'],
+          env: GIT_ENV,
+        },
+      },
+      {
+        test: {
+          name: 'e2e',
+          include: ['tests/e2e/**/*.test.ts'],
+          env: GIT_ENV,
+        },
+      },
+    ],
     coverage: {
       provider: 'v8',
-      thresholds: { branches: 100, functions: 100, lines: 100, statements: 100 },
+      reporter: ['text', 'text-summary', 'html', 'lcov'],
+      reportsDirectory: 'coverage',
+      thresholds: { 100: true },
       exclude: ['vitest.config.ts', 'src/env.ts'],
     },
   },

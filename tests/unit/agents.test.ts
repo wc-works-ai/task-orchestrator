@@ -4,9 +4,9 @@ import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { createCodingAgent } from '../src/agents.js';
-import { PiSpawner, type PiSpawnerOptions } from '../src/PiSpawner.js';
-import { memStateDb, seedState, type StateDb } from './helpers.js';
+import { createCodingAgent } from '../../src/agents.js';
+import { PiSpawner, type PiSpawnerOptions } from '../../src/PiSpawner.js';
+import { memStateDb, seedState, type StateDb } from '../shared/helpers.js';
 
 vi.mock('node:child_process', () => ({
   spawn: vi.fn(),

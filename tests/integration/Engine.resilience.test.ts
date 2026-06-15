@@ -3,10 +3,10 @@ import { rm } from 'node:fs/promises';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { Engine } from '../src/Engine.js';
-import { TaskState } from '../src/TaskState.js';
-import { DbCorruptError } from '../src/errors.js';
-import { memStateDb, seed, type StateDb } from './helpers.js';
+import { Engine } from '../../src/Engine.js';
+import { TaskState } from '../../src/TaskState.js';
+import { DbCorruptError } from '../../src/errors.js';
+import { memStateDb, seed, type StateDb } from '../shared/helpers.js';
 
 // State now lives in SQLite, so a crashed worker is recovered by
 // tdb.recoverStale() (covered in Engine.test.ts) rather than the old

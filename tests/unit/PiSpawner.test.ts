@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
-import { PiSpawner, killTree } from '../src/PiSpawner.js';
-import { memStateDb, seedState, type StateDb } from './helpers.js';
+import { PiSpawner, killTree } from '../../src/PiSpawner.js';
+import { memStateDb, seedState, type StateDb } from '../shared/helpers.js';
 
 vi.mock('node:child_process', () => ({
   execFileSync: vi.fn(),

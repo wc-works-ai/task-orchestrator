@@ -10,8 +10,8 @@ unset GIT_OBJECT_DIRECTORY
 
 echo "🔍 Running pre-push checks..."
 
-# Lint + type-check + coverage + build
-npm run pkg:lint && npm run c && npm run tc && npm run b
+# Lint + type-check + coverage (unit+integration) + e2e + build
+npm run pkg:lint && npm run c && npm run tc && npm run test:e2e && npm run b
 
 # Check for unstaged changes (test files updated but not staged)
 if ! git diff --quiet -- tests/; then
