@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import { parseArgs } from 'node:util';
+import { parseArgs, type ParseArgsConfig } from 'node:util';
 import { createInterface } from 'node:readline/promises';
-import { stdin as input, stdout as output } from 'node:process';
 import { join, resolve } from 'node:path';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -49,18 +48,50 @@ const CLI_OPTIONS = {
   help: { type: 'boolean', short: 'h', default: false },
 } as const;
 
+const CLI_PARSE_CONFIG = {
+  allowPositionals: true,
+  options: CLI_OPTIONS,
+} as const satisfies ParseArgsConfig;
+
+const TASK_LABELS = {
+  converged: 'CONVERGED',
+  failed: 'FAILED',
+  blocked: 'BLOCKED',
+  pending: 'PENDING',
+  running: 'RUNNING',
+  unknown: 'UNKNOWN',
+} as const;
+
+const parseCliArgsInternal = () => parseArgs(CLI_PARSE_CONFIG);
+
+type CliArgs = ReturnType<typeof parseCliArgsInternal>;
+type CliValues = CliArgs['values'];
+type CliPositionals = CliArgs['positionals'];
+type ResolvedPaths = ReturnType<typeof resolveCliPaths>;
+type RuntimeOptions = {
+  repo: string;
+  tasksDir: string;
+  worktreesDir: string;
+  autoStash: boolean;
+  noWorktree: boolean;
+  keepAlive: boolean;
+  infinite: boolean;
+  parallel: number;
+  keepConverged: number | undefined;
+};
+
 async function promptMergeRecovery(failure: MergeRecoveryFailure): Promise<MergeRecoveryAction> {
   console.error('');
   console.error(`  ⚠️  T${failure.task.number} could not merge ${failure.branch}`);
   console.error(`  worktree: ${failure.worktreePath}`);
   console.error(`  reason: ${failure.error}`);
   console.error('  NOTE: "Your local changes" refers to uncommitted edits in the WORKTREE (the agent\'s work), not the main repo.');
-  if (!input.isTTY) {
+  if (!process.stdin.isTTY) {
     console.error('  Non-interactive shell: blocking the task and keeping the worktree for inspection.');
     return MergeRecoveryAction.Stop;
   }
 
-  const rl = createInterface({ input, output });
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
     while (true) {
       const answer = (await rl.question(
@@ -79,12 +110,9 @@ async function promptMergeRecovery(failure: MergeRecoveryFailure): Promise<Merge
   }
 }
 
-function parseCliArgs() {
+function parseCliArgs(): CliArgs {
   try {
-    return parseArgs({
-      allowPositionals: true,
-      options: CLI_OPTIONS,
-    });
+    return parseCliArgsInternal();
   } catch (e: unknown) {
     console.error(`\n  error: ${e instanceof Error ? e.message : String(e)}`);
     console.error('  Run orchestrator --help for usage.\n');
@@ -92,7 +120,7 @@ function parseCliArgs() {
   }
 }
 
-function resolveCliPaths(values: ReturnType<typeof parseCliArgs>['values']) {
+function resolveCliPaths(values: CliValues) {
   try {
     return resolveStatePaths({
       repo: values.repo || env.repoDir || process.cwd(),
@@ -120,29 +148,72 @@ function parseParallel(value: string, fallback: number): number {
   return parsed;
 }
 
+function parseOptionalInteger(flag: string, value: string): number | undefined {
+  if (!value) return undefined;
+  const parsed = parseInt(value, 10);
+  if (!Number.isFinite(parsed)) {
+    console.warn(`⚠️  ${flag} must be a number; received '${value}', ignoring`);
+    return undefined;
+  }
+  return parsed;
+}
+
+function normalizeRuntimeOptions(values: CliValues, paths: ResolvedPaths): RuntimeOptions {
+  let parallel = env.parallelTasks;
+  if (values.parallel) {
+    parallel = parseParallel(values.parallel, parallel);
+  }
+
+  return {
+    repo: paths.repo,
+    tasksDir: paths.tasks,
+    worktreesDir: paths.worktrees,
+    autoStash: values['auto-stash'] || env.autoStash,
+    noWorktree: values['no-worktree'] || env.noWorktree,
+    keepAlive: values['keep-alive'] || env.keepAlive,
+    infinite: values.infinite || values.loop || env.infinite,
+    parallel,
+    keepConverged: parseOptionalInteger('--keep-converged', values['keep-converged']),
+  };
+}
+
+function detectLineBreak(content: string): '\r\n' | '\n' {
+  return content.includes('\r\n') ? '\r\n' : '\n';
+}
+
 function splitSectionBody(body: string): string[] {
   return body.split(/\r?\n/);
 }
 
-function replaceSection(content: string, heading: string, bodyLines: readonly string[]): string {
+function findSectionRange(lines: readonly string[], heading: string): readonly [number, number] | undefined {
   const header = `## ${heading}`;
-  const lines = content.split('\n');
   const start = lines.findIndex(line => line === header || line.startsWith(`${header}:`));
-  if (start === -1) return content;
+  if (start === -1) return undefined;
 
   let end = start + 1;
-  while (end < lines.length && !lines[end]!.startsWith('## ')) end++;
-
-  const updated = [
-    ...lines.slice(0, start),
-    header,
-    ...bodyLines,
-    ...lines.slice(end),
-  ].join('\n');
-  return content.endsWith('\n') && !updated.endsWith('\n') ? `${updated}\n` : updated;
+  while (end < lines.length && !/^##\s/.test(lines[end]!)) end++;
+  return [start, end];
 }
 
-function updateAutoresearch(content: string, values: ReturnType<typeof parseCliArgs>['values']): string {
+function replaceSection(content: string, heading: string, bodyLines: readonly string[]): string {
+  const lines = content.split(/\r?\n/);
+  const range = findSectionRange(lines, heading);
+  if (!range) return content;
+
+  const [start, end] = range;
+  return [
+    ...lines.slice(0, start),
+    `## ${heading}`,
+    ...bodyLines,
+    ...lines.slice(end),
+  ].join(detectLineBreak(content));
+}
+
+function normalizeScope(scope: string): string[] {
+  return scope.split(/\s+/).filter(Boolean).map(file => `- ${file}`);
+}
+
+function updateAutoresearch(content: string, values: CliValues): string {
   let updated = content;
   if (values.goal) {
     updated = replaceSection(updated, 'Goal', splitSectionBody(values.goal));
@@ -151,18 +222,186 @@ function updateAutoresearch(content: string, values: ReturnType<typeof parseCliA
     updated = updated.replace(/\`[^`]+\` — task-specific deliverable/, `\`${values.metric}\` — task-specific deliverable`);
   }
   if (values.scope) {
-    updated = replaceSection(updated, 'Scope', values.scope.split(/\s+/).map(file => `- ${file}`));
+    updated = replaceSection(updated, 'Scope', normalizeScope(values.scope));
   }
   return updated;
 }
 
 function taskLabel(task: TaskState): string {
-  if (task.isConverged) return 'CONVERGED';
-  if (task.isFailed) return 'FAILED';
-  if (task.isBlocked) return 'BLOCKED';
-  if (task.isPending) return 'PENDING';
-  if (task.isInProgress) return 'RUNNING';
-  return 'UNKNOWN';
+  if (task.isConverged) return TASK_LABELS.converged;
+  if (task.isFailed) return TASK_LABELS.failed;
+  if (task.isBlocked) return TASK_LABELS.blocked;
+  if (task.isPending) return TASK_LABELS.pending;
+  if (task.isInProgress) return TASK_LABELS.running;
+  return TASK_LABELS.unknown;
+}
+
+function parseTaskNumber(value: string | undefined, usage: string): number {
+  const taskNumber = parseInt(value ?? '', 10);
+  if (Number.isNaN(taskNumber)) {
+    console.error(usage);
+    process.exit(1);
+  }
+  return taskNumber;
+}
+
+function pickTaskOrExit(engine: Engine, taskNumber: number): TaskState {
+  const task = engine.pickByNumber(taskNumber);
+  if (!task) {
+    console.error(`T${taskNumber} not found`);
+    process.exit(1);
+  }
+  return task;
+}
+
+function printPathsAndAgent(paths: ResolvedPaths, agent: CodingAgent): void {
+  console.log(`repo: ${paths.repo}`);
+  console.log(`tasks: ${paths.tasks}`);
+  console.log(`worktrees: ${paths.worktrees}`);
+  console.log(`agent: ${agent.name}`);
+}
+
+function handleEditCommand(positionals: CliPositionals, values: CliValues, tasksDir: string, repo: string): void {
+  if (positionals[0] !== 'edit') return;
+
+  const taskNumber = parseTaskNumber(positionals[1], 'Usage: orchestrator edit <n> [--goal ...] [--metric ...] [--scope ...]');
+  const engine = new Engine(tasksDir, { repoDir: repo });
+  const task = pickTaskOrExit(engine, taskNumber);
+  const autoresearchPath = join(task.directory, 'autoresearch.md');
+  const updated = updateAutoresearch(readFileSync(autoresearchPath, 'utf-8'), values);
+  writeFileSync(autoresearchPath, updated);
+  console.log(`✅ T${taskNumber} updated`);
+  process.exit(0);
+}
+
+function handleAddCommand(positionals: CliPositionals, values: CliValues, tasksDir: string): void {
+  if (positionals[0] !== 'add') return;
+
+  const name = positionals[1];
+  if (!name) {
+    console.error('Usage: orchestrator add <name> [--goal ...] [--metric ...] [--scope ...]');
+    process.exit(1);
+  }
+
+  const opts: Record<string, string | string[]> = {};
+  if (values.goal) opts.goal = values.goal;
+  if (values.metric) opts.metric = values.metric;
+  if (values.scope) opts.scope = values.scope.split(/\s+/).filter(Boolean);
+  const result = addTask(tasksDir, name, opts);
+  console.log(`✅ T${result.number} added: ${name}`);
+  console.log(`   ${result.directory}`);
+  console.log('   Next: edit autoresearch.md + benchmark.js, then npm run tick');
+  process.exit(0);
+}
+
+function handleStatusCommand(enabled: boolean, tasksDir: string): void {
+  if (!enabled) return;
+
+  const tdb = TaskDb.open(resolve(tasksDir, 'state.db'));
+  try {
+    const all = TaskState.scan(tdb, tasksDir);
+    const nums = [...all.keys()].map(Number).sort((a, b) => a - b);
+    console.log('');
+    for (const key of nums) {
+      const task = all.get(String(key));
+      if (!task) continue;
+      const deps = task.dependencies.length > 0 ? `  <- depends: ${task.dependencies.join(', ')}` : '';
+      const goal = task.goal.length > 55 ? `${task.goal.slice(0, 52)}...` : task.goal;
+      console.log(`  ${taskLabel(task).padEnd(9)} T${key}  ${goal}${deps}`);
+      if (task.isBlocked) {
+        console.log(`       blocked after ${task.failureCount} failures`);
+      }
+    }
+    console.log(`  -- ${all.size} total\n`);
+  } finally {
+    tdb.close();
+  }
+  process.exit(0);
+}
+
+function handleGraphCommand(enabled: boolean, tasksDir: string): void {
+  if (!enabled) return;
+
+  const tdb = TaskDb.open(resolve(tasksDir, 'state.db'));
+  try {
+    const nodes: GraphNode[] = [];
+    for (const row of tdb.byStatus(['PENDING', 'IN_PROGRESS', 'FAILED', 'BLOCKED', 'CONVERGED'])) {
+      const task = TaskState.fromRow(tdb, tasksDir, row);
+      const status = row.status === 'IN_PROGRESS' ? 'running' : row.status.toLowerCase();
+      nodes.push({ number: task.taskNumber, status, goal: task.goal, deps: [...task.dependencies] });
+    }
+    console.log('');
+    for (const line of formatTaskGraph(nodes)) console.log(line);
+    console.log('');
+  } finally {
+    tdb.close();
+  }
+  process.exit(0);
+}
+
+function ensureRepoExists(repo: string): void {
+  if (existsSync(repo)) return;
+  console.error(`\n  ❌ Repo folder not found: ${repo}\n`);
+  process.exit(1);
+}
+
+function ensureTasksDirExists(tasksDir: string): void {
+  if (existsSync(tasksDir)) return;
+  console.error(`\n  ❌ Tasks directory not found: ${tasksDir}`);
+  console.error('  Create it with the add command, or pass --tasks / ORCH_TASKS to an existing task folder.\n');
+  process.exit(1);
+}
+
+function printTickOutcome(result: { task: TaskInfo | null; converged: boolean; metric: number }): void {
+  if (!result.task) return;
+  const icon = result.converged ? '✅' : result.metric === 0 ? '⏳' : '❌';
+  const status = result.converged ? 'converged' : result.metric === 0 ? 'convergence pending' : `metric=${result.metric}`;
+  console.log(`  ${icon} T${result.task.number}: ${status} — ${result.task.goal.slice(0, 60)}`);
+}
+
+function handleUnblockCommand(engine: Engine, tasksDir: string, unblock: string): void {
+  if (!unblock) return;
+
+  if (unblock.toLowerCase() === 'all') {
+    const blocked = [...TaskState.scan(engine.taskDb, tasksDir).values()].filter(task => task.isBlocked);
+    if (blocked.length === 0) {
+      console.log('No blocked tasks to unblock.');
+      process.exit(0);
+    }
+    for (const task of blocked) task.unblock();
+    console.log(`Unblocked ${blocked.length} task(s) → PENDING: ${blocked.map(task => `T${task.taskNumber}`).join(', ')}. They will be picked up on the next tick.`);
+    process.exit(0);
+  }
+
+  const taskNumber = parseTaskNumber(unblock, 'Invalid task number (use a number or "all")');
+  const task = pickTaskOrExit(engine, taskNumber);
+  if (task.isConverged) {
+    console.error(`T${taskNumber} is CONVERGED; nothing to unblock`);
+    process.exit(1);
+  }
+  task.unblock();
+  console.log(`T${taskNumber} unblocked → PENDING (claim cleared, failures reset); it will be picked up on the next tick.`);
+  process.exit(0);
+}
+
+function handleTaskCommand(engine: Engine, taskValue: string, repo: string): void {
+  if (!taskValue) return;
+
+  const taskNumber = parseTaskNumber(taskValue, 'Invalid task number');
+  const task = pickTaskOrExit(engine, taskNumber);
+  try {
+    const out = execFileSync(process.execPath, [resolve(task.directory, 'benchmark.js')], {
+      timeout: env.benchmarkTimeoutMs,
+      encoding: 'utf-8',
+      cwd: repo,
+    });
+    const metric = parseMetrics(out, 1, task.metricNames).total;
+    console.log(`${metric === 0 ? '⏳' : '❌'} T${taskNumber}: ${task.goal.slice(0, 60)} (metric=${metric})`);
+  } catch (e: unknown) {
+    const reason = e instanceof Error ? e.message : String(e);
+    console.log(`❌ T${taskNumber}: benchmark failed (${reason})`);
+  }
+  process.exit(0);
 }
 
 const { values, positionals } = parseCliArgs();
@@ -183,41 +422,24 @@ if (values.help) {
 }
 
 const paths = resolveCliPaths(values);
-const repo = paths.repo;
-const dir = paths.tasks;
-const worktreesDir = paths.worktrees;
-const autoStash = values['auto-stash'] || env.autoStash;
-const noWorktree = values['no-worktree'] || env.noWorktree;
-const keepAlive = values['keep-alive'] || env.keepAlive;
-const infinite = values.infinite || values.loop || env.infinite;
-
-// Parse parallel value: CLI flag > env var > default
-let parallel = env.parallelTasks;
-if (values.parallel) {
-  parallel = parseParallel(values.parallel, parallel);
-}
-
-const keepConverged = values['keep-converged'] ? parseInt(values['keep-converged'], 10) : undefined;
+const runtime = normalizeRuntimeOptions(values, paths);
 
 let agent: CodingAgent;
 try {
   agent = createCodingAgent(values.agent || env.agent, {
     ...(values.reasoning ? { reasoning: values.reasoning } : {}),
     ...(values.model ? { model: values.model } : {}),
-    workDir: repo,
+    workDir: runtime.repo,
   });
 } catch (e: unknown) {
   console.error(`\n  error: ${e instanceof Error ? e.message : String(e)}\n`);
   process.exit(1);
 }
 
-console.log(`repo: ${repo}`);
-console.log(`tasks: ${dir}`);
-console.log(`worktrees: ${worktreesDir}`);
-console.log(`agent: ${agent.name}`);
+printPathsAndAgent(paths, agent);
 
 if (values.config) {
-  console.log(formatEffectiveConfig(values as Record<string, unknown>, process.env));
+  console.log(formatEffectiveConfig({ ...values }, process.env));
   console.log('\nResolved paths');
   console.log(`  repo:       ${paths.repo}`);
   console.log(`  state root: ${paths.stateRoot}`);
@@ -227,137 +449,59 @@ if (values.config) {
   process.exit(0);
 }
 
-if (!existsSync(repo)) {
-  console.error(`\n  ❌ Repo folder not found: ${repo}\n`);
-  process.exit(1);
-}
+ensureRepoExists(runtime.repo);
 mkdirSync(paths.stateRoot, { recursive: true });
-mkdirSync(worktreesDir, { recursive: true });
+mkdirSync(runtime.worktreesDir, { recursive: true });
 
-// ── edit command ─────────────────────────────────────────────────────────
-if (positionals[0] === 'edit') {
-  const tn = parseInt(positionals[1] ?? '', 10);
-  if (isNaN(tn)) { console.error('Usage: orchestrator edit <n> [--goal ...] [--metric ...] [--scope ...]'); process.exit(1); }
-  const engine = new Engine(dir, { repoDir: repo });
-  const task = engine.pickByNumber(tn);
-  if (!task) { console.error(`T${tn} not found`); process.exit(1); }
-  const autoresearchPath = join(task.directory, 'autoresearch.md');
-  const updated = updateAutoresearch(readFileSync(autoresearchPath, 'utf-8'), values);
-  writeFileSync(autoresearchPath, updated);
-  console.log(`✅ T${tn} updated`);
-  process.exit(0);
-}
-
-// ── add command ──────────────────────────────────────────────────────────
-if (positionals[0] === 'add') {
-  const name = positionals[1];
-  if (!name) { console.error('Usage: orchestrator add <name> [--goal ...] [--metric ...] [--scope ...]'); process.exit(1); }
-  const opts: Record<string, string | string[]> = {};
-  if (values.goal) opts.goal = values.goal;
-  if (values.metric) opts.metric = values.metric;
-  if (values.scope) opts.scope = values.scope.split(/\s+/);
-  const r = addTask(dir, name, opts);
-  console.log(`✅ T${r.number} added: ${name}`);
-  console.log(`   ${r.directory}`);
-  console.log(`   Next: edit autoresearch.md + benchmark.js, then npm run tick`);
-  process.exit(0);
-}
+handleEditCommand(positionals, values, runtime.tasksDir, runtime.repo);
+handleAddCommand(positionals, values, runtime.tasksDir);
 
 if (values.check) {
   const results = await Prerequisites.check(agent);
   console.log(Prerequisites.format(results));
-  process.exit(results.every(r => r.ok) ? 0 : 1);
+  process.exit(results.every(result => result.ok) ? 0 : 1);
 }
 
-if (values.status) {
-  const tdb = TaskDb.open(resolve(dir, 'state.db'));
-  try {
-    const all = TaskState.scan(tdb, dir);
-    const nums = [...all.keys()].map(Number).sort((a, b) => a - b);
-    console.log('');
-    for (const k of nums) {
-      const task = all.get(String(k));
-      if (!task) continue;
-      const label = taskLabel(task);
-      const deps = task.dependencies.length > 0 ? `  <- depends: ${task.dependencies.join(', ')}` : '';
-      const goal = task.goal.length > 55 ? `${task.goal.slice(0, 52)}...` : task.goal;
-      console.log(`  ${label.padEnd(9)} T${k}  ${goal}${deps}`);
-      if (task.isBlocked) {
-        console.log(`       blocked after ${task.failureCount} failures`);
-      }
-    }
-    console.log(`  -- ${all.size} total\n`);
-  } finally {
-    tdb.close();
-  }
-  process.exit(0);
-}
+handleStatusCommand(values.status, runtime.tasksDir);
+handleGraphCommand(values.graph, runtime.tasksDir);
 
-if (values.graph) {
-  const tdb = TaskDb.open(resolve(dir, 'state.db'));
-  try {
-    const nodes: GraphNode[] = [];
-    // Read every status (including converged) so the full DAG is shown.
-    for (const row of tdb.byStatus(['PENDING', 'IN_PROGRESS', 'FAILED', 'BLOCKED', 'CONVERGED'])) {
-      const task = TaskState.fromRow(tdb, dir, row);
-      const status = row.status === 'IN_PROGRESS' ? 'running' : row.status.toLowerCase();
-      nodes.push({ number: task.taskNumber, status, goal: task.goal, deps: [...task.dependencies] });
-    }
-    console.log('');
-    for (const line of formatTaskGraph(nodes)) console.log(line);
-    console.log('');
-  } finally {
-    tdb.close();
-  }
-  process.exit(0);
-}
-
-// Quick prerequisite check before running
 const prereqs = await Prerequisites.check(agent);
-const failed = prereqs.filter(r => !r.ok);
+const failed = prereqs.filter(result => !result.ok);
 if (failed.length > 0) {
   console.error(Prerequisites.format(prereqs));
   process.exit(1);
 }
 
 if (values.stop) {
-  writeFileSync(resolve(dir, '.stop'), '');
+  writeFileSync(resolve(runtime.tasksDir, '.stop'), '');
   console.log('Stop signal sent.');
   process.exit(0);
 }
 
-// Verify tasks directory exists before running
-if (!existsSync(dir)) {
-  console.error(`\n  ❌ Tasks directory not found: ${dir}`);
-  console.error('  Create it with the add command, or pass --tasks / ORCH_TASKS to an existing task folder.\n');
-  process.exit(1);
-}
+ensureTasksDirExists(runtime.tasksDir);
 
-const engine = new Engine(dir, {
-  repoDir: repo,
-  worktreesDir,
-  noWorktree,
-  autoStashBeforeMerge: autoStash,
-  mergeRecovery: autoStash ? () => MergeRecoveryAction.StashAndRetry : promptMergeRecovery,
+const engine = new Engine(runtime.tasksDir, {
+  repoDir: runtime.repo,
+  worktreesDir: runtime.worktreesDir,
+  noWorktree: runtime.noWorktree,
+  autoStashBeforeMerge: runtime.autoStash,
+  mergeRecovery: runtime.autoStash ? () => MergeRecoveryAction.StashAndRetry : promptMergeRecovery,
   verifyCmd: 'npm run tc',
-  parallel,
-  ...(keepConverged !== undefined ? { keepConverged } : {}),
-  infinite,
+  parallel: runtime.parallel,
+  ...(runtime.keepConverged !== undefined ? { keepConverged: runtime.keepConverged } : {}),
+  infinite: runtime.infinite,
   spawn: (task, worktreePath, signal) => agent.spawn(task, worktreePath, signal),
-  benchmark: async (t: TaskInfo) => {
-    // Engine sets t.cwd to the worktree (post-agent / pre-merge checks) or the
-    // repo (initial check). Run the task's benchmark.js from there so it measures
-    // the right tree regardless of where the task directory lives.
-    const reasonPath = resolve(t.directory, 'benchmark.log');
+  benchmark: async (task: TaskInfo) => {
+    const reasonPath = resolve(task.directory, 'benchmark.log');
     let out: string;
     let crashed = false;
     try {
-      out = execFileSync(process.execPath, [resolve(t.directory, 'benchmark.js')], {
-        timeout: env.benchmarkTimeoutMs, encoding: 'utf-8', cwd: t.cwd,
+      out = execFileSync(process.execPath, [resolve(task.directory, 'benchmark.js')], {
+        timeout: env.benchmarkTimeoutMs,
+        encoding: 'utf-8',
+        cwd: task.cwd,
       });
     } catch (e: unknown) {
-      // A non-zero exit, timeout, or spawn error makes the result unreliable —
-      // capture whatever printed before the crash so the reason is never lost.
       crashed = true;
       const err = e as { stdout?: string; stderr?: string; message?: string };
       out = `${err.stdout ?? ''}${err.stderr ?? ''}`.trim() || (err.message ?? 'benchmark execution failed');
@@ -367,101 +511,61 @@ const engine = new Engine(dir, {
     } catch (e: unknown) {
       console.warn(`⚠️  Could not write benchmark log ${reasonPath}: ${e instanceof Error ? e.message : String(e)}`);
     }
-    const outcome = classifyBenchmark(out, crashed, t.metrics);
+    const outcome = classifyBenchmark(out, crashed, task.metrics);
     if (outcome.kind !== 'ok' || outcome.total > 0) {
       const summary = outcome.kind === 'crash'
         ? 'benchmark crashed (see log)'
         : outcome.kind === 'no_metrics'
           ? `no METRIC lines emitted (treated as ${outcome.total})`
           : unmetSummary(outcome);
-      console.log(`T${t.number} unmet: ${summary}`);
+      console.log(`T${task.number} unmet: ${summary}`);
       console.log(`  why: ${reasonPath}`);
     }
-    // Hand the Engine the full structured outcome so a crash / no-METRIC run is
-    // never mistaken for ordinary "work remaining".
     return outcome;
   },
 });
 
-// Reset blocked/failed task(s) back to pending (no --stop needed; loop-safe
-// because blocked tasks are terminal — nobody is processing them).
-if (values.unblock) {
-  if (values.unblock.toLowerCase() === 'all') {
-    const blocked = [...TaskState.scan(engine.taskDb, dir).values()].filter(task => task.isBlocked);
-    if (blocked.length === 0) { console.log('No blocked tasks to unblock.'); process.exit(0); }
-    for (const task of blocked) task.unblock();
-    console.log(`Unblocked ${blocked.length} task(s) → PENDING: ${blocked.map(task => `T${task.taskNumber}`).join(', ')}. They will be picked up on the next tick.`);
-    process.exit(0);
-  }
-  const tn = parseInt(values.unblock, 10);
-  if (isNaN(tn)) { console.error('Invalid task number (use a number or "all")'); process.exit(1); }
-  const task = engine.pickByNumber(tn);
-  if (!task) { console.error(`T${tn} not found`); process.exit(1); }
-  if (task.isConverged) { console.error(`T${tn} is CONVERGED; nothing to unblock`); process.exit(1); }
-  task.unblock();
-  console.log(`T${tn} unblocked → PENDING (claim cleared, failures reset); it will be picked up on the next tick.`);
-  process.exit(0);
-}
-
-// Force-pick a specific task by number
-if (values.task) {
-  const tn = parseInt(values.task, 10);
-  if (isNaN(tn)) { console.error('Invalid task number'); process.exit(1); }
-  const task = engine.pickByNumber(tn);
-  if (!task) { console.error(`T${tn} not found`); process.exit(1); }
-  try {
-    const out = execFileSync(process.execPath, [resolve(task.directory, 'benchmark.js')], { timeout: env.benchmarkTimeoutMs, encoding: 'utf-8', cwd: repo });
-    const metric = parseMetrics(out, 1, task.metricNames).total;
-    console.log(`${metric === 0 ? '⏳' : '❌'} T${tn}: ${task.goal.slice(0, 60)} (metric=${metric})`);
-  } catch (e: unknown) {
-    const reason = e instanceof Error ? e.message : String(e);
-    console.log(`❌ T${tn}: benchmark failed (${reason})`);
-  }
-  process.exit(0);
-}
+handleUnblockCommand(engine, runtime.tasksDir, values.unblock);
+handleTaskCommand(engine, values.task, runtime.repo);
 
 try {
   if (values.once) {
-    const r = await engine.tick();
+    const result = await engine.tick();
     if (engine.environmentError) {
       console.error(`\n  ❌ Environment issue: ${engine.environmentError}`);
       console.error('  Stopped without consuming any task retries. Fix the environment (e.g. set the API key) and rerun.\n');
       process.exit(1);
     }
-    if (r.task) {
-      const icon = r.converged ? '✅' : r.metric === 0 ? '⏳' : '❌';
-      console.log(`${icon} T${r.task.number}: metric=${r.metric}`);
+    if (result.task) {
+      const icon = result.converged ? '✅' : result.metric === 0 ? '⏳' : '❌';
+      console.log(`${icon} T${result.task.number}: metric=${result.metric}`);
     } else {
       console.log('Nothing actionable.');
     }
   } else {
-    console.log(infinite ? 'Running in infinite mode; stop with --stop' : 'Running until tasks complete');
-    const n = await engine.loop({
-      onTick: async (r, total) => {
-        if (r.task) {
-          const icon = r.converged ? '✅' : r.metric === 0 ? '⏳' : '❌';
-          const status = r.converged ? 'converged' : r.metric === 0 ? 'convergence pending' : `metric=${r.metric}`;
-          console.log(`  ${icon} T${r.task.number}: ${status} — ${r.task.goal.slice(0, 60)}`);
-        }
-        await printOverview(dir, total);
+    console.log(runtime.infinite ? 'Running in infinite mode; stop with --stop' : 'Running until tasks complete');
+    const tickCount = await engine.loop({
+      onTick: async (result, total) => {
+        printTickOutcome(result);
+        await printOverview(runtime.tasksDir, total);
       },
-      keepAlive,
-      infinite,
+      keepAlive: runtime.keepAlive,
+      infinite: runtime.infinite,
     });
     if (engine.environmentError) {
-      await printRunSummary(dir, n);
+      await printRunSummary(runtime.tasksDir, tickCount);
       console.error(`\n  ❌ Fatal: ${engine.environmentError}`);
       console.error('  The loop stopped because this affects every task (not a single-task failure).');
       console.error('  No task retries were consumed — fix the cause and rerun.\n');
       process.exit(1);
     }
-    await printRunSummary(dir, n);
+    await printRunSummary(runtime.tasksDir, tickCount);
     if (engine.stopReason === 'signal') {
-      console.log(`\n🛑 Stopped by stop signal (--stop / .stop) after ${n} ticks.\n`);
-    } else if (infinite) {
-      console.log(`\n🛑 stopped after ${n} ticks\n`);
+      console.log(`\n🛑 Stopped by stop signal (--stop / .stop) after ${tickCount} ticks.\n`);
+    } else if (runtime.infinite) {
+      console.log(`\n🛑 stopped after ${tickCount} ticks\n`);
     } else {
-      console.log(`\n🎉 ${n} ticks — all done\n`);
+      console.log(`\n🎉 ${tickCount} ticks — all done\n`);
     }
   }
 } catch (e: unknown) {
