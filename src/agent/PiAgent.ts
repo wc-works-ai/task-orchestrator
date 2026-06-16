@@ -29,7 +29,7 @@ const MAX_JSON_LINE_BUFFER = 1_000_000;
 const AUTH_SCAN_TAIL = 512;
 const ITERATION_MARKER = 'log_experiment';
 type MutableTokenUsage = { -readonly [K in keyof TokenUsage]: TokenUsage[K] };
-type NowSource = () => Date;
+type NowFn = () => Date;
 
 function errorMessage(error: unknown): string {
   /* v8 ignore next -- non-Error throws are incidental formatting cases */
@@ -427,11 +427,11 @@ export class PiAgent implements CodingAgent {
     return ms < 1000 ? `${ms}ms` : `${Math.round(ms / 1000)}s`;
   }
 
-  static #processPiLines(txt: string, state: RunState, agentLog: AgentLog, structured: boolean, nowSource: NowSource): void {
+  static #processPiLines(txt: string, state: RunState, agentLog: AgentLog, structured: boolean, nowFn: NowFn): void {
     const { lines, rest } = consumeLines(state.lineBuf, txt);
     for (const line of lines) {
       if (line.length <= MAX_JSON_LINE_BUFFER) {
-        PiAgent.#processPiLine(line, state, agentLog, structured, nowSource);
+        PiAgent.#processPiLine(line, state, agentLog, structured, nowFn);
       }
     }
     state.lineBuf = PiAgent.#appendBounded('', rest, MAX_JSON_LINE_BUFFER);
@@ -452,16 +452,16 @@ export class PiAgent implements CodingAgent {
     return overflow > 0 ? `${current.slice(overflow)}${next}` : `${current}${next}`;
   }
 
-  static #processPiLine(raw: string, state: RunState, agentLog: AgentLog, structured: boolean, nowSource: NowSource): void {
+  static #processPiLine(raw: string, state: RunState, agentLog: AgentLog, structured: boolean, nowFn: NowFn): void {
     const obj = PiAgent.#parseJsonRecord(raw);
     if (obj) {
       const usage = PiAgent.#usageFromEvent(obj);
       if (usage) PiAgent.#addTokenUsage(state.tokenUsage, usage);
-      if (structured) PiAgent.#appendStructuredLines(formatPiEvent(obj, nowSource()), state, agentLog);
+      if (structured) PiAgent.#appendStructuredLines(formatPiEvent(obj, nowFn()), state, agentLog);
       return;
     }
     if (structured) {
-      PiAgent.#appendStructuredLines([formatRawLine(raw, nowSource())], state, agentLog);
+      PiAgent.#appendStructuredLines([formatRawLine(raw, nowFn())], state, agentLog);
     }
   }
 
