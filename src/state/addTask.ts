@@ -12,6 +12,8 @@ export interface AddTaskOptions {
   readonly targetBranch?: string;
   /** Repository directory for detecting the current branch. */
   readonly repoDir?: string;
+  /** Scheduling priority; higher runs sooner (default 0). */
+  readonly priority?: number;
 }
 
 function detectBranch(repoDir?: string): string | undefined {
@@ -40,7 +42,7 @@ export function addTask(tasksDir: string, name: string, opts: AddTaskOptions = {
   try {
     // Insert as CREATING: the task is reserved but invisible to pick() until
     // its content is written and it is promoted to PENDING.
-    const { id, taskNumber, dir } = tdb.insert({ name, maxFailures, repo, targetBranch: branch ?? null });
+    const { id, taskNumber, dir } = tdb.insert({ name, maxFailures, repo, targetBranch: branch ?? null, priority: opts.priority ?? 0 });
 
     const goal = opts.goal ?? `TODO: describe what T${taskNumber} should accomplish`;
     const metric = opts.metric ?? 'goal';

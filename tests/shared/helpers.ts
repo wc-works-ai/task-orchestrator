@@ -9,6 +9,7 @@ export interface SeedOpts {
   status?: TaskStatus;
   convergence?: number;
   failures?: number;
+  priority?: number;
   maxFailures?: number | null;
   targetBranch?: string | null;
   claimedBy?: string | null;
@@ -52,14 +53,15 @@ export function seed(db: Db, tasksDir: string, n: number, name: string, opts: Se
   if (opts.benchmark) writeFileSync(join(content, 'benchmark.js'), 'console.log("METRIC ok 0");');
   const now = Date.now();
   db.run(
-    `INSERT INTO tasks (task_number, name, dir, status, convergence, failures, max_failures,
+    `INSERT INTO tasks (task_number, name, dir, status, convergence, failures, priority, max_failures,
        target_branch, claimed_by, claim_token, claimed_at, heartbeat, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [
       n, name, dir,
       opts.status ?? 'PENDING',
       opts.convergence ?? 0,
       opts.failures ?? 0,
+      opts.priority ?? 0,
       opts.maxFailures === undefined ? 5 : opts.maxFailures,
       opts.targetBranch ?? null,
       opts.claimedBy ?? null,

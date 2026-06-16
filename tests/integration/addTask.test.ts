@@ -72,6 +72,14 @@ describe('addTask creation', () => {
     expect(b.directory).toBe(join(dir, 'T02-second'));
   });
 
+  it('stores the given priority and defaults to 0', () => {
+    const dir = tasksDir();
+    const hi = addTask(dir, 'urgent', { priority: 7 });
+    const def = addTask(dir, 'normal');
+    expect(row(dir, hi.number)!.priority).toBe(7);
+    expect(row(dir, def.number)!.priority).toBe(0);
+  });
+
   it('publishes the task as PENDING in the database', () => {
     const dir = tasksDir();
     const task = addTask(dir, 'ready-task');

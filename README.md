@@ -53,6 +53,8 @@ npm run tick
 
 **Atomic task claiming:** With `--parallel > 1` (or several processes), each task is claimed by exactly one worker via an atomic database update carrying a per-claim token, preventing races.
 
+**Task priority:** Each task has an integer `priority` (default `0`; higher runs first, ties broken by creation order). Set it when creating (`add --priority N`) or change it later (`edit <n> --priority N`); negatives deprioritize. Priority decides which task is claimed *next* — it does not interrupt work in progress. A running lower-priority task finishes its current agent run, then the higher-priority task is picked ahead of all other pending/failed tasks; with `--parallel` it simply takes the next free worker slot.
+
 ## Key CLI commands
 
 ```bash

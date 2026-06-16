@@ -68,7 +68,8 @@ export async function formatRunSummary(tasksDir: string, ticks: number): Promise
     ];
     for (const task of tasks) {
       const attempts = task.isPending ? '' : `  attempts=${task.failureCount}`;
-      lines.push(`  ${taskIcon(task)} T${task.taskNumber} ${taskStatus(task)}${attempts}`);
+      const priority = task.priority !== 0 ? `  priority=${task.priority}` : '';
+      lines.push(`  ${taskIcon(task)} T${task.taskNumber} ${taskStatus(task)}${priority}${attempts}`);
     }
     return lines;
   } finally {

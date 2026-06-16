@@ -38,6 +38,18 @@ describe('RunReport', () => {
     ]);
   });
 
+  it('shows priority on the summary line only when non-zero', async () => {
+    dir = setupTestDir('.test-run-report-');
+    seedAll(dir, [
+      [1, 'normal', { status: 'PENDING' }],
+      [2, 'urgent', { status: 'PENDING', priority: 5 }],
+    ]);
+
+    const lines = await formatRunSummary(dir, 1);
+    expect(lines).toContain('  ⬜ T1 pending');
+    expect(lines).toContain('  ⬜ T2 pending  priority=5');
+  });
+
   it('formats a per-tick overview with the running task and counts', async () => {
     dir = setupTestDir('.test-run-report-');
     seedAll(dir, [

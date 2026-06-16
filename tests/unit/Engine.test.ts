@@ -59,6 +59,7 @@ class FakeTaskDb {
       status: o.status ?? 'PENDING',
       convergence: o.convergence ?? 0,
       failures: o.failures ?? 0,
+      priority: o.priority ?? 0,
       max_failures: o.max_failures ?? null,
       target_branch: o.target_branch ?? null,
       repo: o.repo ?? null,

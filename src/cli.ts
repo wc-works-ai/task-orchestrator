@@ -45,6 +45,7 @@ const CLI_OPTIONS = {
   'no-worktree': { type: 'boolean', default: false },
   parallel: { type: 'string', default: '' },
   worktrees: { type: 'string', default: '' },
+  priority: { type: 'string', default: '' },
   help: { type: 'boolean', short: 'h', default: false },
 } as const;
 
@@ -79,6 +80,7 @@ type CliOptionValues = Readonly<{
   'no-worktree': boolean;
   parallel: string;
   worktrees: string;
+  priority: string;
   help: boolean;
 }>;
 
@@ -116,7 +118,8 @@ type StringOptionName =
   | 'scope'
   | 'keep-converged'
   | 'parallel'
-  | 'worktrees';
+  | 'worktrees'
+  | 'priority';
 type BooleanOptionName = Exclude<CliOptionName, StringOptionName>;
 type ParsedCliOptionValues = Record<CliOptionName, string | boolean | undefined>;
 
@@ -148,6 +151,7 @@ const STRING_OPTION_NAMES = [
   'keep-converged',
   'parallel',
   'worktrees',
+  'priority',
 ] as const satisfies readonly StringOptionName[];
 
 const BOOLEAN_OPTION_NAMES = [
@@ -418,12 +422,18 @@ function resolveAddRepo(values: CliValues): string {
   return gitTopLevel(repoPath) ?? repoPath;
 }
 
+function parsePriority(raw: string): number {
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) ? n : 0;
+}
+
 function buildAddTaskOptions(values: CliValues, repoDir: string): AddTaskOptions {
   return {
     repoDir,
     ...(values.goal ? { goal: values.goal } : {}),
     ...(values.metric ? { metric: values.metric } : {}),
     ...(values.scope ? { scope: values.scope.split(/\s+/).filter(Boolean) } : {}),
+    ...(values.priority ? { priority: parsePriority(values.priority) } : {}),
   };
 }
 
@@ -440,6 +450,9 @@ function handleEditCommand(positionals: CliPositionals, values: CliValues, tasks
   const autoresearchPath = taskAutoresearchPath(task);
   const updated = updateAutoresearch(readFileSync(autoresearchPath, 'utf-8'), values);
   writeFileSync(autoresearchPath, updated);
+  if (values.priority) {
+    engine.taskDb.setPriority(taskNumber, parsePriority(values.priority));
+  }
   console.log(`✅ T${taskNumber} updated`);
   process.exit(0);
 }
@@ -476,7 +489,8 @@ function handleStatusCommand(enabled: boolean, tasksDir: string): void {
       const deps = task.dependencies.length > 0 ? `  <- depends: ${task.dependencies.join(', ')}` : '';
       const goal = task.goal.length > 55 ? `${task.goal.slice(0, 52)}...` : task.goal;
       const repoTag = task.repo ? `  [${basename(task.repo)}]` : '';
-      console.log(`  ${taskLabel(task).padEnd(9)} T${key}${repoTag}  ${goal}${deps}`);
+      const prioTag = task.priority !== 0 ? `  prio:${task.priority}` : '';
+      console.log(`  ${taskLabel(task).padEnd(9)} T${key}${repoTag}${prioTag}  ${goal}${deps}`);
       if (task.isBlocked) {
         console.log(`       blocked after ${task.failureCount} failures`);
       }

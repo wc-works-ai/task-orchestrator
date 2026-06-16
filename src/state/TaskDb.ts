@@ -8,7 +8,7 @@ import { existsSync, rmSync } from 'node:fs';
 import { openDb, type Db } from './sqlite.js';
 import { SchemaMismatchError, withRetry } from '../shared/errors.js';
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 // Guard the recursive dependency walk against a malformed graph.
 const MAX_DEPENDENCY_DEPTH = 10000;
@@ -30,6 +30,7 @@ export interface TaskRow {
   readonly status: TaskStatus;
   readonly convergence: number;
   readonly failures: number;
+  readonly priority: number;
   readonly max_failures: number | null;
   readonly target_branch: string | null;
   readonly repo: string | null;
@@ -47,6 +48,7 @@ export interface NewTask {
   readonly maxFailures?: number | null;
   readonly targetBranch?: string | null;
   readonly repo?: string | null;
+  readonly priority?: number;
   readonly dependsOn?: readonly number[];
 }
 
@@ -78,6 +80,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     CHECK(status IN ('CREATING','PENDING','IN_PROGRESS','FAILED','BLOCKED','CONVERGED')),
   convergence   INTEGER NOT NULL DEFAULT 0,
   failures      INTEGER NOT NULL DEFAULT 0,
+  priority      INTEGER NOT NULL DEFAULT 0,
   max_failures  INTEGER CHECK(max_failures IS NULL OR max_failures > 0),
   target_branch TEXT,
   repo          TEXT,
@@ -169,10 +172,10 @@ export class TaskDb {
         const dir = taskDirName(taskNumber, t.name);
         const repo = t.repo ?? null;
         const row = this.#db.get<{ id: number }>(
-          `INSERT INTO tasks (task_number, name, dir, status, max_failures, target_branch, repo, created_at, updated_at)
-           VALUES (:num, :name, :dir, 'CREATING', :max, :branch, :repo, :now, :now)
+          `INSERT INTO tasks (task_number, name, dir, status, max_failures, target_branch, repo, priority, created_at, updated_at)
+           VALUES (:num, :name, :dir, 'CREATING', :max, :branch, :repo, :priority, :now, :now)
            RETURNING id`,
-          { num: taskNumber, name: t.name, dir, max: t.maxFailures ?? null, branch: t.targetBranch ?? null, repo, now },
+          { num: taskNumber, name: t.name, dir, max: t.maxFailures ?? null, branch: t.targetBranch ?? null, repo, priority: t.priority ?? 0, now },
         )!;
         for (const dep of t.dependsOn ?? []) {
           this.#assertSameRepoDependency(taskNumber, repo, dep);
@@ -241,11 +244,22 @@ export class TaskDb {
                LEFT JOIN tasks dep ON dep.task_number = d.depends_on
                WHERE d.task_number = tasks.task_number
                  AND (dep.task_number IS NULL OR dep.status != 'CONVERGED'))
-           ORDER BY task_number LIMIT 1)
+           ORDER BY priority DESC, task_number ASC LIMIT 1)
          RETURNING *`,
         { inst: instanceId, now },
       ),
     );
+  }
+
+  /** Set a task's priority (higher = picked sooner). Not claim-gated — any
+   *  caller may re-prioritize. Returns false when no such task exists. */
+  setPriority(taskNumber: number, priority: number): boolean {
+    const r = withRetry(() =>
+      this.#db.run('UPDATE tasks SET priority=:p, updated_at=:now WHERE task_number=:tn', {
+        p: priority, now: this.#now(), tn: taskNumber,
+      }),
+    );
+    return r.changes > 0;
   }
 
   // ── Claim-gated writes (only the current owner may apply them) ───────
@@ -390,8 +404,8 @@ export class TaskDb {
       this.#db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
       return;
     }
-    if (version === 1) {
-      this.#migrateV1toV2();
+    if (version === 1 || version === 2) {
+      this.#migrateColumns();
       return;
     }
     if (version === SCHEMA_VERSION) return;
@@ -404,9 +418,13 @@ export class TaskDb {
     return this.#db.get<{ user_version: number }>('PRAGMA user_version')!.user_version;
   }
 
-  #migrateV1toV2(): void {
-    const hasRepo = this.#db.all<{ name: string }>('PRAGMA table_info(tasks)').some(c => c.name === 'repo');
-    if (!hasRepo) this.#db.exec('ALTER TABLE tasks ADD COLUMN repo TEXT');
+  /** Bring a v1 or v2 schema up to the current version. `repo` may already
+   *  exist (added in v2) so it is added only when missing; `priority` is new in
+   *  v3 and always absent at v1/v2, so it is added unconditionally. */
+  #migrateColumns(): void {
+    const cols = this.#db.all<{ name: string }>('PRAGMA table_info(tasks)').map(c => c.name);
+    if (!cols.includes('repo')) this.#db.exec('ALTER TABLE tasks ADD COLUMN repo TEXT');
+    this.#db.exec('ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 0');
     this.#db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   }
 

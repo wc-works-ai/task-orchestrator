@@ -166,6 +166,11 @@ export class TaskState {
     return m ?? Infinity;
   }
 
+  /** Scheduling priority; higher is picked sooner (default 0). */
+  get priority(): number {
+    return this.#row()?.priority ?? 0;
+  }
+
   // ── Claim ───────────────────────────────────────────────────────────
   get isClaimed(): boolean {
     return this.#row()?.claimed_by != null;

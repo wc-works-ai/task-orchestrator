@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { SCHEMA_VERSION, taskDirName } from '../../src/state/TaskDb.js';
 
 describe('TaskDb constants and helpers', () => {
-  it('exposes schema version 2 for the repo-column migration', () => {
-    expect(SCHEMA_VERSION).toBe(2);
+  it('exposes schema version 3 for the priority-column migration', () => {
+    expect(SCHEMA_VERSION).toBe(3);
   });
 
   it('keeps task directory names stable', () => {

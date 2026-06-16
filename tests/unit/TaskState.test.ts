@@ -49,6 +49,7 @@ function row(over: Partial<TaskRow> & { task_number: number }): TaskRow {
     status: over.status ?? 'PENDING',
     convergence: over.convergence ?? 0,
     failures: over.failures ?? 0,
+    priority: over.priority ?? 0,
     max_failures: over.max_failures ?? null,
     repo: over.repo ?? null,
     target_branch: over.target_branch ?? null,
@@ -160,6 +161,7 @@ describe('TaskState (mocked TaskDb)', () => {
     expect(t.convergenceCount).toBe(0);
     expect(t.failureCount).toBe(0);
     expect(t.maxFailures).toBe(Infinity);
+    expect(t.priority).toBe(0);
     expect(t.isClaimed).toBe(false);
     expect(t.claimOwnerId).toBe('');
     expect(t.repo).toBeUndefined();
@@ -219,6 +221,11 @@ describe('TaskState (mocked TaskDb)', () => {
   it('reads maxFailures from the row, Infinity when null', () => {
     expect(viewOf(row({ task_number: 1, max_failures: 3 })).state.maxFailures).toBe(3);
     expect(viewOf(row({ task_number: 2, max_failures: null })).state.maxFailures).toBe(Infinity);
+  });
+
+  it('reads priority from the row, defaulting to 0', () => {
+    expect(viewOf(row({ task_number: 1, priority: 5 })).state.priority).toBe(5);
+    expect(viewOf(row({ task_number: 2 })).state.priority).toBe(0);
   });
 
   // ── Claim ─────────────────────────────────────────────────────────────

@@ -64,6 +64,8 @@ Use `orchestrator --config` to inspect effective values and their sources.
 
 Dependencies wait for all referenced tasks to converge. If any is terminally BLOCKED, dependents auto-BLOCKED.
 
+Priority is a per-task integer set via `add --priority N` / `edit <n> --priority N` (default `0`, higher runs first, ties broken by creation order). It orders task *claiming* — not markdown metadata — and never interrupts a run already in progress.
+
 Environment failures (missing API key, agent auth) fail fast — affected task is FAILED without consuming a retry.
 
 ## Coding agents

@@ -35,7 +35,7 @@ function clockTaskDb(now: () => number): { tdb: TaskDb; db: Db } {
 function ready(
   tdb: TaskDb,
   name: string,
-  opts: { maxFailures?: number | null; repo?: string | null; dependsOn?: number[] } = {},
+  opts: { maxFailures?: number | null; repo?: string | null; dependsOn?: number[]; priority?: number } = {},
 ): number {
   const { id, taskNumber } = tdb.insert({ name, ...opts });
   tdb.promote(id);
@@ -119,6 +119,11 @@ describe('TaskDb schema', () => {
     expect(columns).toContain('repo');
   });
 
+  it('creates the priority column defaulting to 0', () => {
+    const { db } = memTaskDb();
+    expect(db.all<{ name: string }>('PRAGMA table_info(tasks)').map(c => c.name)).toContain('priority');
+  });
+
   it('allows the CREATING status (regression: must be in the CHECK list)', () => {
     const { db } = memTaskDb();
     expect(() => addRow(db, 1, 'T1-a', 'CREATING')).not.toThrow();
@@ -185,9 +190,12 @@ describe('TaskDb lifecycle', () => {
 
     const columns = openDb(path);
     dbs.push(columns);
-    expect(columns.all<{ name: string }>('PRAGMA table_info(tasks)').map(c => c.name)).toContain('repo');
-    expect(columns.get<{ user_version: number }>('PRAGMA user_version')).toEqual({ user_version: 2 });
+    const cols = columns.all<{ name: string }>('PRAGMA table_info(tasks)').map(c => c.name);
+    expect(cols).toContain('repo');
+    expect(cols).toContain('priority');
+    expect(columns.get<{ user_version: number }>('PRAGMA user_version')).toEqual({ user_version: SCHEMA_VERSION });
     expect(migrated.getByNumber(1)!.repo).toBeNull();
+    expect(migrated.getByNumber(1)!.priority).toBe(0);
   });
 
   it('bumps v1 to v2 without failing if repo already exists', () => {
@@ -203,7 +211,29 @@ describe('TaskDb lifecycle', () => {
     expect(migrated.getByNumber(1)).toBeUndefined();
     const check = openDb(path);
     dbs.push(check);
-    expect(check.get<{ user_version: number }>('PRAGMA user_version')).toEqual({ user_version: 2 });
+    expect(check.get<{ user_version: number }>('PRAGMA user_version')).toEqual({ user_version: SCHEMA_VERSION });
+  });
+
+  it('migrates a v2 database by adding the priority column at 0 and bumping the version', () => {
+    const path = join(tmp(), 'state.db');
+    const raw = openDb(path);
+    raw.exec(V1_SCHEMA);
+    raw.exec('ALTER TABLE tasks ADD COLUMN repo TEXT');
+    raw.run(
+      `INSERT INTO tasks (task_number, name, dir, status, max_failures, created_at, updated_at)
+       VALUES (1, 'old', 'T01-old', 'PENDING', NULL, 10, 20)`,
+    );
+    raw.exec('PRAGMA user_version = 2');
+    raw.close();
+
+    const migrated = TaskDb.open(path);
+    dbs.push(migrated);
+    expect(migrated.getByNumber(1)!.priority).toBe(0);
+
+    const check = openDb(path);
+    dbs.push(check);
+    expect(check.all<{ name: string }>('PRAGMA table_info(tasks)').map(c => c.name)).toContain('priority');
+    expect(check.get<{ user_version: number }>('PRAGMA user_version')).toEqual({ user_version: SCHEMA_VERSION });
   });
 
   it('reports a healthy integrity check', () => {
@@ -263,6 +293,14 @@ describe('TaskDb.insert / promote', () => {
     const withoutRepo = tdb.insert({ name: 'without-repo' });
     expect(tdb.get(withRepo.id)!.repo).toBe('Q:\\Repos\\one');
     expect(tdb.get(withoutRepo.id)!.repo).toBeNull();
+  });
+
+  it('stores an explicit priority and defaults omitted priority to 0', () => {
+    const { tdb } = memTaskDb();
+    const hi = tdb.insert({ name: 'hi', priority: 10 });
+    const def = tdb.insert({ name: 'def' });
+    expect(tdb.get(hi.id)!.priority).toBe(10);
+    expect(tdb.get(def.id)!.priority).toBe(0);
   });
 
   it('rejects dependencies across different non-NULL repos', () => {
@@ -387,6 +425,20 @@ describe('TaskDb.pick', () => {
     expect(picked.heartbeat).toBe(5000);
   });
 
+  it('claims the highest-priority actionable task first, regardless of creation order', () => {
+    const { tdb } = memTaskDb();
+    ready(tdb, 'low');                    // T1, priority 0
+    ready(tdb, 'high', { priority: 5 });  // T2, priority 5 (created later)
+    expect(tdb.pick('i')!.name).toBe('high');
+  });
+
+  it('breaks priority ties by task_number (FIFO within a level)', () => {
+    const { tdb } = memTaskDb();
+    ready(tdb, 'first', { priority: 3 });
+    ready(tdb, 'second', { priority: 3 });
+    expect(tdb.pick('i')!.name).toBe('first');
+  });
+
   it('returns undefined when nothing is actionable', () => {
     const { tdb } = memTaskDb();
     tdb.insert({ name: 'a' }); // CREATING, not pickable
@@ -440,6 +492,20 @@ describe('TaskDb.pick', () => {
     tdb.incrementFailures(id, tok);
     tdb.release(id, tok, 'FAILED');
     expect(tdb.pick('i2')!.task_number).toBe(n);
+  });
+});
+
+describe('TaskDb.setPriority', () => {
+  it('updates the priority of an existing task', () => {
+    const { tdb } = memTaskDb();
+    const n = ready(tdb, 'a');
+    expect(tdb.setPriority(n, 7)).toBe(true);
+    expect(tdb.getByNumber(n)!.priority).toBe(7);
+  });
+
+  it('returns false for a missing task', () => {
+    const { tdb } = memTaskDb();
+    expect(tdb.setPriority(999, 7)).toBe(false);
   });
 });
 
