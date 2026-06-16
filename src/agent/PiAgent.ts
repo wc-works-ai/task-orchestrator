@@ -1,6 +1,6 @@
 import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { TaskState } from '../state/TaskState.js';
 import { env } from '../shared/env.js';
 import { resolveCliCommand } from './cliCommand.js';
@@ -569,9 +569,12 @@ export class PiAgent implements CodingAgent {
     // The task directory may live outside the worktree (independent state-root
     // layout); when it does, fall back to its absolute path. The agent works in
     // `cwd` (the worktree), so benchmark.js it runs from here measures the worktree.
-    const arPath = task.directory.startsWith(cwd)
-      ? task.directory.slice(cwd.length + 1) // relative when the task dir is under the worktree
-      : task.directory;
+    const arPath = (() => {
+      const rel = relative(cwd, task.directory);
+      return rel && rel !== '..' && !rel.startsWith('..\\') && !rel.startsWith('../')
+        ? rel
+        : task.directory;
+    })();
     return [
       `You are an autonomous task agent. Working directory: ${cwd}.`,
       '',

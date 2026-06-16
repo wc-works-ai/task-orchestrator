@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { TaskState } from '../state/TaskState.js';
 import { env } from '../shared/env.js';
 import { resolveCliCommand } from './cliCommand.js';
@@ -219,9 +219,12 @@ export class CopilotAgent implements CodingAgent {
   /* v8 ignore stop */
 
   #prompt(task: TaskState, cwd: string): string {
-    const taskDir = task.directory.startsWith(cwd)
-      ? task.directory.slice(cwd.length + 1)
-      : task.directory;
+    const taskDir = (() => {
+      const rel = relative(cwd, task.directory);
+      return rel && rel !== '..' && !rel.startsWith('..\\') && !rel.startsWith('../')
+        ? rel
+        : task.directory;
+    })();
     // Copilot CLI exposes shell/file tools, not pi's experiment tools, so this prompt
     // spells out the benchmark loop explicitly instead of naming pi-only tools.
     return [
