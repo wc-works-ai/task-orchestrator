@@ -198,20 +198,24 @@ describe('TaskDb lifecycle', () => {
     expect(migrated.getByNumber(1)!.priority).toBe(0);
   });
 
-  it('bumps v1 to v2 without failing if repo already exists', () => {
+  it('rolls back the entire migration when a later step fails (atomicity)', () => {
     const path = join(tmp(), 'state.db');
     const raw = openDb(path);
     raw.exec(V1_SCHEMA);
-    raw.exec('ALTER TABLE tasks ADD COLUMN repo TEXT');
+    raw.exec('ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 0');
     raw.exec('PRAGMA user_version = 1');
     raw.close();
 
-    const migrated = TaskDb.open(path);
-    dbs.push(migrated);
-    expect(migrated.getByNumber(1)).toBeUndefined();
+    // Replay from v1 runs: ADD repo (succeeds) then ADD priority (duplicate →
+    // throws). The whole transaction must roll back, leaving the DB untouched.
+    expect(() => TaskDb.open(path)).toThrow(/duplicate column name: priority/);
+
     const check = openDb(path);
     dbs.push(check);
-    expect(check.get<{ user_version: number }>('PRAGMA user_version')).toEqual({ user_version: SCHEMA_VERSION });
+    const cols = check.all<{ name: string }>('PRAGMA table_info(tasks)').map(c => c.name);
+    expect(cols).not.toContain('repo'); // the successful ADD repo was rolled back
+    expect(cols).toContain('priority'); // the pre-existing column is untouched
+    expect(check.get<{ user_version: number }>('PRAGMA user_version')).toEqual({ user_version: 1 });
   });
 
   it('migrates a v2 database by adding the priority column at 0 and bumping the version', () => {
@@ -234,6 +238,44 @@ describe('TaskDb lifecycle', () => {
     dbs.push(check);
     expect(check.all<{ name: string }>('PRAGMA table_info(tasks)').map(c => c.name)).toContain('priority');
     expect(check.get<{ user_version: number }>('PRAGMA user_version')).toEqual({ user_version: SCHEMA_VERSION });
+  });
+
+  it('produces an identical tasks schema whether created fresh or migrated from v1 or v2', () => {
+    type ColInfo = { name: string; type: string; notnull: number; dflt_value: string | null; pk: number };
+    // Apply the schema starting from `seed`'s state, then snapshot the effective
+    // tasks schema — column shape (order-insensitive) plus table/index names.
+    const schemaOf = (seed: (raw: Db) => void): { cols: ColInfo[]; objects: string[] } => {
+      const path = join(tmp(), 'state.db');
+      const raw = openDb(path);
+      seed(raw);
+      raw.close();
+      dbs.push(TaskDb.open(path));
+      const probe = openDb(path);
+      dbs.push(probe);
+      const cols = probe
+        .all<ColInfo>('PRAGMA table_info(tasks)')
+        .map(c => ({ name: c.name, type: c.type, notnull: c.notnull, dflt_value: c.dflt_value, pk: c.pk }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      const objects = probe
+        .all<{ name: string }>("SELECT name FROM sqlite_master WHERE type IN ('table','index') AND name NOT LIKE 'sqlite_%'")
+        .map(o => o.name)
+        .sort();
+      return { cols, objects };
+    };
+
+    const fresh = schemaOf(() => {}); // user_version 0 → replays every migration
+    const fromV1 = schemaOf(raw => {
+      raw.exec(V1_SCHEMA);
+      raw.exec('PRAGMA user_version = 1');
+    });
+    const fromV2 = schemaOf(raw => {
+      raw.exec(V1_SCHEMA);
+      raw.exec('ALTER TABLE tasks ADD COLUMN repo TEXT');
+      raw.exec('PRAGMA user_version = 2');
+    });
+
+    expect(fromV1).toEqual(fresh);
+    expect(fromV2).toEqual(fresh);
   });
 
   it('reports a healthy integrity check', () => {

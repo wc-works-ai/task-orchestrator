@@ -8,8 +8,6 @@ import { existsSync, rmSync } from 'node:fs';
 import { openDb, type Db } from './sqlite.js';
 import { SchemaMismatchError, withRetry } from '../shared/errors.js';
 
-export const SCHEMA_VERSION = 3;
-
 // Guard the recursive dependency walk against a malformed graph.
 const MAX_DEPENDENCY_DEPTH = 10000;
 
@@ -70,7 +68,17 @@ export interface ImportTask {
 
 type LegacyImportTask = Omit<ImportTask, 'repo'> & { readonly repo?: string | null };
 
-const SCHEMA = `
+/**
+ * Ordered schema migrations. Entry `N` upgrades the database from schema version
+ * `N` to `N+1`: a fresh database replays them all, an existing one replays only
+ * the steps after its stored `user_version`. This list is the single source of
+ * truth for the schema — read top-to-bottom it *is* the current shape — so fresh
+ * and upgraded databases cannot drift apart. To evolve the schema, append one
+ * step; `SCHEMA_VERSION` follows automatically.
+ */
+const MIGRATIONS: readonly string[] = [
+  // 0 → 1: initial schema (tasks + dependencies).
+  `
 CREATE TABLE IF NOT EXISTS tasks (
   id            INTEGER PRIMARY KEY,
   task_number   INTEGER NOT NULL UNIQUE,
@@ -80,10 +88,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     CHECK(status IN ('CREATING','PENDING','IN_PROGRESS','FAILED','BLOCKED','CONVERGED')),
   convergence   INTEGER NOT NULL DEFAULT 0,
   failures      INTEGER NOT NULL DEFAULT 0,
-  priority      INTEGER NOT NULL DEFAULT 0,
   max_failures  INTEGER CHECK(max_failures IS NULL OR max_failures > 0),
   target_branch TEXT,
-  repo          TEXT,
   claimed_by    TEXT,
   claim_token   TEXT,
   claimed_at    INTEGER,
@@ -100,7 +106,15 @@ CREATE TABLE IF NOT EXISTS dependencies (
   CHECK(task_number != depends_on)
 );
 CREATE INDEX IF NOT EXISTS idx_dep_on ON dependencies(depends_on);
-`;
+`,
+  // 1 → 2: bind each task to a repository.
+  `ALTER TABLE tasks ADD COLUMN repo TEXT;`,
+  // 2 → 3: scheduling priority (higher is picked first).
+  `ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;`,
+];
+
+/** Current schema version — the number of migrations defined above. */
+export const SCHEMA_VERSION = MIGRATIONS.length;
 
 export class TaskDb {
   readonly #db: Db;
@@ -398,34 +412,24 @@ export class TaskDb {
   }
 
   #applySchema(): void {
-    const version = this.#userVersion();
-    if (version === 0) {
-      this.#db.exec(SCHEMA);
+    const from = this.#userVersion();
+    if (from === SCHEMA_VERSION) return;
+    if (from > SCHEMA_VERSION) {
+      throw new SchemaMismatchError(
+        `state.db schema version ${from} is newer than this build supports (expected ${SCHEMA_VERSION})`,
+      );
+    }
+    // Replay every step from the stored version to head in one transaction: a
+    // failed step (or a crash) rolls back wholesale, so the database is never
+    // left half-migrated and each step may assume the previous one completed.
+    this.#db.transaction(() => {
+      for (let v = from; v < SCHEMA_VERSION; v++) this.#db.exec(MIGRATIONS[v]!);
       this.#db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
-      return;
-    }
-    if (version === 1 || version === 2) {
-      this.#migrateColumns();
-      return;
-    }
-    if (version === SCHEMA_VERSION) return;
-    throw new SchemaMismatchError(
-      `state.db schema version ${version} is not supported (expected ${SCHEMA_VERSION})`,
-    );
+    });
   }
 
   #userVersion(): number {
     return this.#db.get<{ user_version: number }>('PRAGMA user_version')!.user_version;
-  }
-
-  /** Bring a v1 or v2 schema up to the current version. `repo` may already
-   *  exist (added in v2) so it is added only when missing; `priority` is new in
-   *  v3 and always absent at v1/v2, so it is added unconditionally. */
-  #migrateColumns(): void {
-    const cols = this.#db.all<{ name: string }>('PRAGMA table_info(tasks)').map(c => c.name);
-    if (!cols.includes('repo')) this.#db.exec('ALTER TABLE tasks ADD COLUMN repo TEXT');
-    this.#db.exec('ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 0');
-    this.#db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   }
 
   #assertSameRepoDependency(taskNumber: number, repo: string | null, dep: number): void {

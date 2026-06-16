@@ -68,6 +68,14 @@ Priority is a per-task integer set via `add --priority N` / `edit <n> --priority
 
 Environment failures (missing API key, agent auth) fail fast — affected task is FAILED without consuming a retry.
 
+## Schema migrations
+
+`state.db` is versioned by `PRAGMA user_version`. `src/state/TaskDb.ts` defines an ordered `MIGRATIONS` array — entry `N` upgrades the schema from version `N` to `N+1`, and `SCHEMA_VERSION` is just its length. On open, `#applySchema` replays the steps after the DB's stored version **in one transaction** — atomic, so a failed step or crash rolls back instead of leaving a half-migrated DB.
+
+- **To change the schema:** append one DDL step (e.g. `ALTER TABLE … ADD COLUMN …`) to `MIGRATIONS`; never edit existing steps — they are history. The version bumps automatically; update `TaskRow` to match.
+- **No drift:** fresh and upgraded DBs replay the same steps, so they cannot diverge. The drift guard in `tests/integration/TaskDb.test.ts` asserts a fresh DB and DBs migrated from each prior version end up with an identical `tasks` schema.
+- `src/state/migrate.ts` is unrelated — a one-time import of legacy file-shard tasks into the DB, not schema versioning.
+
 ## Coding agents
 
 `pi` (default) uses pi's experiment tools. `copilot` uses the GitHub Copilot CLI.
