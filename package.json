@@ -1,6 +1,6 @@
 {
   "name": "task-orchestrator",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "type": "module",
   "description": "Autonomous task execution engine with atomic claiming, convergence tracking, and sharded state",
   "license": "MIT",
