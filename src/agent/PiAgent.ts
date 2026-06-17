@@ -68,12 +68,13 @@ export interface PiAgentOptions extends CodingAgentOptions {
 export function killTree(pid: number): void {
   if (!Number.isInteger(pid) || pid <= 0) return;
   try {
-    /* v8 ignore next 4 -- non-Windows path is not exercised in this Windows repo */
+    /* v8 ignore start -- platform branch; CI exercises the opposite path */
     if (process.platform !== 'win32') {
       process.kill(-pid, 'SIGKILL');
       return;
     }
     execFileSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' });
+    /* v8 ignore stop */
   } catch (error: unknown) {
     console.error(`[PiAgent] failed to stop process tree ${pid}: ${errorMessage(error)}`);
   }
