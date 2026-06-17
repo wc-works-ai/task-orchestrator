@@ -1,0 +1,151 @@
+export const CONFIG_SPEC = [
+    { group: 'Paths', env: 'ORCH_REPO', flag: 'repo', kind: 'string', def: 'current directory', desc: 'Default repo bound to new tasks by add' },
+    { group: 'Paths', env: 'ORCH_STATE_ROOT', flag: 'state-root', kind: 'string', def: '<home>/task-orchestrator', desc: 'Orchestrator state root' },
+    { group: 'Paths', env: 'ORCH_TASKS', flag: 'tasks', kind: 'string', def: '<state-root>/<repo-slug>/tasks', desc: 'Task directory' },
+    { group: 'Paths', env: 'ORCH_WORKTREES', flag: 'worktrees', kind: 'string', def: '<state-root>/<repo-slug>/worktrees', desc: 'Worktree directory' },
+    { group: 'Run mode', env: 'ORCH_NO_WORKTREE', flag: 'no-worktree', kind: 'boolean', def: 'off', desc: 'Skip worktree/git — agent works directly in main repo' },
+    { group: 'Coding agent', env: 'ORCH_AGENT', flag: 'agent', kind: 'string', def: 'pi', desc: 'Coding agent: pi or copilot' },
+    { group: 'Coding agent', env: 'ORCH_MODEL', flag: 'model', kind: 'string', def: 'agent default', desc: 'Model override passed to the agent' },
+    { group: 'Coding agent', env: 'ORCH_REASONING', flag: 'reasoning', kind: 'string', def: 'unset', desc: 'Reasoning effort for supported agents' },
+    { group: 'Agent', env: 'ORCH_AGENT_CMD', kind: 'string', def: 'unset', desc: 'Command run as the agent when ORCH_AGENT=exec' },
+    { group: 'Run mode', env: 'ORCH_KEEP_ALIVE', flag: 'keep-alive', kind: 'boolean', def: 'off', desc: 'Wait through transient idle/cooldown periods' },
+    { group: 'Run mode', env: 'ORCH_INFINITE', flag: 'infinite', kind: 'boolean', def: 'off', desc: 'Daemon mode; wait for new/addressed tasks (alias: --loop)' },
+    { group: 'Run mode', env: 'ORCH_IDLE_SLEEP_MS', kind: 'number', def: '5000', desc: 'Idle poll interval for keep-alive/infinite (ms)' },
+    { group: 'Run mode', env: 'ORCH_PARALLEL', flag: 'parallel', kind: 'number', def: '1', desc: 'Max concurrent tasks (0=unlimited, 1-100 clamps to 100, default: serial)' },
+    { group: 'Run mode', env: 'ORCH_KEEP_CONVERGED', flag: 'keep-converged', kind: 'number', def: '100', desc: 'Max converged task dirs to keep (0 = unlimited); older ones are archived to converged/.archive.jsonl' },
+    { group: 'Convergence & merge', env: 'ORCH_CONVERGE', kind: 'number', def: '3', desc: 'Zero-metric runs required to converge' },
+    { group: 'Convergence & merge', env: 'ORCH_MAX_FAILURES', kind: 'number', def: '5', desc: 'Failed attempts before BLOCKED (int>=1 or infinite)' },
+    { group: 'Convergence & merge', env: 'ORCH_AUTO_STASH', flag: 'auto-stash', kind: 'boolean', def: 'on', desc: 'Stash parent repo changes before merging (disable with ORCH_AUTO_STASH=false)' },
+    { group: 'Convergence & merge', env: 'ORCH_MERGE_LOCK_MS', kind: 'number', def: '600000', desc: 'Break a merge lock held longer than this (crashed merger, ms)' },
+    { group: 'Convergence & merge', env: 'ORCH_VERIFY_CMD', kind: 'string', def: 'unset', desc: 'Shell command to run in worktree before merge (e.g. npm run tc)' },
+    { group: 'Concurrency & timeouts', env: 'ORCH_HEARTBEAT_MS', kind: 'number', def: '300000', desc: 'Reclaim a claim whose heartbeat is older than this (crashed worker, ms)' },
+    { group: 'Concurrency & timeouts', env: 'ORCH_PROGRESS_TIMEOUT', kind: 'number', def: '120000', desc: 'Kill agent after no output for this long (ms)' },
+    { group: 'Concurrency & timeouts', env: 'ORCH_BENCHMARK_TIMEOUT', kind: 'number', def: '120000', desc: 'Kill a task benchmark.js run after this long (ms); raise it for benchmarks that run the full test suite' },
+    { group: 'Logging', env: 'ORCH_LOG_LEVEL', kind: 'string', def: 'normal', desc: 'Console verbosity: quiet | normal | verbose' },
+    { group: 'Logging', env: 'ORCH_AGENT_LOG_RAW', kind: 'boolean', def: 'off', desc: 'Write the raw verbatim agent stream instead of the default structured, timestamped activity log' },
+    { group: 'Logging', env: 'ORCH_AGENT_LOG_MAX_BYTES', kind: 'number', def: '10485760', desc: 'Max agent.log size before truncation (bytes)' },
+];
+function flagText(item) {
+    if (!item.flag)
+        return '';
+    if (item.kind === 'boolean')
+        return `--${item.flag}`;
+    return `--${item.flag} ${placeholder(item.flag)}`;
+}
+function placeholder(flag) {
+    if (flag === 'repo' || flag === 'state-root' || flag === 'tasks' || flag === 'worktrees')
+        return '<dir>';
+    if (flag === 'agent')
+        return '<name>';
+    if (flag === 'model')
+        return '<model>';
+    if (flag === 'reasoning')
+        return '<level>';
+    if (flag === 'parallel')
+        return '<count>';
+    /* v8 ignore next */
+    return '<value>';
+}
+export function formatSettingsHelp() {
+    const lines = ['Settings:'];
+    let group = '';
+    for (const item of CONFIG_SPEC) {
+        if (item.group !== group) {
+            group = item.group;
+            lines.push('', `${group}:`);
+        }
+        const setting = (flagText(item) || '(env only)').padEnd(24);
+        const env = item.env.padEnd(28);
+        lines.push(`  ${setting}${env}${item.desc} (default: ${item.def})`);
+    }
+    return lines.join('\n');
+}
+function hasFlagValue(value) {
+    return value === true || (typeof value === 'string' && value !== '');
+}
+export function formatEffectiveConfig(values, environ) {
+    const lines = ['Configuration (CLI flag > env var > default)'];
+    let group = '';
+    for (const item of CONFIG_SPEC) {
+        if (item.group !== group) {
+            group = item.group;
+            lines.push('', `${group}:`);
+        }
+        const flagValue = item.flag ? values[item.flag] : undefined;
+        const envValue = environ[item.env];
+        let value = item.def;
+        let source = 'default';
+        if (hasFlagValue(flagValue)) {
+            value = flagValue === true ? 'on' : String(flagValue);
+            source = 'flag';
+        }
+        else if (envValue !== undefined && envValue !== '') {
+            value = envValue;
+            source = 'env';
+        }
+        const name = item.flag ? `${item.env} (--${item.flag})` : item.env;
+        lines.push(`${name} = ${value}   [${source}]`);
+    }
+    return lines.join('\n');
+}
+export const COMMAND_SPEC = [
+    { name: '(default)', desc: 'Run all pending tasks until complete' },
+    { name: 'add <name>', desc: 'Create a new task' },
+    { name: 'edit <n>', desc: 'Edit task metadata' },
+];
+export const OPERATION_SPEC = [
+    { name: '--status', desc: 'Show task dashboard' },
+    { name: '--graph', desc: 'Show task dependency graph' },
+    { name: '--check', desc: 'Run benchmarks without spawning agents' },
+    { name: '--task <n>', desc: 'Run a single task by number' },
+    { name: '--unblock <n|all>', desc: 'Reset blocked/failed task(s) to pending' },
+    { name: '--stop', desc: 'Send stop signal to a running loop' },
+    { name: '--config', desc: 'Show all resolved configuration with sources' },
+    { name: '--once', desc: 'Run one tick, then exit' },
+    { name: '--loop', desc: 'Daemon mode: never exit (alias of --infinite)' },
+    { name: '-h, --help', desc: 'Show this help' },
+];
+export const EXAMPLES = [
+    { cmd: 'orchestrator', desc: 'Run with defaults' },
+    { cmd: 'orchestrator --loop', desc: 'Daemon mode' },
+    { cmd: 'orchestrator --agent copilot', desc: 'Override agent for this run' },
+    { cmd: 'ORCH_MODEL=gpt-5 orchestrator', desc: 'Set model via env var' },
+    { cmd: 'orchestrator --config', desc: 'Verify effective configuration' },
+];
+function helpRow(item) {
+    return `  ${item.name.padEnd(18)}${item.desc}`;
+}
+/** Build the full `--help` output from the declarative specs above, the passed
+ *  version, and a resolved settings snapshot. Pure — the caller supplies the
+ *  version (see version.ts) and current settings (from env). */
+export function formatHelp(version, s) {
+    return [
+        '',
+        `Task Orchestrator v${version} — autonomous coding agent task runner`,
+        '',
+        'USAGE',
+        '  orchestrator [command] [flags]',
+        '',
+        'COMMANDS',
+        ...COMMAND_SPEC.map(helpRow),
+        '',
+        'OPERATIONS',
+        ...OPERATION_SPEC.map(helpRow),
+        '',
+        formatSettingsHelp(),
+        '',
+        '  No flags are required. All settings have ORCH_* env var equivalents.',
+        '  Priority: --flag > ORCH_* env var > default.',
+        '',
+        'CURRENT SETTINGS (from env vars / defaults — flags override these)',
+        `  agent=${s.agent}  model=${s.model || '(agent default)'}  reasoning=${s.reasoning || '(off)'}`,
+        `  parallel=${s.parallel}  converge=${s.converge}  max-failures=${s.maxFailures}`,
+        `  auto-stash=${s.autoStash ? 'on' : 'off'}  no-worktree=${s.noWorktree ? 'on' : 'off'}  log-level=${s.logLevel}`,
+        '  Run --config for the full list with sources.',
+        '',
+        'EXAMPLES',
+        ...EXAMPLES.map(e => `  ${e.cmd.padEnd(32)}${e.desc}`),
+        '',
+    ].join('\n');
+}
+//# sourceMappingURL=config.js.map

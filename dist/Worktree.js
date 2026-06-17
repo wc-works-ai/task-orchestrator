@@ -1,0 +1,118 @@
+import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { resolve, join } from 'node:path';
+export class Worktree {
+    #repo;
+    #name;
+    #branch;
+    #path;
+    #base;
+    constructor(repoDir, opts) {
+        this.#repo = repoDir;
+        this.#name = opts.name;
+        this.#branch = `orchestrator/${opts.name}`;
+        this.#path = resolve(opts.worktreesDir ?? join(repoDir, '.worktrees'), opts.name);
+        this.#base = opts.baseBranch ?? 'master';
+    }
+    get path() {
+        return this.#path;
+    }
+    get branch() {
+        return this.#branch;
+    }
+    get exists() {
+        return existsSync(join(this.#path, '.git'));
+    }
+    async create() {
+        if (this.exists)
+            return this.#path;
+        this.#git('worktree', 'add', '-b', this.#branch, this.#path, this.#base);
+        // Configure git user in worktree (needed for commits)
+        const name = this.#gitConfig('user.name') || 'Orchestrator';
+        const email = this.#gitConfig('user.email') || 'orchestrator@local';
+        this.#gitInWT('config', 'user.name', name);
+        this.#gitInWT('config', 'user.email', email);
+        return this.#path;
+    }
+    async merge(taskScope = []) {
+        const prevBranch = this.#git('rev-parse', '--abbrev-ref', 'HEAD').trim();
+        try {
+            this.#git('checkout', this.#base);
+            this.#git('merge', '--no-ff', this.#branch, '-m', `Merge ${this.#branch}`);
+        }
+        catch {
+            // Conflict — try auto-resolution
+            try {
+                this.#autoResolve(taskScope);
+            }
+            catch {
+                /* c8 ignore start */
+                try {
+                    this.#git('merge', '--abort');
+                }
+                catch { }
+                try {
+                    this.#git('checkout', prevBranch);
+                }
+                catch { }
+                throw new Error(`Merge conflict in ${this.#name} — manual resolution required`);
+                /* c8 ignore stop */
+            }
+        }
+    }
+    /** Auto-resolve: accept worktree version for scoped files, main version for rest */
+    #autoResolve(scopeFiles) {
+        const conflicted = this.#git('diff', '--name-only', '--diff-filter=U')
+            .trim().split('\n').filter(Boolean);
+        /* c8 ignore next */
+        if (conflicted.length === 0)
+            return;
+        for (const file of conflicted) {
+            const isScoped = scopeFiles.some(sf => file.includes(sf));
+            if (isScoped) {
+                // Accept worktree version (theirs) for task's own scope
+                this.#git('checkout', '--theirs', file);
+            }
+            else {
+                // Accept main version (ours) for files outside scope
+                this.#git('checkout', '--ours', file);
+            }
+            this.#git('add', file);
+        }
+        this.#git('commit', '--no-edit');
+    }
+    /** Discard all worktree changes — agent starts fresh on retry */
+    async resetForRetry() {
+        try {
+            this.#gitInWT('checkout', this.#base); // detach from branch
+            this.#gitInWT('checkout', '-B', this.#branch); // recreate branch at base
+        }
+        catch { /* best-effort */ }
+    }
+    async remove() {
+        try {
+            this.#git('worktree', 'remove', '--force', this.#path);
+        }
+        catch { }
+        try {
+            this.#git('branch', '-D', this.#branch);
+        }
+        catch { }
+    }
+    // ── Private ──────────────────────────────────────────────────────────
+    #git(...args) {
+        return execFileSync('git', args, { cwd: this.#repo, encoding: 'utf-8' });
+    }
+    #gitInWT(...args) {
+        return execFileSync('git', args, { cwd: this.#path, encoding: 'utf-8' });
+    }
+    #gitConfig(key) {
+        try {
+            return execFileSync('git', ['config', key], { cwd: this.#repo, encoding: 'utf-8' }).trim();
+        }
+        catch {
+            return '';
+        }
+    }
+}
+//# sourceMappingURL=Worktree.js.map

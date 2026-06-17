@@ -1,0 +1,27 @@
+export declare const env: {
+    readonly tasksDir: string | undefined;
+    readonly repoDir: string | undefined;
+    readonly stateRoot: string | undefined;
+    readonly agent: string;
+    readonly agentCmd: string;
+    readonly model: string | undefined;
+    readonly reasoning: string | undefined;
+    readonly autoStash: boolean;
+    readonly converge: number;
+    readonly maxFailures: number;
+    readonly worktreesDir: string | undefined;
+    readonly noWorktree: boolean;
+    readonly heartbeatMs: number;
+    readonly progressTimeoutMs: number;
+    readonly benchmarkTimeoutMs: number;
+    readonly agentLogMaxBytes: number;
+    readonly agentLogRaw: boolean;
+    readonly logLevel: "quiet" | "normal" | "verbose";
+    readonly keepAlive: boolean;
+    readonly infinite: boolean;
+    readonly idleSleepMs: number;
+    readonly mergeLockMs: number;
+    readonly verifyCmd: string | undefined;
+    readonly keepConverged: number;
+    readonly parallelTasks: number;
+};
