@@ -1,0 +1,132 @@
+/**
+ * Orchestrator errors are FATAL (stop the loop — the DB is unusable) or WARN
+ * (skip one task, keep looping). Transient SQLite locks are retried in
+ * `withRetry`; an exhausted lock becomes a FATAL `DbBusyError`.
+ */
+
+export const Severity = {
+  FATAL: 'fatal',
+  WARN: 'warn',
+} as const;
+export type Severity = (typeof Severity)[keyof typeof Severity];
+
+export interface Logger {
+  warn(msg: string): void;
+  error(msg: string): void;
+}
+
+export abstract class OrchestratorError extends Error {
+  abstract readonly severity: Severity;
+  /** Human-readable next step for the operator. */
+  abstract readonly action: string;
+  /** Task this error concerns, when task-scoped. */
+  readonly taskId?: number;
+
+  constructor(message: string, taskId?: number) {
+    super(message);
+    this.name = this.constructor.name;
+    if (taskId !== undefined) this.taskId = taskId;
+  }
+}
+
+export class DbCorruptError extends OrchestratorError {
+  readonly severity = Severity.FATAL;
+  readonly action = 'Restore state.db.bak, or delete state.db to rebuild (loses progress)';
+}
+
+export class DbBusyError extends OrchestratorError {
+  readonly severity = Severity.FATAL;
+  readonly action = 'state.db stayed locked after retries; close other writers and restart';
+}
+
+export class DbInitError extends OrchestratorError {
+  readonly severity = Severity.FATAL;
+  readonly action = 'state.db could not initialize in WAL mode; ensure it is on a local disk';
+}
+
+export class SchemaMismatchError extends OrchestratorError {
+  readonly severity = Severity.FATAL;
+  readonly action = 'Update the orchestrator, or delete state.db to rebuild from task folders';
+}
+
+/**
+ * Classify the error during a tick and decide whether to keep looping.
+ * Unknown (non-orchestrator) errors are treated as task-level warnings so a
+ * surprise bug skips one task rather than killing the whole run.
+ */
+export function handleOrchestratorError(err: unknown, log: Logger): 'continue' | 'stop' {
+  if (!(err instanceof OrchestratorError)) {
+    log.warn(`Unexpected error: ${describeUnknown(err)}`);
+    return 'continue';
+  }
+  if (err.severity === Severity.FATAL) {
+    log.error(`FATAL: ${err.message} — ${err.action}`);
+    return 'stop';
+  }
+  log.warn(`${err.message} — ${err.action}`);
+  return 'continue';
+}
+
+export interface RetryOptions {
+  /** Max attempts before a transient lock becomes a FATAL DbBusyError. */
+  readonly tries?: number;
+  /** Base backoff in ms; doubles each attempt. */
+  readonly baseMs?: number;
+  /** Injectable sleep (tests pass a no-op). */
+  readonly sleep?: (ms: number) => void;
+}
+
+/**
+ * Run a synchronous DB operation, retrying transient SQLITE_BUSY/LOCKED with
+ * exponential backoff. Corruption fails fast; everything else is rethrown as-is.
+ */
+export function withRetry<T>(fn: () => T, opts: RetryOptions = {}): T {
+  const tries = opts.tries ?? 5;
+  const baseMs = opts.baseMs ?? 50;
+  const sleep = opts.sleep ?? syncSleep;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return fn();
+    } catch (e) {
+      if (isCorrupt(e)) throw new DbCorruptError('database is corrupt or not a database');
+      if (isBusy(e)) {
+        if (attempt < tries) {
+          sleep(baseMs * 2 ** attempt);
+          continue;
+        }
+        throw new DbBusyError('database is locked (retries exhausted)');
+      }
+      throw e;
+    }
+  }
+}
+
+function describeUnknown(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+function errcode(e: unknown): number | undefined {
+  const c = (e as { errcode?: unknown } | null | undefined)?.errcode;
+  return typeof c === 'number' ? c : undefined;
+}
+
+// SQLite result codes; low byte covers the extended variants.
+function isBusy(e: unknown): boolean {
+  const c = errcode(e);
+  if (c === undefined) return false;
+  const low = c & 0xff;
+  return low === 5 /* BUSY */ || low === 6 /* LOCKED */;
+}
+
+function isCorrupt(e: unknown): boolean {
+  const c = errcode(e);
+  if (c === undefined) return false;
+  const low = c & 0xff;
+  return low === 11 /* CORRUPT */ || low === 26 /* NOTADB */;
+}
+
+// Block the thread for `ms` (node:sqlite is synchronous, so the backoff must be
+// too). Atomics.wait on a throwaway buffer is the standard synchronous sleep.
+function syncSleep(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}

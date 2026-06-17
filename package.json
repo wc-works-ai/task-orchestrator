@@ -29,10 +29,15 @@
     "test:coverage": "npm run tc",
     "typecheck": "npm run c",
     "build": "npm run b",
-    "pkg:lint": "node -e \"const s=require('./package.json').scripts;const r=['test','test:watch','test:coverage','typecheck','build','prepublishOnly'];const a=['t','tw','tc','c','b'];r.forEach(k=>{if(!s[k]){console.error('Missing canonical script: '+k);process.exit(1)}});a.forEach(k=>{if(!s[k]){console.error('Missing shortcut script: '+k);process.exit(1)}})\"",
+    "pkg:lint": "node -e \"const s=require('./package.json').scripts;const r=['test','test:watch','test:coverage','typecheck','build','prepublishOnly','test:unit','test:int','test:e2e','test:all','cov:unit'];const a=['t','tw','tc','c','b'];r.forEach(k=>{if(!s[k]){console.error('Missing canonical script: '+k);process.exit(1)}});a.forEach(k=>{if(!s[k]){console.error('Missing shortcut script: '+k);process.exit(1)}})\"",
     "t": "vitest run",
     "tw": "vitest",
-    "tc": "vitest run --coverage",
+    "tc": "vitest run --project unit --project integration --coverage",
+    "test:unit": "vitest run --project unit",
+    "test:int": "vitest run --project integration",
+    "test:e2e": "vitest run --project e2e --passWithNoTests",
+    "test:all": "vitest run",
+    "cov:unit": "vitest run --project unit --coverage --coverage.thresholds.100=false",
     "c": "tsc --noEmit",
     "b": "tsc --project tsconfig.build.json",
     "dev": "tsx --watch src/cli.ts",
@@ -44,9 +49,11 @@
     "postversion": "git push --follow-tags",
     "prepublishOnly": "npm run all",
     "tick": "tsx src/cli.ts",
+    "help": "tsx src/cli.ts --help",
     "check": "tsx src/cli.ts --check",
     "stop": "tsx src/cli.ts --stop",
-    "add": "tsx src/cli.ts add"
+    "add": "tsx src/cli.ts add",
+    "smoke:live": "node scripts/smoke-live.mjs"
   },
   "keywords": [
     "orchestrator",
@@ -61,5 +68,8 @@
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
+  },
+  "overrides": {
+    "esbuild": "0.28.1"
   }
 }
