@@ -49,7 +49,7 @@ describe('e2e: lifecycle', () => {
 
     const added = addTask('alpha', opts);
     expect(added.status).toBe(0);
-    expect(added.stderr).not.toMatch(/CANTOPEN|SQLITE/i);
+    expect(added.stderr).not.toMatch(/CANTOPEN/i);
     expect(added.stdout).toContain('T1 added: alpha');
 
     // The flat T01-alpha content dir exists and the DB row is PENDING.

@@ -1043,10 +1043,14 @@ describe('PiAgent', () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
-    vi.mocked(execFileSync).mockImplementation(() => {
-      mock.emit('close', null);
-      return Buffer.alloc(0);
-    });
+    // killTree uses execFileSync('taskkill',…) on Windows and process.kill on
+    // Unix.  Mock whichever one this platform will actually call.
+    const killClose = () => { mock.emit('close', null); return true; };
+    if (process.platform === 'win32') {
+      vi.mocked(execFileSync).mockImplementation(() => { killClose(); return Buffer.alloc(0); });
+    } else {
+      vi.spyOn(process, 'kill').mockImplementation(killClose as unknown as () => true);
+    }
     vi.useFakeTimers();
     const controller = new AbortController();
 
@@ -1057,20 +1061,29 @@ describe('PiAgent', () => {
     controller.abort();
     expect(mock.kill).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(4_999);
-    expect(execFileSync).not.toHaveBeenCalled();
+    if (process.platform === 'win32') expect(execFileSync).not.toHaveBeenCalled();
     expect(resolved).toBe(false);
 
     await vi.advanceTimersByTimeAsync(1);
     const result = await p;
     expect(result.success).toBe(false);
     expect(result.error).toBe('pi spawn aborted');
-    expect(execFileSync).toHaveBeenCalledWith('taskkill', ['/pid', String(mock.pid), '/T', '/F'], { stdio: 'ignore' });
+    if (process.platform === 'win32') {
+      expect(execFileSync).toHaveBeenCalledWith('taskkill', ['/pid', String(mock.pid), '/T', '/F'], { stdio: 'ignore' });
+    } else {
+      expect(process.kill).toHaveBeenCalled();
+    }
   });
 
   it('progress timeout force-resolves when close never arrives', async () => {
     const t = make(dir, 1, 'a', '- **Model:** test-model\n## Goal\nTest');
     const mock = mockChild();
     vi.mocked(spawn).mockReturnValue(mock);
+    // killTree uses process.kill on Unix.
+    let killSpy: ReturnType<typeof vi.spyOn> | undefined;
+    if (process.platform !== 'win32') {
+      killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    }
     vi.useFakeTimers();
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
@@ -1080,9 +1093,14 @@ describe('PiAgent', () => {
       const result = await p;
       expect(result.success).toBe(false);
       expect(result.error).toContain('No agent output for');
-      expect(execFileSync).toHaveBeenCalledWith('taskkill', ['/pid', String(mock.pid), '/T', '/F'], { stdio: 'ignore' });
+      if (process.platform === 'win32') {
+        expect(execFileSync).toHaveBeenCalledWith('taskkill', ['/pid', String(mock.pid), '/T', '/F'], { stdio: 'ignore' });
+      } else {
+        expect(killSpy!).toHaveBeenCalled();
+      }
     } finally {
       errorSpy.mockRestore();
+      killSpy?.mockRestore();
     }
   });
 

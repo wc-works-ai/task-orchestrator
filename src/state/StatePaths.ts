@@ -19,7 +19,9 @@ export interface StatePaths {
 }
 
 export function repoSlug(repoPath: string): string {
-  const name = basename(resolve(repoPath));
+  // Normalize Windows backslashes so cross-platform tests produce consistent slugs.
+  const normalized = repoPath.replace(/\\/g, '/');
+  const name = basename(resolve(normalized));
   const slug = name.replace(/[<>:"/\\|?*\x00-\x1F]+/g, '-').replace(/\.+$/g, '').trim();
   if (!slug) throw new Error(`Cannot derive repo slug from ${repoPath}`);
   return slug;
